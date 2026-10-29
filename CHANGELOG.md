@@ -1,5 +1,9 @@
 # Changes
 
+## Unreleased
+
+- Library: a DETACHED compaction is joined. From CLI 2.1.295 the boundary and its summary are a two-node root branch, and the `/compact` command's own records (typed before the boundary, written after the summary) are parented around the pair, so the live path left both out. `repairedLivePath` now places the pair between the command and its output ("Compacted"), the order the events happened in, and reports the join in `compactions` with `via: 'detached'`. The skeleton's lines do not change: neither the boundary nor the summary is a turn or a call.
+
 ## 0.0.3
 
 - Output changes, on crafted input only (on 2,539 real transcripts the output did not change, and neither did what the parser makes of them: the live path, its joins and repairs, requests, turns and counts):

@@ -862,6 +862,18 @@ export function livePath(t: Transcript): { path: TreeNode[]; from: 'leafUuid' | 
  *    model sees the summary, not what precedes it. Each join is reported with its compactMetadata
  *    so a reader can tell the two apart.
  *
+ *  (5) THE DETACHED COMPACTION: `compactions`, via 'detached' (seen from CLI 2.1.295 and 2.1.300).
+ *    The boundary and its summary form a two-node root branch: the conversation does NOT continue
+ *    below the summary. The /compact command's own records, stamped when it was typed (before the
+ *    boundary), are written AFTER the summary and parented to the record before the command (which
+ *    is also the boundary's logicalParentUuid), and the command's output ("Compacted") chains off
+ *    them. The parent links run AROUND the pair, so no climb from the head ever meets it, and the
+ *    boundary and the summary are missing from the path.
+ *    Repair: a boundary root not on the path, whose logical parent is on it, is placed, with its
+ *    subtree in file order, before the first path record after the logical parent that is stamped
+ *    at or after the boundary: the order the events happened in (the command typed, the boundary
+ *    and the summary written, "Compacted").
+ *
  *  The independent check is the harness's OWN head pointer: every `last-prompt.leafUuid` the
  *  session ever wrote marks a node the head stood on, so each should lie on the true path. */
 export interface Bridge { orphan: TreeNode; via: TreeNode; missingParent: Uuid; kind: 'file-order' }
@@ -871,8 +883,9 @@ export interface Extension { leaf: TreeNode; to: TreeNode; records: number; kind
 /** (4) a compaction boundary crossed: the model's context was replaced by a summary here */
 export interface CompactionJoin {
   boundary: TreeNode; logicalParent: TreeNode; kind: 'compaction';
-  /** which of the two known shapes carried the join, and the node it continued from */
-  via: 'logical-parent' | 'preserved-head'; joinedAt: TreeNode;
+  /** which known shape carried the join, and the node it continued from; for 'detached' (see (5)), the path node
+   *  the boundary was placed after */
+  via: 'logical-parent' | 'preserved-head' | 'detached'; joinedAt: TreeNode;
   trigger: string | null; preTokens: number | null; postTokens: number | null; durationMs: number | null;
 }
 export function repairedLivePath(t: Transcript): { path: TreeNode[]; from: 'leafUuid' | 'last-leaf' | 'none'; bridges: Bridge[]; splices: Splice[]; extension: Extension | null; compactions: CompactionJoin[] } {
@@ -1017,6 +1030,37 @@ export function repairedLivePath(t: Transcript): { path: TreeNode[]; from: 'leaf
     for (const x of branch) out.push(x);
     splices.push({ error: E, fork: P, branch, kind: 'late-write',
       lateType: (typeof r.type === 'string' ? r.type : NOT_A_STRING) + (typeof r.subtype === 'string' && r.subtype ? ':' + r.subtype : '') });
+  }
+
+  // (5) detached compactions (see the header): a boundary root off the path whose logical parent is on it. Each walk
+  //    down a subtree visits a node once. Insertion keeps every node at most once on the path: the subtree is taken
+  //    only if none of it is there already.
+  const onPath = new Set<Uuid>(out.map((n) => n.uuid));
+  const detached = [...t.nodes.values()].filter((n) => {
+    const r: any = n.record;
+    return n.parent === null && r.type === 'system' && r.subtype === 'compact_boundary' && !onPath.has(n.uuid);
+  }).sort((a, b) => a.index - b.index);
+  for (const b of detached) {
+    const L = logicalOf(b);
+    if (!L || !onPath.has(L.uuid)) continue;
+    const sub: TreeNode[] = []; const st: TreeNode[] = [b]; const seenSub = new Set<TreeNode>();
+    while (st.length) { const x = st.pop()!; if (seenSub.has(x)) continue; seenSub.add(x); sub.push(x); for (const y of x.children) st.push(y); }
+    if (sub.some((x) => onPath.has(x.uuid))) continue;
+    sub.sort((x, y) => x.index - y.index);
+    const iL = out.indexOf(L);
+    let k = iL + 1;
+    while (k < out.length && !(ts(out[k]) >= ts(b) && ts(out[k]) !== '')) k++;
+    out.splice(k, 0, ...sub);
+    for (const x of sub) onPath.add(x.uuid);
+    const m = (b.record as any).compactMetadata ?? {};
+    compactions.push({
+      boundary: b, logicalParent: L, kind: 'compaction', via: 'detached', joinedAt: out[k - 1],
+      trigger: m.trigger ?? null, preTokens: m.preTokens ?? null, postTokens: m.postTokens ?? null, durationMs: m.durationMs ?? null,
+    });
+  }
+  if (detached.length) {
+    const at = new Map(out.map((n, i) => [n, i] as const));
+    compactions.sort((x, y) => (at.get(x.boundary) ?? 0) - (at.get(y.boundary) ?? 0));   // the earliest join first, as the path reads
   }
   return { path: out, from: base.from, bridges, splices, extension, compactions };
 }

@@ -798,6 +798,50 @@ export function repairedLivePath(t) {
         splices.push({ error: E, fork: P, branch, kind: 'late-write',
             lateType: (typeof r.type === 'string' ? r.type : NOT_A_STRING) + (typeof r.subtype === 'string' && r.subtype ? ':' + r.subtype : '') });
     }
+    // (5) detached compactions (see the header): a boundary root off the path whose logical parent is on it. Each walk
+    //    down a subtree visits a node once. Insertion keeps every node at most once on the path: the subtree is taken
+    //    only if none of it is there already.
+    const onPath = new Set(out.map((n) => n.uuid));
+    const detached = [...t.nodes.values()].filter((n) => {
+        const r = n.record;
+        return n.parent === null && r.type === 'system' && r.subtype === 'compact_boundary' && !onPath.has(n.uuid);
+    }).sort((a, b) => a.index - b.index);
+    for (const b of detached) {
+        const L = logicalOf(b);
+        if (!L || !onPath.has(L.uuid))
+            continue;
+        const sub = [];
+        const st = [b];
+        const seenSub = new Set();
+        while (st.length) {
+            const x = st.pop();
+            if (seenSub.has(x))
+                continue;
+            seenSub.add(x);
+            sub.push(x);
+            for (const y of x.children)
+                st.push(y);
+        }
+        if (sub.some((x) => onPath.has(x.uuid)))
+            continue;
+        sub.sort((x, y) => x.index - y.index);
+        const iL = out.indexOf(L);
+        let k = iL + 1;
+        while (k < out.length && !(ts(out[k]) >= ts(b) && ts(out[k]) !== ''))
+            k++;
+        out.splice(k, 0, ...sub);
+        for (const x of sub)
+            onPath.add(x.uuid);
+        const m = b.record.compactMetadata ?? {};
+        compactions.push({
+            boundary: b, logicalParent: L, kind: 'compaction', via: 'detached', joinedAt: out[k - 1],
+            trigger: m.trigger ?? null, preTokens: m.preTokens ?? null, postTokens: m.postTokens ?? null, durationMs: m.durationMs ?? null,
+        });
+    }
+    if (detached.length) {
+        const at = new Map(out.map((n, i) => [n, i]));
+        compactions.sort((x, y) => (at.get(x.boundary) ?? 0) - (at.get(y.boundary) ?? 0)); // the earliest join first, as the path reads
+    }
     return { path: out, from: base.from, bridges, splices, extension, compactions };
 }
 export function turnsOf(t, path) {

@@ -1227,6 +1227,39 @@ test('the linear join keeps what the quadratic one did: a bridge passes over nod
   assert.deepEqual(r.path.map((n) => n.uuid), ['b0', 's0', 'b1', 's1', 'b2', 's2']);
 });
 
+test('a DETACHED compaction (CLI 2.1.295, 2.1.300): the boundary and its summary are placed between the /compact command and its output', async () => {
+  const { parseTranscript, repairedLivePath } = await import(new URL(`file://${join(dirname(CLI), 'parser.js')}`).href);
+  const at = (s) => `2026-08-01T12:00:${String(s).padStart(2, '0')}.000Z`;
+  const user = (uuid, parentUuid, content, s, extra = {}) => ({ uuid, parentUuid, ...sessionEnv, type: 'user', message: { role: 'user', content }, timestamp: at(s), ...extra });
+  const reply = (uuid, parentUuid, text, s) => ({ uuid, parentUuid, ...sessionEnv, type: 'assistant', requestId: `req_${uuid}`, message: { id: `msg_${uuid}`, type: 'message', role: 'assistant', model: 'claude-demo-model', content: [{ type: 'text', text }], stop_reason: 'end_turn' }, timestamp: at(s) });
+  // in FILE order, as the CLI writes it: the boundary and its summary first, a two-node root branch; then the command,
+  // stamped when it was typed (before the boundary) and parented AROUND the pair, and its output chained off it
+  const recs = [
+    user('p1', null, 'An invented first prompt.', 0, { promptSource: 'typed' }),
+    reply('a1', 'p1', 'An invented first reply.', 1),
+    { uuid: 'b', parentUuid: null, logicalParentUuid: 'a1', ...sessionEnv, type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'manual', preTokens: 12000 }, timestamp: at(5) },
+    user('s', 'b', 'An invented summary.', 5, { isCompactSummary: true }),
+    user('c', 'a1', '<command-name>/compact</command-name>', 2),
+    user('o', 'c', '<local-command-stdout>Compacted</local-command-stdout>', 6),
+    user('p2', 'o', 'An invented prompt after the compaction.', 10, { promptSource: 'typed' }),
+    reply('a2', 'p2', 'An invented reply after the compaction.', 11),
+    { type: 'last-prompt', leafUuid: 'a2', sessionId: 's' },
+  ];
+  const text = recs.map((o) => JSON.stringify(o)).join('\n') + '\n';
+  const r = repairedLivePath(parseTranscript(text));
+  // the order the events happened in: the command typed · the boundary and the summary written · "Compacted"
+  assert.deepEqual(r.path.map((n) => n.uuid), ['p1', 'a1', 'c', 'b', 's', 'o', 'p2', 'a2']);
+  assert.deepEqual(r.compactions.map((c) => [c.via, c.boundary.uuid, c.logicalParent.uuid, c.joinedAt.uuid, c.trigger, c.preTokens]),
+    [['detached', 'b', 'a1', 'c', 'manual', 12000]]);
+  // the skeleton's lines do not change: neither the boundary (a system record) nor the summary (harness:compact-summary)
+  // is a turn or a call, so the repair shows in the library's path and joins, not in the CLI's output
+  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  try {
+    writeFileSync(join(dir, 'detached.jsonl'), text);
+    assert.deepEqual(parsed(run('skeleton', join(dir, 'detached.jsonl')).out).map((o) => [o.k, o.a]), [['turn', 'detached:L1'], ['turn', 'detached:L5'], ['turn', 'detached:L7']]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('a boundary whose logical parent is already on the live path is not joined again: no turn is printed twice (review 6, L6-1)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
   try {
