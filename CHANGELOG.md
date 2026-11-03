@@ -1,7 +1,8 @@
 # Changes
 
-## Unreleased
+## 0.0.4
 
+- The name: the package is now `long-term-memory-structure`, published until 0.0.3 as `memobrain`. The command is `ltms`, and `npx long-term-memory-structure` runs it without installing. Messages on stderr start with `ltms` where they started with `memobrain` (`ltms skeleton: warning: ...`), and the usage text and `--help` name `ltms`. No output field changed. The repository is `long-term-memory-structure/long-term-memory-structure`; the test suite's variables are `LTMS_HEAVY` and `LTMS_CLI`.
 - Library: a DETACHED compaction is joined. From CLI 2.1.295 the boundary and its summary are a two-node root branch, and the `/compact` command's own records (typed before the boundary, written after the summary) are parented around the pair, so the live path left both out. `repairedLivePath` now places the pair between the command and its output ("Compacted"), the order the events happened in, and reports the join in `compactions` with `via: 'detached'`. The skeleton's lines do not change: neither the boundary nor the summary is a turn or a call.
 
 ## 0.0.3

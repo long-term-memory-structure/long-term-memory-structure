@@ -1,4 +1,4 @@
-// Records what memobrain prints for each transcript in test/fixtures/review (the probes an independent pre-publish
+// Records what ltms prints for each transcript in test/fixtures/review (the probes an independent pre-publish
 // review wrote to kill mutants that survived the suite: live-path repairs, channels, request grouping, labels).
 // The test compares every later build with this record. Re-record ONLY after reading the diff: a changed output
 // is either a fix (say which) or a regression.
@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIR = join(HERE, 'fixtures', 'review');
-const CLI = process.env.MEMOBRAIN_CLI || join(HERE, '..', 'dist', 'cli.js');
+const CLI = process.env.LTMS_CLI || join(HERE, '..', 'dist', 'cli.js');
 const out = {};
 for (const name of readdirSync(DIR).filter((f) => f.endsWith('.jsonl')).sort()) {
   out[name] = {};

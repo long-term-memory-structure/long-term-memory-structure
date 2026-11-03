@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// memobrain: an index of Claude Code transcripts, without their content.
+// Long-Term Memory Structure: an index of Claude Code transcripts, without their content.
 //
 // When Claude Code compacts a session, the model's context is replaced by a summary, but the transcript on disk keeps
 // every record (it is only ever appended to). The index lets what compaction took out of the context be found again.
@@ -36,24 +36,25 @@ interface StatsLine {
 }
 
 const USAGE = `Usage:
-  memobrain skeleton <file.jsonl>...   one JSON line per turn and per tool call
-  memobrain stats <file.jsonl>...      one JSON line of counts per file
-  memobrain --help                     show the help, with every output field
-  memobrain --version                  show the version
+  ltms skeleton <file.jsonl>...   one JSON line per turn and per tool call
+  ltms stats <file.jsonl>...      one JSON line of counts per file
+  ltms --help                     show the help, with every output field
+  ltms --version                  show the version
 `;
 
-const HELP = `memobrain: an index of Claude Code transcripts, without their content.
+const HELP = `Long-Term Memory Structure: an index of Claude Code transcripts,
+without their content.
 
 ${USAGE}
 When Claude Code compacts a session, the conversation in the model's context
 is replaced by a summary, but the transcript on disk keeps every record:
-Claude Code only appends to it. memobrain prints an index of the transcript,
+Claude Code only appends to it. ltms prints an index of the transcript,
 one line per turn and per tool call, each with the line of the file where it
 is written, so what compaction took out of the context can be found and read
 again (for line 22: sed -n 22p <file>).
 
 Claude Code keeps transcripts in ~/.claude/projects/<project>/<session>.jsonl.
-memobrain reads only the files it is given, writes only to stdout and stderr,
+ltms reads only the files it is given, writes only to stdout and stderr,
 and uses no network.
 
 It follows each session's live path: the branch the session ended on, as the
@@ -179,9 +180,10 @@ no conversation records, no turns), records whose parent links loop, values
 too large to hash, files in one run that share a prefix, and records whose
 response was read from their parent links (no requestId and no string
 message.id), so a zero never reads as a clean result. An internal error is
-reported by its kind and where in memobrain it happened, never its message.
+reported by its kind and where in ltms it happened, never its message.
 
-Every rule in full is in the README: https://github.com/memobrain-app/memobrain
+Every rule in full is in the README:
+https://github.com/long-term-memory-structure/long-term-memory-structure
 
 Exit status: 0 when every file was processed, 1 when a file could not be read
 or processed, 2 on a usage error.
@@ -510,31 +512,31 @@ function warningsFor(cmd: string, file: string, t: Transcript, lines: SkeletonLi
   const warnings: string[] = [];
   const consequence = cmd === 'stats' ? 'its counts are 0' : 'it adds no lines';
   const p = t.problems.length;
-  if (p) warnings.push(`memobrain ${cmd}: warning: '${file}': ${p} line${p === 1 ? '' : 's'} could not be read as a JSON object of at most 1,000 levels (first: line ${t.problems[0].line}) and ${p === 1 ? 'was' : 'were'} skipped.`);
-  if (t.fileKind === 'empty') warnings.push(`memobrain ${cmd}: warning: '${file}' holds no records, so ${consequence}.`);
-  else if (t.fileKind === 'journal') warnings.push(`memobrain ${cmd}: warning: '${file}' is a workflow journal (launched, started and result records only), not a conversation, so ${consequence}.`);
+  if (p) warnings.push(`ltms ${cmd}: warning: '${file}': ${p} line${p === 1 ? '' : 's'} could not be read as a JSON object of at most 1,000 levels (first: line ${t.problems[0].line}) and ${p === 1 ? 'was' : 'were'} skipped.`);
+  if (t.fileKind === 'empty') warnings.push(`ltms ${cmd}: warning: '${file}' holds no records, so ${consequence}.`);
+  else if (t.fileKind === 'journal') warnings.push(`ltms ${cmd}: warning: '${file}' is a workflow journal (launched, started and result records only), not a conversation, so ${consequence}.`);
   else if (t.fileKind === 'unknown') {
     const types = [...new Set(t.records.map((r) => (r.type === undefined || r.type === null ? '(none)' : label(r.type, '(none)'))))].sort();
     const shown = types.slice(0, 6).join(', ') + (types.length > 6 ? `, and ${types.length - 6} more` : '');
-    warnings.push(`memobrain ${cmd}: warning: '${file}' has no conversation records (no record carries both uuid and parentUuid; record types found: ${shown}), so ${consequence}. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.`);
+    warnings.push(`ltms ${cmd}: warning: '${file}' has no conversation records (no record carries both uuid and parentUuid; record types found: ${shown}), so ${consequence}. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.`);
   }
-  else if (lines.length === 0) warnings.push(`memobrain ${cmd}: warning: '${file}' has conversation records but no turn on its live path, so ${consequence}.`);
+  else if (lines.length === 0) warnings.push(`ltms ${cmd}: warning: '${file}' has conversation records but no turn on its live path, so ${consequence}.`);
   const large = lines.filter((l) => l.k === 'call' && (l.in === TOO_LARGE || l.out === TOO_LARGE)).length;
-  if (large) warnings.push(`memobrain ${cmd}: warning: '${file}': ${large} call${large === 1 ? ' holds' : 's hold'} a value too large to write as JSON (it would pass JavaScript's limit on a string's length), ${cmd === 'stats' ? 'so it cannot be hashed (skeleton prints ' + TOO_LARGE + ' there)' : `so ${large === 1 ? 'its' : 'their'} in or out prints ${TOO_LARGE}`}.`);
+  if (large) warnings.push(`ltms ${cmd}: warning: '${file}': ${large} call${large === 1 ? ' holds' : 's hold'} a value too large to write as JSON (it would pass JavaScript's limit on a string's length), ${cmd === 'stats' ? 'so it cannot be hashed (skeleton prints ' + TOO_LARGE + ' there)' : `so ${large === 1 ? 'its' : 'their'} in or out prints ${TOO_LARGE}`}.`);
   const g = t.stats.requestKeyGuessed;
-  if (g) warnings.push(`memobrain ${cmd}: warning: '${file}': ${g} assistant record${g === 1 ? ' carries' : 's carry'} neither a requestId nor a string message.id, so which records form one response was read from their parent links; a parallel call's turn may be misread.`);
+  if (g) warnings.push(`ltms ${cmd}: warning: '${file}': ${g} assistant record${g === 1 ? ' carries' : 's carry'} neither a requestId nor a string message.id, so which records form one response was read from their parent links; a parallel call's turn may be misread.`);
   const c = t.fileKind === 'transcript' ? cycleRecords(t) : 0;
-  if (c) warnings.push(`memobrain ${cmd}: warning: '${file}': ${c} record${c === 1 ? '' : 's'} sit${c === 1 ? 's' : ''} on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through ${c === 1 ? 'it' : 'them'} may be incomplete.`);
+  if (c) warnings.push(`ltms ${cmd}: warning: '${file}': ${c} record${c === 1 ? '' : 's'} sit${c === 1 ? 's' : ''} on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through ${c === 1 ? 'it' : 'them'} may be incomplete.`);
   return warnings;
 }
 
 function cannotRead(cmd: string, file: string, e: unknown): string {
   const code = (e as NodeJS.ErrnoException)?.code;
-  if (code === 'ENOENT') return `memobrain ${cmd}: cannot read '${file}': no such file or directory. Check the path. ${TRANSCRIPTS_HINT}`;
-  if (code === 'EISDIR') return `memobrain ${cmd}: '${file}' is a directory. Pass the .jsonl files inside it, e.g. memobrain ${cmd} ${file.replace(/\/+$/, '')}/*.jsonl`;
-  if (code === 'EACCES' || code === 'EPERM') return `memobrain ${cmd}: cannot read '${file}': permission denied. Check its permissions with: ls -l '${file}'`;
-  if (code === 'ERR_STRING_TOO_LONG') return `memobrain ${cmd}: cannot read '${file}': the file is too large to load as one string (the limit is about 512 MB).`;
-  return `memobrain ${cmd}: cannot read '${file}': ${(e as Error)?.message ?? String(e)}`;
+  if (code === 'ENOENT') return `ltms ${cmd}: cannot read '${file}': no such file or directory. Check the path. ${TRANSCRIPTS_HINT}`;
+  if (code === 'EISDIR') return `ltms ${cmd}: '${file}' is a directory. Pass the .jsonl files inside it, e.g. ltms ${cmd} ${file.replace(/\/+$/, '')}/*.jsonl`;
+  if (code === 'EACCES' || code === 'EPERM') return `ltms ${cmd}: cannot read '${file}': permission denied. Check its permissions with: ls -l '${file}'`;
+  if (code === 'ERR_STRING_TOO_LONG') return `ltms ${cmd}: cannot read '${file}': the file is too large to load as one string (the limit is about 512 MB).`;
+  return `ltms ${cmd}: cannot read '${file}': ${(e as Error)?.message ?? String(e)}`;
 }
 
 function readVersion(): string {
@@ -542,13 +544,13 @@ function readVersion(): string {
 }
 function printVersion(): number {
   try { out(readVersion() + '\n'); return 0; }
-  catch (e) { err(`memobrain: cannot read the version from package.json next to this program: ${(e as Error)?.message ?? String(e)}`); return 1; }
+  catch (e) { err(`ltms: cannot read the version from package.json next to this program: ${(e as Error)?.message ?? String(e)}`); return 1; }
 }
 
-/** An internal error by its kind and by the place in memobrain's own code where it was raised, never by its message: a
+/** An internal error by its kind and by the place in ltms's own code where it was raised, never by its message: a
  *  message can quote the value that caused it, and so could a future bug's, with the transcript's text in it. The stack
  *  opens with "<name>: <message>", and a message can run over several lines shaped like frames: only what follows that
- *  header is read as the stack, and only memobrain's own files are named. Anything else gives the kind alone. */
+ *  header is read as the stack, and only ltms's own files are named. Anything else gives the kind alone. */
 function internalError(e: unknown): string {
   if (!(e instanceof Error)) return 'Error';
   const kind = LABEL.test(e.name) ? e.name : 'Error';
@@ -571,7 +573,7 @@ function prefixCollisions(cmd: string, files: string[]): string[] {
     if (l.length < 2) continue;
     const names = l.slice(0, 4).map((f) => `'${f}'`), more = l.length - names.length;
     const list = more ? `${names.join(', ')} and ${more} more` : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-    warnings.push(`memobrain ${cmd}: warning: ${list} share the address prefix '${p}', so their lines cannot be told apart in this run's output; run them separately.`);
+    warnings.push(`ltms ${cmd}: warning: ${list} share the address prefix '${p}', so their lines cannot be told apart in this run's output; run them separately.`);
   }
   return warnings;
 }
@@ -586,12 +588,12 @@ function writeSkeleton(lines: SkeletonLine[]): void {
 
 function main(argv: string[]): number {
   const cmd = argv[0];
-  if (cmd === undefined) { err(`memobrain: no command given.\n\n${USAGE}`); return 2; }
+  if (cmd === undefined) { err(`ltms: no command given.\n\n${USAGE}`); return 2; }
   if (cmd === '--help' || cmd === '-h' || cmd === 'help') { out(HELP); return 0; }
   if (cmd === '--version' || cmd === '-v') return printVersion();
   if (cmd !== 'skeleton' && cmd !== 'stats') {
-    if (cmd.startsWith('-')) err(`memobrain: unknown option '${cmd}'. The options are --help and --version.\n\n${USAGE}`);
-    else err(`memobrain: unknown command '${cmd}'. The commands are skeleton and stats.\n\n${USAGE}`);
+    if (cmd.startsWith('-')) err(`ltms: unknown option '${cmd}'. The options are --help and --version.\n\n${USAGE}`);
+    else err(`ltms: unknown command '${cmd}'. The commands are skeleton and stats.\n\n${USAGE}`);
     return 2;
   }
 
@@ -601,11 +603,11 @@ function main(argv: string[]): number {
     if (!optionsEnded && a === '--') { optionsEnded = true; continue; }
     if (!optionsEnded && (a === '--help' || a === '-h')) { out(HELP); return 0; }
     if (!optionsEnded && (a === '--version' || a === '-v')) return printVersion();
-    if (!optionsEnded && a === '-') { err(`memobrain ${cmd}: reading from standard input ('-') is not supported. Pass the transcript's path, e.g. memobrain ${cmd} ~/.claude/projects/<project>/<session>.jsonl`); return 2; }
-    if (!optionsEnded && a.startsWith('-')) { err(`memobrain ${cmd}: unknown option '${a}'. ${cmd} takes file names only; put -- before a file name that starts with '-'.`); return 2; }
+    if (!optionsEnded && a === '-') { err(`ltms ${cmd}: reading from standard input ('-') is not supported. Pass the transcript's path, e.g. ltms ${cmd} ~/.claude/projects/<project>/<session>.jsonl`); return 2; }
+    if (!optionsEnded && a.startsWith('-')) { err(`ltms ${cmd}: unknown option '${a}'. ${cmd} takes file names only; put -- before a file name that starts with '-'.`); return 2; }
     files.push(a);
   }
-  if (!files.length) { err(`memobrain ${cmd}: no input files. Pass one or more transcripts, e.g. memobrain ${cmd} ~/.claude/projects/<project>/<session>.jsonl`); return 2; }
+  if (!files.length) { err(`ltms ${cmd}: no input files. Pass one or more transcripts, e.g. ltms ${cmd} ~/.claude/projects/<project>/<session>.jsonl`); return 2; }
 
   let failed = 0;
   const done: string[] = [];
@@ -620,19 +622,19 @@ function main(argv: string[]): number {
       if (cmd === 'skeleton') writeSkeleton(lines); else out(JSON.stringify(statsOf(file, lines)) + '\n');
       done.push(file);
     } catch (e) {
-      err(`memobrain ${cmd}: '${file}': stopped with an internal error (${internalError(e)}), so nothing was written for it. This is a bug in memobrain; the other files are processed as usual.`);
+      err(`ltms ${cmd}: '${file}': stopped with an internal error (${internalError(e)}), so nothing was written for it. This is a bug in ltms; the other files are processed as usual.`);
       failed++;
     }
   }
   for (const w of prefixCollisions(cmd, done)) err(w);
-  if (failed) { err(`memobrain ${cmd}: ${files.length - failed} of ${files.length} files done; ${failed} failed, as reported above.`); return 1; }
+  if (failed) { err(`ltms ${cmd}: ${files.length - failed} of ${files.length} files done; ${failed} failed, as reported above.`); return 1; }
   return 0;
 }
 
 // A reader that stops early (e.g. `| head`) closes the pipe: stop quietly, it is not an error here.
 process.stdout.on('error', (e: NodeJS.ErrnoException) => {
   if (e.code === 'EPIPE') process.exit(process.exitCode ?? 0);
-  process.stderr.write(`memobrain: cannot write the output (${e.code ?? e.message}); what was written so far is incomplete.\n`);
+  process.stderr.write(`ltms: cannot write the output (${e.code ?? e.message}); what was written so far is incomplete.\n`);
   process.exit(1);
 });
 process.exitCode = main(process.argv.slice(2));

@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Claude Code&#x27;s compaction doesn&#x27;t delete your history. It re-roots it.</title>
 <meta name="description" content="Claude Code&#x27;s /compact swaps the model&#x27;s context for a summary; the transcript on disk keeps every record. What each model keeps, and how to get it back.">
-<link rel="canonical" href="https://memobrain-app.github.io/memobrain/compaction.html">
+<link rel="canonical" href="https://long-term-memory-structure.github.io/long-term-memory-structure/compaction.html">
 <meta property="og:type" content="article">
 <meta property="og:title" content="Claude Code&#x27;s compaction doesn&#x27;t delete your history. It re-roots it.">
 <meta property="og:description" content="Claude Code&#x27;s /compact swaps the model&#x27;s context for a summary; the transcript on disk keeps every record. What each model keeps, and how to get it back.">
-<meta property="og:url" content="https://memobrain-app.github.io/memobrain/compaction.html">
+<meta property="og:url" content="https://long-term-memory-structure.github.io/long-term-memory-structure/compaction.html">
 <meta name="twitter:card" content="summary">
 <meta name="color-scheme" content="light dark">
 <style>
@@ -119,10 +119,10 @@ footer p { margin: 0 0 0.4rem; }
    },
    "publisher": {
     "@type": "Organization",
-    "name": "memobrain",
-    "url": "https://github.com/memobrain-app/memobrain"
+    "name": "Long-Term Memory Structure",
+    "url": "https://github.com/long-term-memory-structure/long-term-memory-structure"
    },
-   "mainEntityOfPage": "https://memobrain-app.github.io/memobrain/compaction.html"
+   "mainEntityOfPage": "https://long-term-memory-structure.github.io/long-term-memory-structure/compaction.html"
   },
   {
    "@type": "FAQPage",
@@ -156,7 +156,7 @@ footer p { margin: 0 0 0.4rem; }
      "name": "Can I get back what was compacted?",
      "acceptedAnswer": {
       "@type": "Answer",
-      "text": "Yes, from the file. The summary itself names the transcript's path, so the model can read it when you ask. An index such as memobrain finds the lines that matter."
+      "text": "Yes, from the file. The summary itself names the transcript's path, so the model can read it when you ask. An index such as Long-Term Memory Structure finds the lines that matter."
      }
     },
     {
@@ -175,7 +175,7 @@ footer p { margin: 0 0 0.4rem; }
 </head>
 <body>
 <div class="page">
-<div class="topline"><a href="https://github.com/memobrain-app/memobrain">memobrain</a><span>Free, open-source, MIT</span></div>
+<div class="topline"><a href="https://github.com/long-term-memory-structure/long-term-memory-structure">Long-Term Memory Structure</a><span>Free, open-source, MIT</span></div>
 <article>
 <header class="article">
 <p class="eyebrow">Measured on Claude Code 2.1.270 to 2.1.300</p>
@@ -288,7 +288,7 @@ footer p { margin: 0 0 0.4rem; }
 <ul>
 <li><strong>Keep the file past 30 days.</strong> Raise <code>cleanupPeriodDays</code> in <code>~/.claude/settings.json</code> (the minimum is 1), or copy the files somewhere the cleanup does not reach. Raising it does not bring back files already deleted.</li>
 <li><strong>When the model says it does not know, point it at the file.</strong> The summary names the transcript's path, and the file still held all 14 details in every run.</li>
-<li><strong>Give it an index, not the raw file.</strong> One line of a transcript can be a very long JSON record, and a file reader stalls on those. <a href="https://github.com/memobrain-app/memobrain">memobrain</a>, our free, open-source tool, prints one short line per turn and tool call with the line number where it is written: <code>npx memobrain skeleton &lt;file.jsonl&gt;</code>. Then read just the lines that matter: <code>sed -n 22p &lt;file.jsonl&gt;</code>.</li>
+<li><strong>Give it an index, not the raw file.</strong> One line of a transcript can be a very long JSON record, and a file reader stalls on those. <a href="https://github.com/long-term-memory-structure/long-term-memory-structure">Long-Term Memory Structure</a>, our free, open-source tool, prints one short line per turn and tool call with the line number where it is written: <code>npx long-term-memory-structure skeleton &lt;file.jsonl&gt;</code>. Then read just the lines that matter: <code>sed -n 22p &lt;file.jsonl&gt;</code>.</li>
 <li><strong>Read across the boundary in your own scripts.</strong> At each <code>compact_boundary</code>, continue from <code>logicalParentUuid</code> (or <code>compactMetadata.preservedSegment.headUuid</code>), and count each uuid once, at its first copy.</li>
 <li><strong>Know which model writes the summary.</strong> In our runs, one session each on Opus 5.5 and Sonnet 5.5 kept every detail through compaction, and sessions on Haiku 5.5 kept none.</li>
 </ul>
@@ -301,7 +301,7 @@ footer p { margin: 0 0 0.4rem; }
 <h3>Why does Claude Code forget things after compacting?</h3>
 <p>The model carries on from the summary, not from the file, so whatever the summary leaves out is gone from its context. In our test, Opus 5.5 and Sonnet 5.5 kept all 14 planted details, and Haiku 5.5 kept none.</p>
 <h3>Can I get back what was compacted?</h3>
-<p>Yes, from the file. The summary itself names the transcript's path, so the model can read it when you ask. An index such as <a href="https://github.com/memobrain-app/memobrain">memobrain</a> finds the lines that matter.</p>
+<p>Yes, from the file. The summary itself names the transcript's path, so the model can read it when you ask. An index such as <a href="https://github.com/long-term-memory-structure/long-term-memory-structure">Long-Term Memory Structure</a> finds the lines that matter.</p>
 <h3>Does Claude Code delete old conversations?</h3>
 <p>Yes, after 30 days by default. Compaction does not delete them, but the cleanup removes transcripts older than <code>cleanupPeriodDays</code>.</p>
 
@@ -322,8 +322,8 @@ footer p { margin: 0 0 0.4rem; }
 <p>Not tested: automatic compaction at the context limit, <code>/compact</code> with instructions, sessions with tool calls before the compaction, and more than one run on Opus or on Sonnet. The reason for the Haiku summaries is our guess, not a measurement.</p>
 </article>
 <footer>
-<p><a href="https://github.com/memobrain-app/memobrain">memobrain</a> reads Claude Code transcripts across their compactions and prints an index of them. It is free and open source, under the MIT license.</p>
-<p>memobrain is an independent project. It is not affiliated with or endorsed by Anthropic.</p>
+<p><a href="https://github.com/long-term-memory-structure/long-term-memory-structure">Long-Term Memory Structure</a> reads Claude Code transcripts across their compactions and prints an index of them. It is free and open source, under the MIT license.</p>
+<p>Long-Term Memory Structure is an independent project. It is not affiliated with or endorsed by Anthropic.</p>
 </footer>
 </div>
 </body>

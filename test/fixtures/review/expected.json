@@ -159,12 +159,12 @@
   "skeleton": {
    "code": 0,
    "out": "{\"k\":\"turn\",\"a\":\"pb-paral:L1\",\"ta\":\"pb-paral:T001\",\"ch\":\"typed\",\"n\":9}\n",
-   "err": "memobrain skeleton: warning: '<dir>/pb-parallel-cycle.jsonl': 4 records sit on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through them may be incomplete.\n"
+   "err": "ltms skeleton: warning: '<dir>/pb-parallel-cycle.jsonl': 4 records sit on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through them may be incomplete.\n"
   },
   "stats": {
    "code": 0,
    "out": "{\"session\":\"pb-paral\",\"turns\":1,\"prompts\":1,\"calls\":0,\"failures\":0,\"unanswered\":0,\"errorClasses\":{},\"retries\":0,\"detours\":0,\"maxHops\":0,\"hopsOver2\":0}\n",
-   "err": "memobrain stats: warning: '<dir>/pb-parallel-cycle.jsonl': 4 records sit on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through them may be incomplete.\n"
+   "err": "ltms stats: warning: '<dir>/pb-parallel-cycle.jsonl': 4 records sit on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through them may be incomplete.\n"
   }
  },
  "pb-parallel.jsonl": {
@@ -195,12 +195,12 @@
   "skeleton": {
    "code": 0,
    "out": "{\"k\":\"turn\",\"a\":\"pb-probl:L1\",\"ta\":\"pb-probl:T001\",\"ch\":\"typed\",\"n\":20}\n{\"k\":\"call\",\"a\":\"pb-probl:L3\",\"ta\":\"pb-probl:T001\",\"tool\":\"Bash\",\"verb\":\"make\",\"in\":\"bfc11414d9cb\",\"ok\":true,\"r\":\"pb-probl:L5\",\"out\":\"2689367b205c\",\"n\":2}\n",
-   "err": "memobrain skeleton: warning: '<dir>/pb-problems2.jsonl': 2 lines could not be read as a JSON object of at most 1,000 levels (first: line 2) and were skipped.\n"
+   "err": "ltms skeleton: warning: '<dir>/pb-problems2.jsonl': 2 lines could not be read as a JSON object of at most 1,000 levels (first: line 2) and were skipped.\n"
   },
   "stats": {
    "code": 0,
    "out": "{\"session\":\"pb-probl\",\"turns\":1,\"prompts\":1,\"calls\":1,\"failures\":0,\"unanswered\":0,\"errorClasses\":{},\"retries\":0,\"detours\":0,\"maxHops\":0,\"hopsOver2\":0}\n",
-   "err": "memobrain stats: warning: '<dir>/pb-problems2.jsonl': 2 lines could not be read as a JSON object of at most 1,000 levels (first: line 2) and were skipped.\n"
+   "err": "ltms stats: warning: '<dir>/pb-problems2.jsonl': 2 lines could not be read as a JSON object of at most 1,000 levels (first: line 2) and were skipped.\n"
   }
  },
  "pb-req-reuse.jsonl": {
@@ -243,12 +243,12 @@
   "skeleton": {
    "code": 0,
    "out": "{\"k\":\"turn\",\"a\":\"pb-selfl:L1\",\"ta\":\"pb-selfl:T001\",\"ch\":\"typed\",\"n\":13}\n{\"k\":\"call\",\"a\":\"pb-selfl:L2\",\"ta\":\"pb-selfl:T001\",\"tool\":\"Bash\",\"verb\":\"make\",\"in\":\"bfc11414d9cb\",\"ok\":true,\"r\":\"pb-selfl:L3\",\"out\":\"2689367b205c\",\"n\":2}\n",
-   "err": "memobrain skeleton: warning: '<dir>/pb-selfloop.jsonl': 1 record sits on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through it may be incomplete.\n"
+   "err": "ltms skeleton: warning: '<dir>/pb-selfloop.jsonl': 1 record sits on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through it may be incomplete.\n"
   },
   "stats": {
    "code": 0,
    "out": "{\"session\":\"pb-selfl\",\"turns\":1,\"prompts\":1,\"calls\":1,\"failures\":0,\"unanswered\":0,\"errorClasses\":{},\"retries\":0,\"detours\":0,\"maxHops\":0,\"hopsOver2\":0}\n",
-   "err": "memobrain stats: warning: '<dir>/pb-selfloop.jsonl': 1 record sits on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through it may be incomplete.\n"
+   "err": "ltms stats: warning: '<dir>/pb-selfloop.jsonl': 1 record sits on a parentUuid cycle or below one (following the parent links never reaches the start of the session), so the live path through it may be incomplete.\n"
   }
  },
  "pb-shape1-after.jsonl": {
@@ -327,24 +327,24 @@
   "skeleton": {
    "code": 0,
    "out": "",
-   "err": "memobrain skeleton: warning: '<dir>/pb-unknown6.jsonl' has no conversation records (no record carries both uuid and parentUuid; record types found: a, b, c, d, e, f), so it adds no lines. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.\n"
+   "err": "ltms skeleton: warning: '<dir>/pb-unknown6.jsonl' has no conversation records (no record carries both uuid and parentUuid; record types found: a, b, c, d, e, f), so it adds no lines. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.\n"
   },
   "stats": {
    "code": 0,
    "out": "{\"session\":\"pb-unkno\",\"turns\":0,\"prompts\":0,\"calls\":0,\"failures\":0,\"unanswered\":0,\"errorClasses\":{},\"retries\":0,\"detours\":0,\"maxHops\":0,\"hopsOver2\":0}\n",
-   "err": "memobrain stats: warning: '<dir>/pb-unknown6.jsonl' has no conversation records (no record carries both uuid and parentUuid; record types found: a, b, c, d, e, f), so its counts are 0. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.\n"
+   "err": "ltms stats: warning: '<dir>/pb-unknown6.jsonl' has no conversation records (no record carries both uuid and parentUuid; record types found: a, b, c, d, e, f), so its counts are 0. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.\n"
   }
  },
  "pb-unknown7.jsonl": {
   "skeleton": {
    "code": 0,
    "out": "",
-   "err": "memobrain skeleton: warning: '<dir>/pb-unknown7.jsonl' has no conversation records (no record carries both uuid and parentUuid; record types found: (none), (withheld), a, b, c, e, and 1 more), so it adds no lines. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.\n"
+   "err": "ltms skeleton: warning: '<dir>/pb-unknown7.jsonl' has no conversation records (no record carries both uuid and parentUuid; record types found: (none), (withheld), a, b, c, e, and 1 more), so it adds no lines. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.\n"
   },
   "stats": {
    "code": 0,
    "out": "{\"session\":\"pb-unkno\",\"turns\":0,\"prompts\":0,\"calls\":0,\"failures\":0,\"unanswered\":0,\"errorClasses\":{},\"retries\":0,\"detours\":0,\"maxHops\":0,\"hopsOver2\":0}\n",
-   "err": "memobrain stats: warning: '<dir>/pb-unknown7.jsonl' has no conversation records (no record carries both uuid and parentUuid; record types found: (none), (withheld), a, b, c, e, and 1 more), so its counts are 0. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.\n"
+   "err": "ltms stats: warning: '<dir>/pb-unknown7.jsonl' has no conversation records (no record carries both uuid and parentUuid; record types found: (none), (withheld), a, b, c, e, and 1 more), so its counts are 0. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.\n"
   }
  },
  "pb2-bash.jsonl": {

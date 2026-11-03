@@ -1,4 +1,4 @@
-// Tests for the memobrain command line, run against the built dist/cli.js (build first).
+// Tests for the ltms command line, run against the built dist/cli.js (build first).
 //
 // The fixtures are SYNTHETIC transcripts: hand-written records with invented text, in Claude
 // Code's record format. demo.jsonl is a short working session (three typed prompts, a task
@@ -9,7 +9,7 @@
 // skeleton line is recomputed here from the fixtures' raw records, without the parser, and
 // compared with the output byte for byte.
 //
-// MEMOBRAIN_CLI=<path to a cli.js> runs the same tests against another build.
+// LTMS_CLI=<path to a cli.js> runs the same tests against another build.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,7 +23,7 @@ import { constants } from 'node:buffer';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
-const CLI = process.env.MEMOBRAIN_CLI || join(root, 'dist', 'cli.js');
+const CLI = process.env.LTMS_CLI || join(root, 'dist', 'cli.js');
 const fixture = (name) => join(here, 'fixtures', name);
 const DEMO = fixture('demo.jsonl');
 const VARIETY = fixture('variety.jsonl');
@@ -189,14 +189,14 @@ const CASES = [
   { file: DEMO, sid: 'demo.jso', expected: DEMO_EXPECTED, minPayload: 56 },
   { file: VARIETY, sid: 'variety.', expected: VARIETY_EXPECTED, minPayload: 46 },
   { file: BRANCHED, sid: 'branched', expected: BRANCHED_EXPECTED, minPayload: 20,
-    stderr: /^memobrain skeleton: warning: '[^']*branched\.jsonl': 1 line could not be read as a JSON object of at most 1,000 levels \(first: line 12\) and was skipped\.\n$/ },
+    stderr: /^ltms skeleton: warning: '[^']*branched\.jsonl': 1 line could not be read as a JSON object of at most 1,000 levels \(first: line 12\) and was skipped\.\n$/ },
   { file: RETRIED, sid: 'retried.', expected: RETRIED_EXPECTED, minPayload: 10 },
   { file: EDGES, sid: 'edges.js', expected: EDGES_EXPECTED, minPayload: 13 },
   { file: AGENT, sid: 'agent-a0123456', expected: AGENT_EXPECTED, minPayload: 7 },
   { file: LABELS, sid: 'labels.j', expected: LABELS_EXPECTED, minPayload: 66 },
   { file: UNANSWERED, sid: 'unanswer', expected: UNANSWERED_EXPECTED, minPayload: 11 },
   { file: CYCLE, sid: 'cycle.js', expected: CYCLE_EXPECTED, minPayload: 8,
-    stderr: /^memobrain skeleton: warning: '[^']*cycle\.jsonl': 5 records sit on a parentUuid cycle or below one \(following the parent links never reaches the start of the session\), so the live path through them may be incomplete\.\n$/ },
+    stderr: /^ltms skeleton: warning: '[^']*cycle\.jsonl': 5 records sit on a parentUuid cycle or below one \(following the parent links never reaches the start of the session\), so the live path through them may be incomplete\.\n$/ },
   { file: RARE, sid: 'rare-sha', expected: RARE_EXPECTED, minPayload: 14 },
   // the second set: what the pre-publish review found (test/make-fixtures.mjs writes these files)
   { file: fixture('lexer.jsonl'), sid: 'lexer.js', minPayload: 30, expected: [{ k: 'turn', line: 1, ch: 'typed' },
@@ -219,7 +219,7 @@ const CASES = [
     { k: 'call', id: 'toolu_orphan_01', tool: 'Bash', verb: 'make' }] },
   ...[['cycle-stale.jsonl', 'cycle-st', [3]], ['cycle-logical.jsonl', 'cycle-lo', [1, 5]], ['cycle-head.jsonl', 'cycle-he', [1, 5]]].map(([name, sid, lines]) => ({
     file: fixture(name), sid, minPayload: 3, expected: lines.map((line) => ({ k: 'turn', line, ch: 'typed' })),
-    stderr: new RegExp(`^memobrain skeleton: warning: '[^']*${name.replace('.', '\\.')}': 2 records sit on a parentUuid cycle or below one`) })),
+    stderr: new RegExp(`^ltms skeleton: warning: '[^']*${name.replace('.', '\\.')}': 2 records sit on a parentUuid cycle or below one`) })),
   { file: fixture('content.jsonl'), sid: 'content.', minPayload: 5, expected: [{ k: 'turn', line: 1, ch: 'typed' },
     { k: 'call', id: 'toolu_content_01', tool: 'Read', verb: '.png' }, { k: 'call', id: 'toolu_content_02', tool: 'Read', verb: '.png' },
     { k: 'call', id: 'toolu_content_03', tool: 'Bash', verb: 'make' }, { k: 'call', id: 'toolu_content_04', tool: 'Bash', verb: 'make' }] },
@@ -404,7 +404,7 @@ test('two images hash apart; a result with no text has n 0', () => {
 });
 
 test('large and deep inputs end in time: 30,000 turns, a megabyte first line, 10,000-deep nesting, 130,000 children', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   const env = { isSidechain: false, userType: 'external', cwd: '/w', version: '2.0.0', gitBranch: 'main', entrypoint: 'cli', sessionId: 's' };
   const u = (i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
   const timed = (args, ms) => { const t0 = Date.now(); const r = run(...args); assert.equal(r.code, 0, r.err); assert.ok(Date.now() - t0 < ms, `${args[1]} took ${Date.now() - t0} ms`); return r; };
@@ -437,8 +437,8 @@ test('large and deep inputs end in time: 30,000 turns, a megabyte first line, 10
 test('stats: known answers', () => {
   const r = run('stats', DEMO, VARIETY, BRANCHED, RETRIED, EDGES, AGENT, LABELS, UNANSWERED, CYCLE, RARE);
   assert.equal(r.code, 0);
-  assert.match(r.err, /^memobrain stats: warning: '[^']*branched\.jsonl': 1 line could not be read/);
-  assert.match(r.err, /\nmemobrain stats: warning: '[^']*cycle\.jsonl': 5 records sit on a parentUuid cycle/);
+  assert.match(r.err, /^ltms stats: warning: '[^']*branched\.jsonl': 1 line could not be read/);
+  assert.match(r.err, /\nltms stats: warning: '[^']*cycle\.jsonl': 5 records sit on a parentUuid cycle/);
   assert.equal(nonEmpty(r.err).length, 2);
   const none = { failures: 0, unanswered: 0, errorClasses: {}, retries: 0, detours: 0, maxHops: 0, hopsOver2: 0 };
   assert.equal(r.out, [
@@ -552,7 +552,7 @@ test('withheld values: nothing that only label-shaped fields could carry reaches
 
 test('README: no part of it appears twice (a duplicated block once hid inside a list item)', () => {
   const readme = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'README.md'), 'utf8');
-  assert.equal(readme.match(/^# memobrain$/gm)?.length, 1, 'the title appears more than once');
+  assert.equal(readme.match(/^# Long-Term Memory Structure$/gm)?.length, 1, 'the title appears more than once');
   const seen = new Map();
   readme.split('\n').forEach((line, i) => {
     if (line.length < 60) return;
@@ -566,7 +566,7 @@ test('README: every row of the table in "The Bash verb" is what the build prints
   const section = readme.slice(readme.indexOf('### The Bash verb'), readme.indexOf('## What it reads'));
   const rows = [...section.matchAll(/^\| `(.+?)` \| `(.+?)` /gm)].map(([, cmd, verb]) => [cmd.replaceAll('\\|', '|'), verb]);
   assert.ok(rows.length >= 10, `only ${rows.length} rows were read from the README`);
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-readme-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-readme-'));
   try {
     const lines = [JSON.stringify({ type: 'user', uuid: 'u', parentUuid: null, promptSource: 'typed', message: { role: 'user', content: 'the README examples' } })];
     let parent = 'u';
@@ -607,7 +607,7 @@ test('a file with no conversation records: the warning names its record types, e
 });
 
 test('crafted shapes end in time and keep their counts: forked parallel calls, a long late branch, one request id on every turn, values nested deep', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-crafted-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-crafted-'));
   const timed = (args, ms) => { const t0 = Date.now(); const r = run(...args); assert.equal(r.code, 0, r.err); assert.ok(Date.now() - t0 < ms, `${args[1]} took ${Date.now() - t0} ms`); return r; };
   const rec = (o) => JSON.stringify({ isSidechain: false, userType: 'external', cwd: '/w', version: '2.0.0', sessionId: 's', ...o });
   const use = (id, cmd) => ({ role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command: cmd } }] });
@@ -683,7 +683,7 @@ test('a file that cannot be read: exit 1, the file named, the other files still 
   const missing = fixture('no-such-file.jsonl');
   const r = run('stats', missing, DEMO);
   assert.equal(r.code, 1);
-  assert.match(r.err, new RegExp(`memobrain stats: cannot read '${escapeRe(missing)}': no such file or directory`));
+  assert.match(r.err, new RegExp(`ltms stats: cannot read '${escapeRe(missing)}': no such file or directory`));
   assert.match(r.err, /~\/\.claude\/projects\/<project>\/<session>\.jsonl/);
   assert.match(r.err, /1 of 2 files done; 1 failed/);
   assert.deepEqual(parsed(r.out).map((o) => o.session), ['demo.jso']);
@@ -694,19 +694,19 @@ test('a directory is named as one, with the command to run instead', () => {
   const r = run('skeleton', dir);
   assert.equal(r.code, 1);
   assert.equal(r.out, '');
-  assert.match(r.err, new RegExp(`'${escapeRe(dir)}' is a directory.*memobrain skeleton ${escapeRe(dir)}/\\*\\.jsonl`));
+  assert.match(r.err, new RegExp(`'${escapeRe(dir)}' is a directory.*ltms skeleton ${escapeRe(dir)}/\\*\\.jsonl`));
 });
 
 test('a file without read permission: exit 1, the command that shows its permissions, the other files processed', (t) => {
   if (process.getuid?.() === 0) { t.skip('running as root, which can read any file'); return; }
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   const file = join(dir, 'locked.jsonl');
   writeFileSync(file, readFileSync(DEMO));
   chmodSync(file, 0o000);
   try {
     const r = run('stats', file, DEMO);
     assert.equal(r.code, 1);
-    assert.match(r.err, new RegExp(`memobrain stats: cannot read '${escapeRe(file)}': permission denied\\. Check its permissions with: ls -l '${escapeRe(file)}'`));
+    assert.match(r.err, new RegExp(`ltms stats: cannot read '${escapeRe(file)}': permission denied\\. Check its permissions with: ls -l '${escapeRe(file)}'`));
     assert.match(r.err, /1 of 2 files done; 1 failed/);
     assert.deepEqual(parsed(r.out).map((o) => o.session), ['demo.jso']);
   } finally { chmodSync(file, 0o600); rmSync(dir, { recursive: true, force: true }); }
@@ -715,7 +715,7 @@ test('a file without read permission: exit 1, the command that shows its permiss
 test('a file too large to load as one string: exit 1, the limit named, the other files processed', (t) => {
   const size = constants.MAX_STRING_LENGTH + 1;
   if (freemem() < 2 * size) { t.skip(`needs about ${Math.ceil((2 * size) / 2 ** 20)} MB of free memory`); return; }
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   const file = join(dir, 'huge.jsonl');
   try {
     const fd = openSync(file, 'w'); ftruncateSync(fd, size); closeSync(fd);   // sparse: nothing is written to disk
@@ -739,11 +739,11 @@ test('a reader that closes the pipe early: exit 0, nothing on stderr', async () 
 
 test('usage errors: exit 2, nothing on stdout, the message names the input and the fix', () => {
   const cases = [
-    { args: [], message: /^memobrain: no command given\.\n\nUsage:\n {2}memobrain skeleton <file\.jsonl>/ },
+    { args: [], message: /^ltms: no command given\.\n\nUsage:\n {2}ltms skeleton <file\.jsonl>/ },
     { args: ['skelton', DEMO], message: /unknown command 'skelton'\. The commands are skeleton and stats/ },
     { args: ['--frobnicate'], message: /unknown option '--frobnicate'\. The options are --help and --version/ },
-    { args: ['stats'], message: /memobrain stats: no input files\. Pass one or more transcripts, e\.g\. memobrain stats ~\/\.claude/ },
-    { args: ['stats', '--summary', DEMO], message: /memobrain stats: unknown option '--summary'.*put -- before a file name/ },
+    { args: ['stats'], message: /ltms stats: no input files\. Pass one or more transcripts, e\.g\. ltms stats ~\/\.claude/ },
+    { args: ['stats', '--summary', DEMO], message: /ltms stats: unknown option '--summary'.*put -- before a file name/ },
     { args: ['skeleton', '-'], message: /reading from standard input \('-'\) is not supported/ },
   ];
   for (const { args, message } of cases) {
@@ -799,7 +799,8 @@ test('README: its example lines are what the commands print, and it describes ev
 test('the package: a shebang, no runtime dependencies, nothing imported but node: built-ins', () => {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   assert.equal(pkg.dependencies, undefined);
-  assert.equal(pkg.bin.memobrain, 'dist/cli.js');
+  assert.equal(pkg.bin.ltms, 'dist/cli.js');
+  assert.equal(pkg.bin['long-term-memory-structure'], 'dist/cli.js');
   assert.ok(readFileSync(CLI, 'utf8').startsWith('#!/usr/bin/env node\n'));
   for (const f of ['cli.js', 'parser.js']) {
     const src = readFileSync(join(dirname(CLI), f), 'utf8');
@@ -820,7 +821,7 @@ const sessionEnv = { isSidechain: false, userType: 'external', cwd: '/w', versio
 const uuidOf = (i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
 
 test('a toString or valueOf key written with a JSON escape cannot stop the file, in any field (review 4, P4-1)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   const PLACE = '@@crafted-object@@';
   // a session of one call; each case puts the crafted object in one of the places the review found it stopped a file
   const session = () => ({
@@ -875,7 +876,7 @@ test('the library: a line repaired by stripping NUL bytes is checked for depth a
 });
 
 test('a hook block whose bracketed command is longer than 300 characters is still a hook-block, with no name (review 4, O8)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     const block = `PreToolUse:Bash hook error: [bash /x/demo-gate.sh ${'a'.repeat(290)}]: invented reason`;
     const lines = [
@@ -890,7 +891,7 @@ test('a hook block whose bracketed command is longer than 300 characters is stil
 });
 
 test('a hook name needs exactly one word with a script extension, whatever the other word is made of (review 5, D5-8)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     const cases = [['[/h/a.sh /h/b+c.sh]', 'hook-block'], ['[/h/b+c.sh]', 'hook-block'], ['[bash /x/one-gate.sh --strict]', 'hook-block:one-gate'], ['[/h/a.sh /h/a.sh]', 'hook-block']];
     const lines = [{ parentUuid: null, ...sessionEnv, type: 'user', promptSource: 'typed', message: { role: 'user', content: 'go' }, uuid: uuidOf(1) }];
@@ -905,8 +906,8 @@ test('a hook name needs exactly one word with a script extension, whatever the o
 });
 
 test('a value too large to write as JSON prints (too large), with a warning, and the rest of the file is read (review 4, P4-2)',
-  { skip: !process.env.MEMOBRAIN_HEAVY && 'set MEMOBRAIN_HEAVY=1 to run: it writes a file of about 125 MB and needs about 3 GB of memory' }, () => {
-    const dir = mkdtempSync(join(tmpdir(), 'memobrain-heavy-'));
+  { skip: !process.env.LTMS_HEAVY && 'set LTMS_HEAVY=1 to run: it writes a file of about 125 MB and needs about 3 GB of memory' }, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ltms-heavy-'));
     try {
       // 1e20 is 4 characters in the file and 21 digits when JSON.stringify writes it: enough of them pass the string limit
       const count = Math.ceil(constants.MAX_STRING_LENGTH / 22) + 1000;
@@ -956,7 +957,7 @@ test('a value too large to write as JSON prints (too large), with a warning, and
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-test('README: it opens with why memobrain exists, compaction, then what it prints', () => {
+test('README: it opens with why ltms exists, compaction, then what it prints', () => {
   const opening = README_TEXT().split('\n\n')[1];
   assert.match(opening, /compact/i, 'the first paragraph does not name compaction');
 });
@@ -1001,7 +1002,7 @@ function hookFile(dir, cases) {
 }
 
 test('a script word in quotes or before punctuation still counts, so a quoted hook and its argument give a plain hook-block (review 6, D6-2)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     const cases = [['[bash "/h/b.sh" /h/a.sh]'], ["[bash '/h/b.sh' /h/a.sh]"], ['[/h/b.sh; /h/a.sh]'], ['[/h/b.sh) /h/a.sh]'], ['[/h/b.sh| /h/a.sh]'], ["[/h/b.sh' /h/a.sh]"], ['[bash `/h/b.sh` /h/a.sh]']];
     assert.deepEqual(parsed(run('skeleton', hookFile(dir, cases)).out).filter((o) => o.k === 'call').map((o) => o.ek), cases.map(() => 'hook-block'));
@@ -1009,7 +1010,7 @@ test('a script word in quotes or before punctuation still counts, so a quoted ho
 });
 
 test('a hook is named only from the command itself or the word right after an interpreter; an argument is never named (review 4, P4-5)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     const cases = [
       ['[/h/bin/guard /data/ZQH07.py]', 'hook-block'],                    // the command has no extension; the one script word is its argument
@@ -1076,8 +1077,8 @@ test('the library: a census key, a tool id, a record uuid, a timestamp or a type
 });
 
 test('every value that once stopped a file through the parser is read past: eight routes and the late record\'s type (review 6, D6-1)',
-  { skip: !process.env.MEMOBRAIN_HEAVY && 'set MEMOBRAIN_HEAVY=1 to run: it writes nine files of about 125 MB, one at a time, and needs about 3 GB of memory' }, () => {
-    const dir = mkdtempSync(join(tmpdir(), 'memobrain-heavy-'));
+  { skip: !process.env.LTMS_HEAVY && 'set LTMS_HEAVY=1 to run: it writes nine files of about 125 MB, one at a time, and needs about 3 GB of memory' }, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ltms-heavy-'));
     try {
       const count = Math.ceil(constants.MAX_STRING_LENGTH / 22) + 1000;
       const J = (o) => JSON.stringify(o);
@@ -1123,7 +1124,7 @@ test('every value that once stopped a file through the parser is read past: eigh
   });
 
 test('thousands of compaction boundaries, or of orphans bridged in file order, are joined in linear time (review 6, L6-1)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     const N = 20000;
     const boundaries = [];
@@ -1149,7 +1150,7 @@ test('thousands of compaction boundaries, or of orphans bridged in file order, a
 });
 
 test('an internal error is reported by its kind and place only: no part of its message reaches stderr (review 6, P6-5)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     // a stand-in for a future bug whose message quotes the transcript: preloaded, it throws from inside the parser
     const hook = join(dir, 'throw.mjs');
@@ -1186,7 +1187,7 @@ test('--version and -v after a command print the version, as --help does there (
 });
 
 test('records of one response with no requestId and no string message.id are grouped by their parent links, with a warning (review 4, O9)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     const base = readFileSync(fixture('parallel-msgid.jsonl'), 'utf8');
     for (const [name, id1, id2] of [['numbers', '123', '456'], ['objects', '{"toString":1,"valueOf":2}', '{"toString":3}']]) {
@@ -1202,7 +1203,7 @@ test('records of one response with no requestId and no string message.id are gro
 });
 
 test('the linear join keeps what the quadratic one did: a bridge passes over nodes already on the path, and joins are listed earliest first (review 6, L6-1)', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     // a record written before its own parent, which is an orphan: the node just before the orphan in the file is
     // already on the path, so the bridge must pass over it to the one before
@@ -1253,7 +1254,7 @@ test('a DETACHED compaction (CLI 2.1.295, 2.1.300): the boundary and its summary
     [['detached', 'b', 'a1', 'c', 'manual', 12000]]);
   // the skeleton's lines do not change: neither the boundary (a system record) nor the summary (harness:compact-summary)
   // is a turn or a call, so the repair shows in the library's path and joins, not in the CLI's output
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     writeFileSync(join(dir, 'detached.jsonl'), text);
     assert.deepEqual(parsed(run('skeleton', join(dir, 'detached.jsonl')).out).map((o) => [o.k, o.a]), [['turn', 'detached:L1'], ['turn', 'detached:L5'], ['turn', 'detached:L7']]);
@@ -1261,7 +1262,7 @@ test('a DETACHED compaction (CLI 2.1.295, 2.1.300): the boundary and its summary
 });
 
 test('a boundary whose logical parent is already on the live path is not joined again: no turn is printed twice (review 6, L6-1)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     // a record written before its own boundary, and the boundary's logicalParentUuid pointing back at it: the
     // record is on the path already when the boundary is reached, so there is nothing to join
@@ -1277,7 +1278,7 @@ test('a boundary whose logical parent is already on the live path is not joined 
 });
 
 test('a bad line is reported by its count and its first line number only: no part of any kind of bad line reaches stderr (review 6, P6-5)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     const NUL = String.fromCharCode(0);
     const good = JSON.stringify({ parentUuid: null, ...sessionEnv, type: 'user', promptSource: 'typed', message: { role: 'user', content: 'go' }, uuid: uuidOf(1) });
@@ -1299,10 +1300,10 @@ test('a bad line is reported by its count and its first line number only: no par
 });
 
 test('an internal error whose message runs over several lines cannot pass a line of it off as the place (review 7, N7-1)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'memobrain-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
     // the message holds lines shaped like stack frames, as a future bug quoting the transcript could: one with a ZQX
-    // file, one naming memobrain's own parser.js at a line number no real frame has
+    // file, one naming ltms's own parser.js at a line number no real frame has
     const hook = join(dir, 'throw.js');   // a .js file of someone else's on top of the stack: it must not be named either
     writeFileSync(hook, "const orig = String.prototype.trimStart;\nString.prototype.trimStart = function () { if (this.includes('ZQXCRASH')) throw new TypeError('quoted\\n    at ZQXFN (/x/ZQXFILE.js:12:34)\\n    at q (/x/parser.js:987654:1)\\nZQXWORD.js:56:78'); return orig.call(this); };\n");
     const f = join(dir, 'crash.jsonl');
