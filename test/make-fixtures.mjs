@@ -1,6 +1,7 @@
 // Writes the generated test fixtures (each is introduced by a comment below: labels, unanswered, cycle, rare-shapes,
 // journal-launched, lexer, labels2, errors, parallel, compacted, stale-head, retried3, orphan-first, the cycle-* three,
-// content, parallel-msgid, request-two-turns, errors2, unicode, parallel-fail, api-request-records, types-only).
+// content, parallel-msgid, request-two-turns, errors2, unicode, parallel-fail, api-request-records, types-only,
+// passed-over, nul-padding).
 // Every string in them is invented; the record format follows the hand-written
 // fixtures (edges.jsonl). The output is the same on every run.
 //
@@ -569,3 +570,60 @@ writeFileSync(join(DIR, 'types-only.jsonl'), [
   JSON.stringify({ type: 'an invented free text type ZQXW01', note: 'an invented note' }),
   JSON.stringify({ type: 'summary', summary: 'an invented summary line' }),
 ].join('\n') + '\n');
+
+// passed-over.jsonl: the Bash verb at its limit. Every call runs the same program after a preamble of commands the verb
+// reader passes over: after 15 of them the verb is the program, after 16 it is (withheld) (the README: "more than 15
+// commands passed over"). The first two calls mix the kinds (cd DIR, then NAME=value lines). Then, for each separator
+// the README names (a new line, ';' and '&&') and each kind of command passed over (cd DIR, a command of one
+// assignment, a command of two), a pair of calls, 15 commands and 16: the limit counts commands, whatever ends them and
+// however many words each holds.
+{
+  const f = file('passed-over.jsonl', '0f1e2d3c-4b5a-4968-8776-655443322110', 'eb000000');
+  const preamble = (k) => ['cd /work/demo-project', ...Array.from({ length: k - 1 }, (_, i) => `DEMO_STEP_${String(i + 1).padStart(2, '0')}=on`)];
+  const separators = [['a new line', '\n'], ['a semicolon', '; '], ['&&', ' && ']];
+  const kinds = [
+    ['cd DIR', (nn) => `cd /work/demo-project/step-${nn}`],
+    ['one assignment', (nn) => `DEMO_STEP_${nn}=on`],
+    ['two assignments', (nn) => `DEMO_STEP_${nn}=on DEMO_MODE_${nn}=off`],
+  ];
+  f.prompt('Build the invented demo after each preamble.', { promptSource: 'typed' });
+  let calls = 0;
+  const call = (command, what) => {
+    const id = `toolu_passed_${String(++calls).padStart(2, '0')}`;
+    f.use(id, 'Bash', { command });
+    f.result(id, `invented build output after ${what}`);
+  };
+  [15, 16].forEach((k) => call([...preamble(k), 'make demo'].join('\n'), `${k} commands passed over`));
+  for (const [sepName, sep] of separators) for (const [kindName, kind] of kinds) for (const k of [15, 16]) {
+    const commands = Array.from({ length: k }, (_, i) => kind(String(i + 1).padStart(2, '0')));
+    call([...commands, 'make demo'].join(sep), `${k} commands passed over, each of ${kindName}, each followed by ${sepName}`);
+  }
+  f.text('Every invented build ran.');
+  f.leaf('Build the invented demo after each preamble.');
+  f.write();
+}
+
+// nul-padding.jsonl: the shapes of NUL padding the parser knows: a line of NUL bytes only (line 3), a record with a run
+// of NUL bytes before it (line 4, the first call's result), NUL bytes with blanks between them (line 5), a record
+// between two runs of NUL bytes (line 7, the second call's result) and a JSON array behind NUL bytes (line 8). ltms
+// parses without repairNul, so it skips all five lines and says so on stderr; the library, given repairNul, reports
+// lines 3 and 5 as padding, recovers lines 4 and 7, each reported as repaired, and reports line 8 once, as not an
+// object. The NUL byte and the tab are built, not typed: an editor can turn a typed escape into the byte it names.
+{
+  const sid = '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', e = env(sid);
+  const u = (k) => `ec000000-0000-4000-8000-${String(k).padStart(12, '0')}`;
+  const NUL = String.fromCharCode(0), TAB = String.fromCharCode(9);
+  writeFileSync(join(DIR, 'nul-padding.jsonl'), [
+    JSON.stringify({ parentUuid: null, ...e, type: 'user', message: { role: 'user', content: 'Build the invented demo once more.' }, uuid: u(1), timestamp: '2026-08-01T14:00:00.000Z', promptSource: 'typed' }),
+    JSON.stringify({ parentUuid: u(1), ...e, type: 'assistant', message: { id: 'msg_nul_01', type: 'message', role: 'assistant', model: 'claude-demo-model', content: [{ type: 'tool_use', id: 'toolu_nul_01', name: 'Bash', input: { command: 'make demo' } }], stop_reason: 'tool_use', usage: { input_tokens: 10, output_tokens: 20 } }, requestId: 'req_nul_01', uuid: u(2), timestamp: '2026-08-01T14:00:02.000Z' }),
+    NUL.repeat(64),
+    NUL.repeat(32) + JSON.stringify({ parentUuid: u(2), ...e, type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_nul_01', type: 'tool_result', content: 'ZQXV01 the invented build output, written after NUL bytes', is_error: false }] }, uuid: u(3), timestamp: '2026-08-01T14:00:04.000Z',
+      toolUseResult: { stdout: 'ZQXV02 invented standard output', stderr: '', interrupted: false, isImage: false }, sourceToolAssistantUUID: u(2) }),
+    NUL.repeat(16) + ' ' + TAB + ' ' + NUL.repeat(16),
+    JSON.stringify({ parentUuid: u(3), ...e, type: 'assistant', message: { id: 'msg_nul_02', type: 'message', role: 'assistant', model: 'claude-demo-model', content: [{ type: 'tool_use', id: 'toolu_nul_02', name: 'Bash', input: { command: 'make check' } }], stop_reason: 'tool_use', usage: { input_tokens: 10, output_tokens: 20 } }, requestId: 'req_nul_02', uuid: u(4), timestamp: '2026-08-01T14:00:06.000Z' }),
+    NUL.repeat(16) + JSON.stringify({ parentUuid: u(4), ...e, type: 'user', message: { role: 'user', content: [{ tool_use_id: 'toolu_nul_02', type: 'tool_result', content: 'ZQXV03 the invented check output, written between NUL bytes', is_error: false }] }, uuid: u(5), timestamp: '2026-08-01T14:00:08.000Z',
+      toolUseResult: { stdout: 'ZQXV04 invented check output', stderr: '', interrupted: false, isImage: false }, sourceToolAssistantUUID: u(4) }) + NUL.repeat(16),
+    NUL.repeat(8) + JSON.stringify(['ZQXV05 an invented array behind NUL bytes']),
+    JSON.stringify({ type: 'last-prompt', lastPrompt: 'Build the invented demo once more.', leafUuid: u(5), sessionId: sid }),
+  ].join('\n') + '\n');
+}

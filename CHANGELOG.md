@@ -1,5 +1,12 @@
 # Changes
 
+## 0.0.5
+
+- The README has a new first section, Intent and tradeoffs: the intent of the design, its scope, and its objectives with the price of each.
+- The README says that every call reads all of the context window again, where it said that every call re-sends it.
+- The README says that `ok` is the status of the call as a whole: for a Bash command of several parts, the status the shell returned for the whole command (in `a; b`, that of `b`), so a part that failed before the last can read `true` (what it printed, if anything, is at the call's `r` address); and that for a command run in the background it is the status of its launch.
+- Tests: the Bash verb at its limit (the program after 15 commands passed over, `(withheld)` after 16) for each separator the README names (a new line, `;`, `&&`) and each kind of command passed over (`cd DIR`, a command of assignments only); and the library's NUL repair, reachable only through its `repairNul` option, since the command does not set it (ltms skips a line holding NUL bytes and counts it on stderr).
+
 ## 0.0.4
 
 - The name: the package is now `long-term-memory-structure`, published until 0.0.3 as `memobrain`. The command is `ltms`, and `npx long-term-memory-structure` runs it without installing. Messages on stderr start with `ltms` where they started with `memobrain` (`ltms skeleton: warning: ...`), and the usage text and `--help` name `ltms`. No output field changed. The repository is `long-term-memory-structure/long-term-memory-structure`; the test suite's variables are `LTMS_HEAVY` and `LTMS_CLI`.

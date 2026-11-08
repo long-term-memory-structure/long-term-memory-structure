@@ -10,9 +10,41 @@ Long-Term Memory Structure is an independent project. It is not affiliated with 
 
 Formerly published as `memobrain`.
 
+## Intent and tradeoffs
+
+The objective of this tool is to provide support, a dependency sub-system of the operation of a SINGLE privately scoped persistent substrate longitudinally across time, with a small fixed budget cost and minimal variable costs per query. We don't assume the value of a memory fragment until we need to retrieve it, if at all in some distant future.
+
+**What it leaves to you, and what it sits beside:**
+- It does not include an identity (disposition) layer. Bring your own: ltms indexes the record, not the self.
+- It is orthogonal to a shared brain in any configuration (a swarm, a company brain). Whatever a shared brain is, it reaches this record only as what the agent read from it, and nothing in this record reaches it except what the agent chose to send.
+
+**The objectives of the design as a whole, and what each one costs** (this package is its first piece, the index of a transcript):
+
+1. **Monotonically rising, append-only, heal by addition ⟹ data structure L0.**
+   *Costs:* the store only grows. A mistake is corrected by a new record, never erased, so it stays visible beside its correction. Anything sensitive that was written stays written.
+2. **Preserve structure and sequence ⟹ the compaction JSONL: walk the tree backwards.**
+   *Costs:* the index depends on the harness's transcript format, which changes between versions. It carries one path through the tree, the one the session ended on, in its order, not a bag of facts.
+3. **Cryptographically verifiable and recomputable ⟹ Merkle root hashes, etc.**
+   *Costs:* the bytes are kept exactly as written, with no reformatting and no lossy compression. A correction is a new record, never an edit.
+4. **Automatic write sequence, independent of the model.**
+   *Costs:* everything is written, noise included. The write path is tied to the harness's hooks and files.
+   *Declined:* a model that decides what is worth saving. It would price every fragment before anyone has asked for it.
+5. **Expose the substrate to the active context window through a small CLI "lens".** Retrieval and attention compete for the same budget, in a zero-sum game. A monotonically rising, append-only scheme would invariably reach a critical failure point, where retrieval crowds reasoning out of the active window. Grep and ack don't scale well. The solution is a CLI tool that exposes a search surface, the "lens", at a small fixed cost (a few thousand tokens), and keeps the variable cost of each query low through LSP, AST, etc.
+   *Costs:* a fixed cost in every session, even when memory is not needed. The agent must ask well: a search answers only the questions it already thought to ask.
+6. **Restrict summarization to the active writer at write time ⟹ the window lifecycle, `<recap></recap>`.** Disposition and behavioral modification are limited in scope: the necessary proprioception, and a skill for using ltms.
+   *Costs:* a summary exists only if the writer wrote it in the moment, and what is written hot is not therefore true. Nobody fills the gaps later.
+   *Declined:* background summaries by another model, which put a second voice into the memory under one name.
+7. **A shared surface and ground truth for the user and the agent ⟹ GUI.**
+   *Costs:* a GUI to build and maintain, and no private view for the agent.
+8. **Offline audit capabilities that don't depend on agentic workflows ⟹ raw DAG, GUI.**
+   *Costs:* plain, documented formats; the audit is a person's work.
+9. **Existence is never priced; residence is ruled ⟹ an address in the store for every fragment, hot context for a few.** Every fragment keeps its address in the store, whatever it may be worth; nothing is deleted to make room. Hot context is a small view of the store: a permanent part, loaded into every session, and a part that follows the work at hand. What sits in it is a ruling: at a point in the window's lifecycle, the active writer demotes a line from hot context, and its address still leads to it. Nobody re-reads the store to decide what comes back.
+   *Costs:* the active writer must rule, at those points, on what stays hot. What was demoted is found only when someone asks for it.
+   *Declined:* a background model that retires fragments on its own schedule, deciding in one step both what is kept and what is hot.
+
 ## Why this exists
 
-A context window keeps nothing between sessions, and every call re-sends all of it, so an agent pays again and again for everything it carries, and models do worse as it grows: context rot (Hong et al. 2025). This project is built around that budget: memory for one long-lived agent, with a small fixed cost in every session (an index of about 9,000 tokens, read from cache) and as little as possible per question: a surgical search, through a language server or a syntax tree, that reads one address (a line of a transcript, a symbol) rather than whole files.
+A context window keeps nothing between sessions, and every call reads all of it again, so an agent pays again and again for everything it carries, and models do worse as it grows: context rot (Hong et al. 2025). This project is built around that budget: memory for one long-lived agent, with a small fixed cost in every session (an index of about 9,000 tokens, read from cache) and as little as possible per question: a surgical search, through a language server or a syntax tree, that reads one address (a line of a transcript, a symbol) rather than whole files.
 
 One popular approach is a shared "company brain" for a swarm of agents. This is something else: persistence for a single agent. The design and its measurements are in the report *Durable Memory on a Fixed Context Budget* (Ben Yanai 2026). This package is the first piece released: the index of a transcript.
 
@@ -61,7 +93,7 @@ An address such as `demo.jso:L22` means line 22 of the file whose name starts wi
 | `tool` | call | tool name |
 | `verb` | call | a short label. For Bash, the program the command runs, read by the rule in [The Bash verb](#the-bash-verb) below; `(withheld)` when that rule cannot be sure, and `(empty)` when nothing runs or the call has no command. For Read, Edit, Write and NotebookEdit, the file's extension (its name when it has none; `(none)` when there is no path, or it ends in `/`). For Agent and Task, the subagent type (`agent` when the call names none); for Skill, the skill name (`skill` when it names none); for other tools, the tool's name |
 | `in` | call | sha256 of the input as JavaScript's `JSON.stringify` writes it (keys that are whole numbers up to 4294967294 first, in ascending order, then the others in the transcript's order; a missing input counts as `{}`), first 12 hex characters; `(too large)` when the input, written as JSON, would pass JavaScript's limit on a string's length (a warning says so) |
-| `ok` | call | `true` when the call succeeded; `false` when it failed (its result is marked `is_error`, or Claude Code wrote the error as a string in `toolUseResult`); `null` when no result was recorded (the session ended, or the file was cut, before the call returned, or the call was still running when the file was read, as the call that runs ltms on its own session is) |
+| `ok` | call | `true` when the call succeeded; `false` when it failed (its result is marked `is_error`, or Claude Code wrote the error as a string in `toolUseResult`); `null` when no result was recorded (the session ended, or the file was cut, before the call returned, or the call was still running when the file was read, as the call that runs ltms on its own session is). The status of the call as a whole: for a Bash command of several parts, the one the shell returned for the whole command (in `a; b`, that of `b`), so a part that failed before the last can read `true`, and what it printed, if anything, is in the result's text at the call's `r` address; for a command run in the background, the status of its launch, its exit coming later in another record |
 | `ek` | call | only on a failed call, its error class, from the result's first line: `exit-<code>` (a leading `Exit code N`, up to 3 digits; read first, so a command's own output cannot change it), `hook-block:<hook script name>` and `hook-block` (only in Claude Code's own format, `PreToolUse:<tool> hook error: [<command>]`; the name is the last part of the path of the one word in the brackets that ends in a script extension (`.sh` `.bash` `.py` `.js` `.mjs` `.cjs` `.ts` `.rb` `.pl`, lower case; quotes and punctuation around a word are not part of it), cut at the extension, and it is printed only when that word is the command itself or comes right after an interpreter (`node` or `nodejs`, `deno`, `bun`, `python`, `python3` or another Python version such as `python3.12`, `bash`, `sh`, `zsh`, `dash`, `ksh`, `ruby`, `perl`, `tsx`, `ts-node`), after any leading `env` (with `-i`) and `NAME=value` words (`bash /x/gate.sh` is how a hook's command is usually written), and the name is made of ASCII letters, digits, `_`, `.` and `-` and is at most 48 characters long; when two or more words end in a script extension, or the one such word stands anywhere else (an argument, an option's value, an assignment), or the name does not qualify, or the bracket is longer than 300 characters, the class is a plain `hook-block`), `no-anchor` (Edit's text was not found), `not-read`, `bad-input`, `denied`, `other` |
 | `r` | call | address of the result, or `null` when none was recorded |
 | `out` | call | sha256 of the result text (its UTF-8 bytes; blocks joined as for `n`), first 12 hex characters; of the whole result as JSON when it holds anything but text (an image), with `(too large)` as for `in`; `null` when no result was recorded |
@@ -144,7 +176,7 @@ Exit status: 0 when every file was processed, 1 when a file could not be read or
 
 ## Status
 
-Version 0.0.4. Early: the output format may change between versions.
+Version 0.0.5. Early: the output format may change between versions.
 
 ## Development
 

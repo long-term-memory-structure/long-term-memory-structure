@@ -237,6 +237,14 @@ const CASES = [
   // the records Claude Code 2.1.300 began to write beside the conversation: passed over, nothing in them printed
   { file: fixture('api-request-records.jsonl'), sid: 'api-requ', minPayload: 5, expected: [{ k: 'turn', line: 1, ch: 'typed' },
     { k: 'call', id: 'toolu_reqrec_01', tool: 'Bash', verb: 'npm' }] },
+  // the Bash verb at its limit (calls 3 to 20: 15 commands, then 16, of one kind each, for each separator); NUL padding,
+  // which ltms skips (the library's repair is read in a test below)
+  { file: fixture('passed-over.jsonl'), sid: 'passed-o', minPayload: 45, expected: [{ k: 'turn', line: 1, ch: 'typed' },
+    { k: 'call', id: 'toolu_passed_01', tool: 'Bash', verb: 'make' }, { k: 'call', id: 'toolu_passed_02', tool: 'Bash', verb: W },
+    ...Array.from({ length: 18 }, (_, i) => ({ k: 'call', id: `toolu_passed_${pad2(i + 3)}`, tool: 'Bash', verb: i % 2 ? W : 'make' }))] },
+  { file: fixture('nul-padding.jsonl'), sid: 'nul-padd', minPayload: 5, expected: [{ k: 'turn', line: 1, ch: 'typed' },
+    { k: 'call', id: 'toolu_nul_01', tool: 'Bash', verb: 'make', unanswered: true }, { k: 'call', id: 'toolu_nul_02', tool: 'Bash', verb: 'make', unanswered: true }],
+    stderr: /^ltms skeleton: warning: '[^']*nul-padding\.jsonl': 5 lines could not be read as a JSON object of at most 1,000 levels \(first: line 3\) and were skipped\.\n$/ },
 ];
 
 /** Every field of every expected line, computed from the raw records. */
@@ -1322,4 +1330,112 @@ test('README: its Status names the version in package.json, and the interpreter 
     assert.match(text, /nodejs/, `${where} does not name nodejs`);
     assert.match(text, /python3/, `${where} does not name python3`);
   }
+});
+
+// ---- two documented behaviours no test had reached: the Bash verb's limit, and NUL padding -----
+
+test('the Bash verb at its limit: after 15 commands passed over it is the program, after 16 it is (withheld), the limit the README and --help state, for each kind of command passed over and each separator', () => {
+  // the documented limit, from both texts (--help is cut at 80 columns: blanks are collapsed before matching)
+  const limits = [['README', README_TEXT()], ['--help', run('--help').out]].map(([where, text]) => {
+    const m = /more than (\d+) commands passed over/.exec(text.replace(/\s+/g, ' '));
+    assert.ok(m, `${where} does not state how many commands may be passed over`);
+    return Number(m[1]);
+  });
+  assert.equal(limits[0], limits[1], `the README says ${limits[0]}, --help says ${limits[1]}`);
+  // the fixture is what it says: each command is a preamble of lines the reader passes over (cd DIR, NAME=value), then
+  // the same program; one preamble is as long as the limit, the other one line longer
+  const file = fixture('passed-over.jsonl');
+  const records = recordsOf(file);
+  const commands = ['toolu_passed_01', 'toolu_passed_02'].map((id) => find(records, 'tool_use', id).block.input.command.split('\n'));
+  for (const c of commands) {
+    assert.equal(c[c.length - 1], 'make demo');
+    assert.deepEqual(c.slice(0, -1).filter((l) => !/^cd \/[\w/-]+$|^[A-Z][A-Z0-9_]*=\w+$/.test(l)), []);
+  }
+  assert.deepEqual(commands.map((c) => c.length - 1), [limits[0], limits[0] + 1]);
+  // every other call, read from the file: the same program after commands of ONE kind (cd DIR, a command of one
+  // assignment, a command of two), each followed by the same separator (a new line, ';' or '&&'), the three the README
+  // names; for each kind and separator one call has as many commands as the limit, another one more. The limit counts
+  // commands (the README: "`cd DIR`, ... followed by `&&`, `;` or a new line"; "a command of assignments only"), not
+  // the lines that end them and not the words they hold
+  const KINDS = [['cd DIR', /^cd \/[\w/-]+$/], ['one assignment', /^[A-Z][A-Z0-9_]*=\w+$/], ['two assignments', /^[A-Z][A-Z0-9_]*=\w+ [A-Z][A-Z0-9_]*=\w+$/]];
+  const SEPARATORS = [['a new line', '\n'], ['a semicolon', '; '], ['&&', ' && ']];
+  const uses = records.flatMap(({ line, rec }) => blocksIn(rec).filter((b) => b.type === 'tool_use').map((b) => ({ line, id: b.id, command: b.input.command })));
+  const shapes = uses.filter((u) => !['toolu_passed_01', 'toolu_passed_02'].includes(u.id)).map(({ line, id, command }) => {
+    const readings = SEPARATORS.flatMap(([sep, s]) => {
+      const parts = command.split(s);
+      if (parts[parts.length - 1] !== 'make demo') return [];
+      return KINDS.filter(([, re]) => parts.slice(0, -1).every((p) => re.test(p))).map(([kind]) => ({ line, kind, sep, count: parts.length - 1 }));
+    });
+    assert.equal(readings.length, 1, `${id}: ${readings.length} readings as commands of one kind, each followed by one separator, then make demo`);
+    return readings[0];
+  });
+  const grid = KINDS.flatMap(([kind]) => SEPARATORS.map(([sep]) => `${kind}, ${sep}`));
+  assert.deepEqual(shapes.map((s) => `${s.kind}, ${s.sep}: ${s.count}`).sort(), grid.flatMap((g) => [`${g}: ${limits[0]}`, `${g}: ${limits[0] + 1}`]).sort());
+  // what ltms prints for every call of the file, in order: the program up to the limit, (withheld) past it
+  const calls = parsed(run('skeleton', file).out).filter((o) => o.k === 'call');
+  assert.deepEqual(calls.map((o) => [o.a, o.tool, o.verb]), [['passed-o:L2', 'Bash', 'make'], ['passed-o:L4', 'Bash', W],
+    ...shapes.map((s) => [`passed-o:L${s.line}`, 'Bash', s.count > limits[0] ? W : 'make'])]);
+});
+
+test('NUL padding: ltms skips every line holding NUL bytes and counts them on stderr; the library, given repairNul, reports NUL bytes alone or with blanks as padding, recovers a record from every run of NUL bytes around it, reported as repaired, and reports an array behind NUL bytes once, as not an object', async () => {
+  const file = fixture('nul-padding.jsonl');
+  // the file's lines from its bytes, without the parser: where each starts, its length, the records among the NULs
+  const bytes = readFileSync(file);
+  const starts = [0];
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] === 0x0a) starts.push(i + 1);
+  const line = (n) => bytes.subarray(starts[n - 1], starts[n] - 1);
+  assert.equal(starts.length - 1, 9);
+  assert.ok(line(3).length > 0 && line(3).every((b) => b === 0), 'line 3 holds NUL bytes only');
+  const lead = line(4).findIndex((b) => b !== 0);
+  assert.ok(lead > 0 && !line(4).subarray(lead).includes(0), 'line 4 is a run of NUL bytes, then a record');
+  const behind = JSON.parse(line(4).subarray(lead).toString('utf8'));
+  const blank = (b) => b === 0x20 || b === 0x09;
+  assert.ok(line(5).some((b) => b === 0) && line(5).some(blank) && line(5).every((b) => b === 0 || blank(b)), 'line 5 holds NUL bytes and blanks, both, and nothing else');
+  const from = line(7).findIndex((b) => b !== 0), to = line(7).findLastIndex((b) => b !== 0) + 1;
+  assert.ok(from > 0 && to < line(7).length && !line(7).subarray(from, to).includes(0), 'line 7 is a run of NUL bytes, a record, a run of NUL bytes');
+  const between = JSON.parse(line(7).subarray(from, to).toString('utf8'));
+  const head = line(8).findIndex((b) => b !== 0);
+  assert.ok(head > 0 && !line(8).subarray(head).includes(0), 'line 8 is a run of NUL bytes, then JSON');
+  assert.ok(Array.isArray(JSON.parse(line(8).subarray(head).toString('utf8'))), 'the JSON on line 8 is an array');
+  assert.deepEqual(Array.from({ length: 9 }, (_, i) => i + 1).filter((n) => line(n).includes(0)), [3, 4, 5, 7, 8]);
+  // the command parses without repairNul: every line holding a NUL byte is skipped and counted, the first is named,
+  // and the calls they answer read unanswered
+  for (const cmd of ['skeleton', 'stats']) {
+    const r = run(cmd, file);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.err, `ltms ${cmd}: warning: '${file}': 5 lines could not be read as a JSON object of at most 1,000 levels (first: line 3) and were skipped.\n`);
+  }
+  const call = parsed(run('skeleton', file).out).find((o) => o.k === 'call');
+  assert.deepEqual([call.a, call.ok, call.r, call.out, call.n], ['nul-padd:L2', null, null, null, null]);
+  const calls = parsed(run('skeleton', file).out).filter((o) => o.k === 'call');
+  assert.deepEqual(calls.map((c) => [c.a, c.ok, c.r, c.out, c.n]), [['nul-padd:L2', null, null, null, null], ['nul-padd:L6', null, null, null, null]]);
+  assert.equal(JSON.parse(run('stats', file).out).unanswered, 2);
+  // the library: without the option, as the command runs it, then with it
+  const { parseTranscript, repairedLivePath, turnsOf } = await import(new URL(`file://${join(dirname(CLI), 'parser.js')}`).href);
+  const text = bytes.toString('utf8');
+  const at = (t, node) => (node ? t.positions[node.index].line : null);
+  const turnLines = (t) => turnsOf(t, repairedLivePath(t).path).map((turn) => [at(t, turn.prompt), turn.toolCalls.map((c) => [at(t, c.callNode), at(t, c.resultNode)])]);
+  const off = parseTranscript(text);
+  assert.deepEqual(off.problems.map((p) => [p.line, p.reason, p.hasNul]), [[3, 'json', true], [4, 'json', true], [5, 'json', true], [7, 'json', true], [8, 'json', true]]);
+  assert.deepEqual(off.positions.map((p) => p.line), [1, 2, 6, 9]);
+  assert.deepEqual([off.stats.lines, off.stats.parsed, off.stats.unparseable], [9, 4, 5]);
+  assert.deepEqual(turnLines(off), [[1, [[2, null], [6, null]]]]);
+  // with it: NUL bytes alone (line 3) or with blanks (line 5) are padding; every run of NUL bytes is stripped, so the
+  // records of lines 4 and 7 are recovered, each reported as repaired; the array of line 8 is reported once, as not an
+  // object, and not as repaired too
+  const on = parseTranscript(text, { repairNul: true });
+  const sample = (n) => JSON.stringify(line(n).subarray(0, 120).toString('latin1'));
+  assert.deepEqual(on.problems, [
+    { line: 3, offset: starts[2], bytes: line(3).length, reason: 'empty-after-strip', message: 'line was NUL padding only', sample: '', hasNul: true },
+    { line: 4, offset: starts[3], bytes: line(4).length, reason: 'json', message: 'REPAIRED: NUL bytes stripped, record recovered', hasNul: true,
+      sample: JSON.stringify(line(4).subarray(0, 120).toString('latin1')) },
+    { line: 5, offset: starts[4], bytes: line(5).length, reason: 'empty-after-strip', message: 'line was NUL padding only', sample: '', hasNul: true },
+    { line: 7, offset: starts[6], bytes: line(7).length, reason: 'json', message: 'REPAIRED: NUL bytes stripped, record recovered', hasNul: true, sample: sample(7) },
+    { line: 8, offset: starts[7], bytes: line(8).length, reason: 'not-object', message: 'top-level array', hasNul: true, sample: sample(8) },
+  ]);
+  assert.deepEqual(on.positions, [1, 2, 4, 6, 7, 9].map((n) => ({ line: n, offset: starts[n - 1], bytes: line(n).length })));
+  assert.deepEqual(on.records[2], behind);
+  assert.deepEqual(on.records[4], between);
+  assert.deepEqual([on.stats.lines, on.stats.parsed, on.stats.unparseable], [9, 6, 3]);
+  assert.deepEqual(turnLines(on), [[1, [[2, 4], [6, 7]]]]);
 });
