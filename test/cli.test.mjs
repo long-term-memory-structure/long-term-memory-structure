@@ -748,7 +748,7 @@ test('a reader that closes the pipe early: exit 0, nothing on stderr', async () 
 test('usage errors: exit 2, nothing on stdout, the message names the input and the fix', () => {
   const cases = [
     { args: [], message: /^ltms: no command given\.\n\nUsage:\n {2}ltms skeleton <file\.jsonl>/ },
-    { args: ['skelton', DEMO], message: /unknown command 'skelton'\. The commands are skeleton and stats/ },
+    { args: ['skelton', DEMO], message: /unknown command 'skelton'\. The commands are skeleton, stats, search and pin/ },
     { args: ['--frobnicate'], message: /unknown option '--frobnicate'\. The options are --help and --version/ },
     { args: ['stats'], message: /ltms stats: no input files\. Pass one or more transcripts, e\.g\. ltms stats ~\/\.claude/ },
     { args: ['stats', '--summary', DEMO], message: /ltms stats: unknown option '--summary'.*put -- before a file name/ },
@@ -794,14 +794,23 @@ test('--help describes every field the two commands print', () => {
 
 test('README: its example lines are what the commands print, and it describes every field', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
-  const examples = readme.split('\n').filter((l) => l.startsWith('{"k":') || l.startsWith('{"session":'));
+  // search's three line shapes are checked against search's own output in test/search.test.mjs
+  const examples = readme.split('\n').filter((l) => (l.startsWith('{"k":') || l.startsWith('{"session":')) && !/^\{"k":"(?:coverage","query"|file"|hit")/.test(l));
   assert.ok(examples.length >= 7, `only ${examples.length} example lines found`);
   const printed = new Set(nonEmpty(run('skeleton', DEMO).out + run('stats', DEMO).out));
   for (const l of examples) assert.ok(printed.has(l), `the README shows a line the commands do not print: ${l}`);
-  const keys = new Set();
-  for (const o of parsed(run('skeleton', DEMO, VARIETY).out)) for (const k of Object.keys(o)) keys.add(k);
-  for (const k of Object.keys(JSON.parse(run('stats', DEMO).out))) keys.add(k);
-  for (const k of keys) assert.match(readme, new RegExp(`^\\| \`${k}\` \\|`, 'm'), `the README does not describe '${k}'`);
+  // each command's fields have their rows in that command's own section (search's tables name k, a, ta, ch and turns too)
+  const section = (heading) => {
+    const start = readme.indexOf(heading);
+    assert.ok(start >= 0, `the README has no section ${heading}`);
+    return readme.slice(start, Math.min(...['\n### ', '\n## '].map((m) => readme.indexOf(m, start + 1)).filter((i) => i > 0)));
+  };
+  const skeletonKeys = new Set();
+  for (const o of parsed(run('skeleton', DEMO, VARIETY).out)) for (const k of Object.keys(o)) skeletonKeys.add(k);
+  for (const [heading, keys] of [['### `ltms skeleton', skeletonKeys], ['### `ltms stats', Object.keys(JSON.parse(run('stats', DEMO).out))]]) {
+    const text = section(heading);
+    for (const k of keys) assert.match(text, new RegExp(`^\\| \`${k}\` \\|`, 'm'), `the README's section ${heading}... does not describe '${k}'`);
+  }
 });
 
 test('the package: a shebang, no runtime dependencies, nothing imported but node: built-ins', () => {
@@ -810,10 +819,10 @@ test('the package: a shebang, no runtime dependencies, nothing imported but node
   assert.equal(pkg.bin.ltms, 'dist/cli.js');
   assert.equal(pkg.bin['long-term-memory-structure'], 'dist/cli.js');
   assert.ok(readFileSync(CLI, 'utf8').startsWith('#!/usr/bin/env node\n'));
-  for (const f of ['cli.js', 'parser.js']) {
+  for (const f of ['cli.js', 'parser.js', 'search.js', 'pin.js']) {
     const src = readFileSync(join(dirname(CLI), f), 'utf8');
     const specifiers = [...src.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
-    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js', `${f} imports '${s}'`);
+    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './pin.js', `${f} imports '${s}'`);
     assert.doesNotMatch(src, /\brequire\s*\(|\bimport\s*\(|\bfetch\s*\(|node:(?:https?|net|dgram|tls|http2|child_process)\b/, f);
   }
 });
@@ -1321,6 +1330,17 @@ test('an internal error whose message runs over several lines cannot pass a line
     assert.match(r.stderr, /internal error \(TypeError(?: at (?:cli|parser)\.js:\d+)?\)/);
     assert.doesNotMatch(r.stderr, /ZQX|987654|quoted/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CHANGELOG: its first section headed by a version is the version in package.json, with its release date', () => {
+  // a section headed "## Unreleased ..." may stand above it while the next version is being written; the first one
+  // headed by a version number is the release package.json names: "## <version> (YYYY-MM-DD)", a real date
+  const v = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+  const heads = readFileSync(join(root, 'CHANGELOG.md'), 'utf8').split('\n').filter((l) => /^## \d+\.\d+\.\d+/.test(l));
+  assert.match(heads[0] ?? '(none)', new RegExp(`^## ${escapeRe(v)} \\((\\d{4}-\\d{2}-\\d{2})\\)$`), `the first section headed by a version is not "## ${v} (<its date>)"`);
+  const date = /\((\d{4}-\d{2}-\d{2})\)$/.exec(heads[0])[1];
+  assert.equal(new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10), date, `${date} is not a date`);
+  assert.equal(heads.filter((h) => h.startsWith(`## ${v} `) || h === `## ${v}`).length, 1, `more than one section for ${v}`);
 });
 
 test('README: its Status names the version in package.json, and the interpreter list names what the rule accepts (review 7, N7-2 N7-3)', () => {

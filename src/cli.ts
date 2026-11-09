@@ -2,7 +2,8 @@
 // Long-Term Memory Structure: an index of Claude Code transcripts, without their content.
 //
 // When Claude Code compacts a session, the model's context is replaced by a summary, but the transcript on disk keeps
-// every record (it is only ever appended to). The index lets what compaction took out of the context be found again.
+// every record (Claude Code appends to it; it can rewrite one only in rare cases, and pin keeps both versions). The
+// index lets what compaction took out of the context be found again.
 //
 // Every turn and every tool call on a session's live path becomes one JSON line in which the
 // payload is replaced by an ADDRESS (where it lives: <first 8 chars of the file name>:L<line>)
@@ -10,14 +11,22 @@
 // whole; a shape found in it is opened by its address, in the transcript itself, only where it
 // matters.
 //
-// Reads only the files named on the command line. Writes only to stdout and stderr.
+// skeleton and stats read only the files named on the command line; search reads the files named and the .jsonl files
+// under the directories named; pin reads the files under the paths it is given, and its pin directory. Writes only to
+// stdout and stderr, except pin, which writes only into its --to directory.
 // No network, no telemetry.
 
-import { readFileSync } from 'node:fs';
+import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, extname, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { getHeapStatistics } from 'node:v8';
 import { parseTranscript, repairedLivePath, turnsOf, inputChannel } from './parser.js';
 import type { Transcript, TreeNode } from './parser.js';
+import { checkSearchSupport, parseSearchQuery, searchTranscript, SEARCH_DEFAULT_KINDS, SEARCH_GAP_SCRIPTS, SEARCH_KINDS } from './search.js';
+import type { SearchCounts, SearchKind, SearchNotSearched, SearchQuery, SearchTurnHit } from './search.js';
+import { checkPin, claudeConfigDir, isSweepShaped, pinPaths } from './pin.js';
+import type { PinCheckDone, PinCoverage, PinDone, PinLogLine, PinRefusal } from './pin.js';
 
 /** A turn: where its prompt is, which channel it came through, and the prompt's length. */
 interface TurnLine { k: 'turn'; a: string; ta: string; ch: string; n: number }
@@ -38,6 +47,8 @@ interface StatsLine {
 const USAGE = `Usage:
   ltms skeleton <file.jsonl>...   one JSON line per turn and per tool call
   ltms stats <file.jsonl>...      one JSON line of counts per file
+  ltms search <query> <path>...   the turns that hold every word of the query
+  ltms pin <path>... --to <dir>   copies the cleanup does not delete, and a log
   ltms --help                     show the help, with every output field
   ltms --version                  show the version
 `;
@@ -48,14 +59,17 @@ without their content.
 ${USAGE}
 When Claude Code compacts a session, the conversation in the model's context
 is replaced by a summary, but the transcript on disk keeps every record:
-Claude Code only appends to it. ltms prints an index of the transcript,
+Claude Code appends to it (it can rewrite one only in rare cases, and pin
+keeps both versions). ltms prints an index of the transcript,
 one line per turn and per tool call, each with the line of the file where it
 is written, so what compaction took out of the context can be found and read
 again (for line 22: sed -n 22p <file>).
 
 Claude Code keeps transcripts in ~/.claude/projects/<project>/<session>.jsonl.
-ltms reads only the files it is given, writes only to stdout and stderr,
-and uses no network.
+ltms reads only the files it is given (search: also every .jsonl file under
+the directories it is given; pin: the files under the paths it is given),
+writes only to stdout and stderr, except pin, which writes only into its --to
+directory, and uses no network.
 
 It follows each session's live path: the branch the session ended on, as the
 transcript's own last-prompt record names it (without one, the branch of the
@@ -174,6 +188,18 @@ stats, one line per file:
                 even when it was sent in the same response
   hopsOver2     chains of more than 2 hops
 
+search finds the turns that hold every word of a query, in the transcripts
+named and in every .jsonl under the directories named, and prints where
+they are: addresses, key paths and offsets, never the text. The query comes
+first, as one quoted argument: ltms search 'compaction summary' <path>...
+ltms search --help gives its whole part: the query, the paths, the coverage
+line, how to read a hit, the options, and every field.
+
+pin keeps copies of the transcripts that Claude Code's cleanup deletes (after
+30 days by default), in a directory of your own, with a log to check them
+against: ltms pin <path>... --to <dir>. ltms pin --help has its forms and
+output.
+
 Warnings go to stderr: lines that are not JSON objects (or are nested more
 than 1,000 levels deep), files with nothing to show (empty, a workflow journal,
 no conversation records, no turns), records whose parent links loop, values
@@ -214,7 +240,8 @@ const isRecord = (v: unknown): v is Record<string, any> => typeof v === 'object'
 // it modelled wrong; a whitelist has no such parts. Passed over before the program: blank and comment lines;
 // `cd DIR` (with redirections) followed by `&&`, `;` or a new line; NAME=value assignments; an opening `(`, `{` or
 // `!`; and the wrappers below. Anything else met before the program withholds the verb. What follows the program
-// is never read.
+// is never read, but for the command's end: a command that ends in a dangling &&, || or | is withheld
+// (endsInDanglingOperator).
 
 /** A word bash reads as exactly its own text. */
 const PLAIN = /[A-Za-z0-9_.\/:,+%@=~^-]+/y;
@@ -235,13 +262,46 @@ const WRAPPERS = new Set(['time', 'nohup', 'env', 'command', 'exec', 'timeout', 
  *  own; after command (a builtin) or time (a keyword), they are still the shell's builtins. */
 const LOOK_UP_ON_PATH = new Set(['nohup', 'env', 'nice', 'timeout', 'exec']);
 
+/** A command that ends in &&, || or | (or |&) with nothing after it but blanks, new lines, line continuations and
+ *  comment lines: bash rejects it as a syntax error, so no program in it is certain to run. Read from the end, as text,
+ *  in one backward pass. A comment on the operator's own line is not read (the command keeps the verb its program
+ *  gets), and an operator escaped or inside a comment at the very end counts (the verb is withheld). A backslash right
+ *  before a new line continues the line onto the next one, so it is passed over too; when it is the last of several,
+ *  what is left still ends in a backslash (an escaped one: a word, as bash reads it), never in an operator. Measured on
+ *  119,786 Bash commands of our own sessions: this rule withholds none of them; a version that also read a comment
+ *  after the operator withheld 238, every one a command bash accepts (a | in a quoted pattern, then a #). */
+function endsInDanglingOperator(s: string): boolean {
+  let e = s.length;
+  for (;;) {
+    while (e > 0 && (s[e - 1] === ' ' || s[e - 1] === '\t' || s[e - 1] === '\n')) e--;
+    const start = s.lastIndexOf('\n', e - 1) + 1;
+    let k = start;
+    while (k < e && (s[k] === ' ' || s[k] === '\t')) k++;
+    if (k < e && s[k] === '#') { e = start; continue; }   // a comment line: the line before it is the last one
+    if (s[e] === '\n' && s[e - 1] === '\\') { e--; continue; }   // a line continuation: the line goes on to the next
+    return e > start && (s[e - 1] === '|' || (e - start >= 2 && s[e - 1] === '&' && (s[e - 2] === '&' || s[e - 2] === '|')));
+  }
+}
+
 /** Bash: the program in command position, by the whitelist above. A path prints its last segment; [ and [[ print
  *  as themselves, and so does a shell keyword (if, for, while, ...): neither carries payload. A command whose only
  *  words are assignments prints (empty), or, when the first assignment's value is a substitution $(...) or
- *  "$(...)" made only of what INNER allows, the program inside it. A function definition is withheld. */
+ *  "$(...)" made only of what INNER allows, the program inside it. A function definition is withheld, and so is a
+ *  command that ends in a dangling &&, || or |. */
 function bashVerb(s: string, depth = 0): string {
+  if (endsInDanglingOperator(s)) return WITHHELD;
   let i = 0, words = 0, sub: string | undefined;
   const blank = (nl = false) => { while (s[i] === ' ' || s[i] === '\t' || (nl && s[i] === '\n')) i++; };
+  /** Where any command starts: blank and comment lines, and an opening ( { or ! */
+  const head = (): void => {
+    for (;;) {
+      blank(true);
+      if (s[i] === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
+      if (s[i] === '(' && s[i + 1] !== '(') { i++; continue; }
+      if ((s[i] === '{' || s[i] === '!') && (s[i + 1] === ' ' || s[i + 1] === '\t' || s[i + 1] === '\n')) { i++; continue; }
+      break;
+    }
+  };
   const ends = (j: number) => j >= s.length || ' \t\n;&|<>)'.includes(s[j]);
   const at = (re: RegExp, k: number): string | null => { re.lastIndex = k; const m = re.exec(s); return m ? m[0] : null; };
   /** The end of a passable word starting at k (possibly empty), or -1. bare = false refuses an unquoted $NAME: in
@@ -256,13 +316,7 @@ function bashVerb(s: string, depth = 0): string {
   };
   const separator = (): number => (s.startsWith('&&', i) ? 2 : s[i] === ';' || s[i] === '\n' ? 1 : 0);
   for (let cmd = 0; cmd < 16; cmd++) {               // simple commands passed over: cd DIR, assignments only
-    for (;;) {                                        // blank and comment lines; a command may open with ( { or !
-      blank(true);
-      if (s[i] === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
-      if (s[i] === '(' && s[i + 1] !== '(') { i++; continue; }
-      if ((s[i] === '{' || s[i] === '!') && (s[i + 1] === ' ' || s[i + 1] === '\t' || s[i + 1] === '\n')) { i++; continue; }
-      break;
-    }
+    head();
     let first = true, next = false, wrapped = false, lookedUp = false, afterTime = false;
     while (!next) {
       if (i >= s.length) return sub ?? '(empty)';
@@ -352,7 +406,10 @@ function bashVerb(s: string, depth = 0): string {
       return label(x.slice(x.lastIndexOf('/') + 1), WITHHELD);
     }
   }
-  return WITHHELD;
+  // after the 16th command, the head once more: when it reaches the end, the verb is what the end gives a shorter
+  // command; anything else (a program, a 17th command) is past the limit
+  head();
+  return i >= s.length ? (sub ?? '(empty)') : WITHHELD;
 }
 
 const FILE_TOOLS = ['Read', 'Edit', 'Write', 'NotebookEdit'];
@@ -367,13 +424,13 @@ function safeBashVerb(command: string): string {
   try { return bashVerb(command); } catch (e) { if (e instanceof RangeError) return WITHHELD; throw e; }
 }
 
-function verbOf(tool: string, input?: unknown): string {
+function verbOf(tool: string | undefined, input?: unknown): string {
   const inp = isRecord(input) ? input : {};
   if (tool === 'Bash') {
     const c = inp.command;
     return typeof c === 'string' ? safeBashVerb(c) : c === undefined || c === null ? '(empty)' : WITHHELD;
   }
-  if (FILE_TOOLS.includes(tool)) {
+  if ((FILE_TOOLS as readonly unknown[]).includes(tool)) {
     const p = inp.file_path ?? inp.notebook_path;
     if (p === undefined || p === null || p === '') return '(none)';
     if (typeof p !== 'string') return WITHHELD;
@@ -509,8 +566,14 @@ function cycleRecords(t: Transcript): number {
 
 /** Why a file that parsed still has nothing to show, so a zero never reads as a clean result. */
 function warningsFor(cmd: string, file: string, t: Transcript, lines: SkeletonLine[]): string[] {
+  const large = lines.filter((l) => l.k === 'call' && (l.in === TOO_LARGE || l.out === TOO_LARGE)).length;
+  return fileWarnings(cmd, file, t, lines.length === 0, large);
+}
+/** warningsFor's texts, for any command: `noTurn` when the live path holds no turn, `large` the calls with a value too
+ *  large to hash (search hashes nothing: 0). */
+function fileWarnings(cmd: string, file: string, t: Transcript, noTurn: boolean, large: number): string[] {
   const warnings: string[] = [];
-  const consequence = cmd === 'stats' ? 'its counts are 0' : 'it adds no lines';
+  const consequence = cmd === 'stats' ? 'its counts are 0' : cmd === 'search' ? 'nothing in it is searched' : 'it adds no lines';
   const p = t.problems.length;
   if (p) warnings.push(`ltms ${cmd}: warning: '${file}': ${p} line${p === 1 ? '' : 's'} could not be read as a JSON object of at most 1,000 levels (first: line ${t.problems[0].line}) and ${p === 1 ? 'was' : 'were'} skipped.`);
   if (t.fileKind === 'empty') warnings.push(`ltms ${cmd}: warning: '${file}' holds no records, so ${consequence}.`);
@@ -520,8 +583,7 @@ function warningsFor(cmd: string, file: string, t: Transcript, lines: SkeletonLi
     const shown = types.slice(0, 6).join(', ') + (types.length > 6 ? `, and ${types.length - 6} more` : '');
     warnings.push(`ltms ${cmd}: warning: '${file}' has no conversation records (no record carries both uuid and parentUuid; record types found: ${shown}), so ${consequence}. Conversation transcripts are the <session>.jsonl files in ~/.claude/projects/<project>/ and the agent-<id>.jsonl files under <session>/subagents/.`);
   }
-  else if (lines.length === 0) warnings.push(`ltms ${cmd}: warning: '${file}' has conversation records but no turn on its live path, so ${consequence}.`);
-  const large = lines.filter((l) => l.k === 'call' && (l.in === TOO_LARGE || l.out === TOO_LARGE)).length;
+  else if (noTurn) warnings.push(`ltms ${cmd}: warning: '${file}' has conversation records but no turn on its live path, so ${consequence}.`);
   if (large) warnings.push(`ltms ${cmd}: warning: '${file}': ${large} call${large === 1 ? ' holds' : 's hold'} a value too large to write as JSON (it would pass JavaScript's limit on a string's length), ${cmd === 'stats' ? 'so it cannot be hashed (skeleton prints ' + TOO_LARGE + ' there)' : `so ${large === 1 ? 'its' : 'their'} in or out prints ${TOO_LARGE}`}.`);
   const g = t.stats.requestKeyGuessed;
   if (g) warnings.push(`ltms ${cmd}: warning: '${file}': ${g} assistant record${g === 1 ? ' carries' : 's carry'} neither a requestId nor a string message.id, so which records form one response was read from their parent links; a parallel call's turn may be misread.`);
@@ -556,7 +618,7 @@ function internalError(e: unknown): string {
   const kind = LABEL.test(e.name) ? e.name : 'Error';
   const head = e.message ? `${e.name}: ${e.message}` : e.name;
   const stack = typeof e.stack === 'string' && e.stack.startsWith(head) ? e.stack.slice(head.length) : '';
-  const frame = stack.split('\n').map((l) => /^\s+at .*?([^()\s/\\]+\.js):(\d+):\d+\)?$/.exec(l)).find((m) => m !== null && /^(?:cli|parser)\.js$/.test(m[1]));
+  const frame = stack.split('\n').map((l) => /^\s+at .*?([^()\s/\\]+\.js):(\d+):\d+\)?$/.exec(l)).find((m) => m !== null && /^(?:cli|parser|pin|search)\.js$/.test(m[1]));
   return frame ? `${kind} at ${frame[1]}:${frame[2]}` : kind;
 }
 
@@ -586,14 +648,1048 @@ function writeSkeleton(lines: SkeletonLine[]): void {
   for (let i = 0; i < lines.length; i += 10000) out(lines.slice(i, i + 10000).map((l) => JSON.stringify(l) + '\n').join(''));
 }
 
-function main(argv: string[]): number {
+// ---- search ---------------------------------------------------------------------------------
+// The query first, then the paths. A file named is read whatever its name; under a directory, every *.jsonl at any
+// depth, the paths found sorted by UTF-16 code units, each file once (by its real path). A symbolic link named is
+// followed; links met under a directory are counted, not followed. The hits are held until the scan ends, then
+// written: the coverage line first, then the files newest first, each with its matching turns, at most --max turns in
+// all. No line holds a record's text: addresses, key names, offsets, and the query's own terms.
+
+/** A backslash, built: a typed backslash-u escape in this file could be turned into the character it names. */
+const BS = String.fromCharCode(92);
+const cp = (...c: number[]): string => String.fromCodePoint(...c);
+/** A file larger than this fraction of the heap limit is not read: a file takes up to about 9 times its size in
+ *  memory (README, What it reads), and running out of memory cannot be caught, so it would end the whole search. */
+const SEARCH_HEAP_SHARE = 10;
+/** The one-line command that prints a window of 600 characters around a hit's match: path, line, field, at. At a key
+ *  of field printed (withheld), it prints instead the keys there whose value leads, along the rest of field, to a string
+ *  longer than at (K: an object's keys; s: whether the steps of field from i lead to such a string), to put one in.
+ *  Where field leads to no string, it prints `not a string here`, and to one too short, `at is past the end of this
+ *  field`, never an empty line or a stack trace. No single quote inside: the shell's quotes hold it.
+ *  (node -e has the REPL's modules, fs among them, without an import.) */
+const SEARCH_WINDOW = `node -e 'const [p,l,f,a]=process.argv.slice(1),F=JSON.parse(f),K=v=>v!==null&&typeof v=="object"?Object.keys(v):[],s=(v,i)=>i<F.length?F[i]=="(withheld)"?K(v).some(x=>s(v[x],i+1)):s(v?.[F[i]],i+1):typeof v=="string"&&v.length>a;let v=JSON.parse(fs.readFileSync(p,"utf8").split("${BS}n")[l-1]),w;for(const [i,k] of F.entries()){if(k=="(withheld)"){w=K(v).filter(x=>s(v[x],i+1));break}v=v?.[k]}console.log(w?"keys here: "+JSON.stringify(w):typeof v!="string"?"not a string here":a>=v.length?"at is past the end of this field":v.slice(Math.max(0,a-300),+a+300))'`;
+/** A file's latest timestamp is printed only when it looks like one (ISO 8601, as Claude Code writes it): the
+ *  parser takes any string from a record's timestamp, and anything else could carry text. It prints (withheld). */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const KINDS_TEXT = `${SEARCH_KINDS.join(', ')}, or all`;
+const SEARCH_OPTIONS = '--kind <list>, --substring, --max <n>, --skip <n>, --count and --oldest';
+/** For the scripts whose words take attached letters: a word, and a longer word holding it that words mode does not
+ *  find (Hebrew: house, and the house; Arabic: book, and the book; Korean: school, and at school). */
+const CLITIC_EXAMPLE: Record<string, [string, string]> = {
+  Hebrew: [cp(0x5d1, 0x5d9, 0x5ea), cp(0x5d5, 0x5d4, 0x5d1, 0x5d9, 0x5ea)],
+  Arabic: [cp(0x643, 0x62a, 0x627, 0x628), cp(0x648, 0x627, 0x644, 0x643, 0x62a, 0x627, 0x628)],
+  Hangul: [cp(0xd559, 0xad50), cp(0xd559, 0xad50, 0xc5d0, 0xc11c)],
+};
+
+const SEARCH_HELP = `ltms search <query> <path>...
+
+Finds the turns of Claude Code transcripts that hold every word of the
+query, and prints where they are: addresses, key paths and offsets, never
+the text.
+
+The query comes first, as ONE quoted argument; the paths follow:
+  ltms search 'compaction summary' ~/.claude/projects/-home-me-my-app
+Its words are ANDed over a turn: each must be somewhere in it. A phrase in
+"..." (or curly quotes) must stand in one field, its words adjacent and in
+order, and so must a word that reads as several (node:sqlite, 2.1.314). A
+path is a transcript, or a directory: every .jsonl under it, at any depth.
+
+A project's transcripts are in ~/.claude/projects/, in a folder named after
+the project's directory: its path with every character other than A-Z, a-z
+and 0-9 written as - (/home/me/my.app: ~/.claude/projects/-home-me-my-app).
+A name longer than 200 characters is cut and given a hash: ls
+~/.claude/projects lists the folders.
+
+The first line printed is the coverage: what was searched, what was not,
+and how many turns matched. Then, newest session first, a line for each
+file with a hit, followed by its matching turns, one line per turn: at most
+--max turns in all (20 unless set), after the first --skip. left counts the
+matching turns after the ones printed, and next is the command that prints
+the next ones. stderr holds the notices about the query, the warnings, and
+one closing line with the totals.
+
+A hit names each record of the turn that holds a word of the query, with
+the kind of its text, the key path of the first field of that kind that
+holds a word (field) and the UTF-16 offset of the first match in it (at).
+A record can be hundreds of KB: print a window of 600 characters around the
+match instead (the file's path, the line number after :L in the record's
+address, field, at):
+  ${SEARCH_WINDOW} <path> 22 '["message","content",0,"text"]' 1234
+Where field holds (withheld), it prints instead the keys at that place whose
+value leads to a string longer than at: put one in its place, and run it
+again. It prints not a string here where field leads to no string, and at is
+past the end of this field where that string is no longer than at.
+
+--kind <list>   the kinds of text searched, separated by commas (or
+                --kind=<list>): input (a prompt, on any channel, and a
+                prompt queued while the model worked), summary (a
+                compaction summary), reply, thinking, call (a tool's input),
+                result (a tool's output), system (hook and API-error text),
+                meta (other user text: command output, caveats, the
+                harness's notes), attachment (the harness's attachments),
+                or all. Without it: all but meta and attachment, which hold
+                the harness's own text (system prompt, skill listings,
+                reminders) and would match most sessions.
+--substring     find each term inside longer words too, after the same
+                folding (cat also finds concatenate)
+--max <n>       the turns printed (default 20; 0 prints every one)
+--skip <n>      the matching turns passed over before printing (default 0):
+                next gives it, to print the ones after those printed
+--count         print the coverage line only
+--oldest        oldest sessions first
+
+What is folded, in the query and in the text: case, accents and other
+marks (Hebrew and Arabic points too), compatibility forms (full-width
+letters, ligatures), final sigma; JSON escapes in a string (${BS}n, ${BS}u0041) are
+read decoded too. A word is a run of letters and digits, and a change of
+script inside one cuts it (a Hebrew prefix letter glued to a Latin word is
+a word of its own). Chinese, Japanese, Thai, Lao, Khmer and Myanmar are cut
+into the dictionary words of Node's Intl.Segmenter. Nothing else: no stems
+and no prefixes. A Hebrew, Arabic or Korean word with letters attached is
+another word, and a notice gives the --substring command.
+
+Time, measured on one machine: 0.40 to 0.46 s for 18.9 MB of transcripts
+(35 files), 2.8 to 3.2 s for 189 MB (350 files): 40 to 65 MB a second. At
+that rate 6 GB would take 1.5 to 2.5 minutes, around the Bash tool's
+default timeout of 2 minutes: search the project's own folder, or give the
+command a longer timeout.
+
+The coverage line:
+  k             "coverage"
+  query         the terms searched for, as typed (a hit's w indexes it)
+  mode          "words", or "substring" (each term is also found inside
+                longer words: cat finds concatenate)
+  kinds         the kinds of text searched
+  kindsOff      the kinds left out
+  files         given: path arguments. found: the files named, and the
+                .jsonl files under the directories named, each file once;
+                each path that does not exist; and each directory that
+                could not be read. read: found minus failed
+                (notConversation included). failed: what could not be read,
+                as reported on stderr. notConversation: files read that hold
+                no turn (empty, a workflow journal, no conversation records,
+                or no turn on the live path). symlinks: links met under the
+                directories, not followed
+  turns         the turns in the files read (skeleton's turns)
+  records       the records of those turns that were searched
+  notSearched   in records, unless named: offPath (rewound branches),
+                toolUseResult (the harness's copy of a result), wireInputs
+                (a call's input as the model wrote it), redactedThinking (in
+                blocks), sidecars (records outside the conversation), images
+                (in blocks), spilled (results written to a file: their
+                preview is searched), replays (records written again),
+                beforeFirstTurn (records of a file with no turn),
+                unreadableLines (in lines), kindsOff (records whose only
+                text is of kinds left out). records + offPath + replays +
+                beforeFirstTurn + sidecars + kindsOff = the records in the
+                files read; toolUseResult, wireInputs, redactedThinking,
+                images and spilled are counted over the turns' records,
+                searched or not
+  hits          files, turns and records with a hit; byKind: for each kind
+                searched, the matching turns with that kind of text in a hit
+  shown         skipped: the matching turns passed over (--skip); turns: the
+                turns printed; order: "newest" or "oldest"
+  left          the matching turns after the ones printed
+  next          the command that prints the next ones: this search with
+                --skip past those printed, and the same --max; null when
+                none is left
+  segmenter     "icu", or "no-dictionary" when this Node's Intl.Segmenter
+                does not cut Chinese and Thai into words (such a run is then
+                one word, and a notice says so)
+  gapScripts    only for a query holding Hebrew, Arabic, Hangul, Han,
+                Hiragana, Katakana, Thai, Lao, Khmer or Myanmar letters: that
+                script's letters in the text searched
+  ms            the time the search took, in milliseconds
+
+A file line, before its hits:
+  k             "file"
+  f             the file's number: 1, 2, ... in the order printed
+  p             its address prefix, as skeleton's
+  path          its path
+  last          the latest timestamp of its records (null when none;
+                (withheld) when it is not an ISO 8601 time)
+
+A hit line, one per matching turn, in the order of its file's turns:
+  k             "hit"
+  f             the number of its file's line
+  ta            the turn, as skeleton numbers it: <prefix>:T001, T002, ...
+  ch            the channel of the turn's prompt, as skeleton's ch
+  at            one entry per record and kind of text holding a term, in
+                line order: a (the record's address), kind, field (the key
+                path of the first field of that kind holding a term: key
+                names, down to a tool's parameter and a system or
+                attachment record's own keys, each one passing the label
+                rule or printed (withheld); a key below them is (withheld);
+                and array indices), at (the UTF-16 offset of the
+                first match in that field's string, as JSON reads it), w
+                (the terms found in that record's text of that kind, in any
+                of its fields, as indices into query)
+
+Exit status: 0 when every file was read (no hit is still 0), 1 when a file
+or a directory could not be read or was too large, 2 on a usage error.
+`;
+
+interface SearchSetup {
+  query: string; paths: string[]; kinds: Set<SearchKind>; kindsGiven: boolean;
+  substring: boolean; max: number; skip: number; count: boolean; oldest: boolean;
+  /** The query also names an existing path (and looks like one), and a path argument exists: searched, with a notice. */
+  queryIsPath: boolean;
+}
+
+/** A word the shell reads as itself, else the word in single quotes. */
+const shellWord = (s: string): string => (/^[A-Za-z0-9_.\/:,+%@=-]+$/.test(s) && !s.startsWith('-') ? s : `'${s.replace(/'/g, `'${BS}''`)}'`);
+const quoted = (s: string): string => `'${s.replace(/'/g, `'${BS}''`)}'`;
+/** ' --' when one of the words a command line ends with (the query, the paths) starts with '-': after --, it is not
+ *  read as an option. */
+const dashFor = (words: string[]): string => (words.some((w) => w.startsWith('-')) ? ' --' : '');
+/** The search command for these settings, with `extra` options, the query quoted, and the paths given (or `paths`). */
+function searchCommand(s: SearchSetup, extra: string, paths: string[] = s.paths): string {
+  const all = s.kinds.size === SEARCH_KINDS.length;
+  const kinds = s.kindsGiven ? ` --kind ${all ? 'all' : SEARCH_KINDS.filter((k) => s.kinds.has(k)).join(',')}` : '';
+  const dash = dashFor([s.query, ...paths]);
+  return `ltms search${s.substring ? ' --substring' : ''}${kinds}${s.oldest ? ' --oldest' : ''}${extra}${dash} ${quoted(s.query)} ${paths.map(shellWord).join(' ')}`.trimEnd();
+}
+
+/** "a", "a and b", "a, b and c". */
+const listed = (xs: string[], and = 'and'): string => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} ${and} ${xs[xs.length - 1]}`);
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+/** <config>/projects, where <config> is $CLAUDE_CONFIG_DIR or ~/.claude: as a command line writes it, and as a path. */
+function projectsDir(): { base: string; raw: string } {
+  const config = claudeConfigDir();   // the rule's one copy, in pin.ts
+  const raw = join(config.path, 'projects');
+  return { base: config.fromEnv ? shellWord(raw) : '~/.claude/projects', raw };
+}
+/** The current directory's project folder, by Claude Code's rule: under <config>/projects, the directory's path with
+ *  every UTF-16 unit outside A-Z, a-z and 0-9 written as '-'. A name longer than 200 characters is cut and given a
+ *  hash, which is not computed here. Null when the current directory no longer exists (process.cwd() throws). */
+function projectFolder(): { base: string; folder: string; real: string; long: boolean } | null {
+  let cwd: string;
+  try { cwd = process.cwd(); } catch { return null; }
+  const name = cwd.replace(/[^A-Za-z0-9]/g, '-'), { base, raw } = projectsDir();
+  return { base, folder: `${base}/${name}`, real: join(raw, name), long: name.length > 200 };
+}
+
+const isDirectory = (path: string): boolean => { try { return statSync(path).isDirectory(); } catch { return false; } };
+
+/** The message for a search given no path: the next command, with this directory's project folder when it exists. */
+function noPathMessage(query: string): string {
+  const p = projectFolder(), q = quoted(query), { base } = projectsDir(), cmd = `ltms search${dashFor([query])} ${q}`;
+  if (!p) return `ltms search: no path given. Give the transcripts' folder or files after the query. The current directory no longer exists, so its project folder cannot be named; ls ${base} lists the project folders: ${cmd} ${base}/<folder>`;
+  if (p.long) return `ltms search: no path given. Give the transcripts' folder or files after the query. This directory's path is longer than 200 characters, so Claude Code cuts its folder's name and adds a hash: find the folder with ls ${base}, then run ${cmd} ${base}/<folder>`;
+  if (isDirectory(p.real)) return `ltms search: no path given. Give the transcripts' folder or files after the query; this directory's project folder is ${p.folder}: ${cmd} ${p.folder}`;
+  return `ltms search: no path given. Give the transcripts' folder or files after the query. This directory's project folder would be ${p.folder}, which does not exist; ls ${base} lists the project folders: ${cmd} ${base}/<folder>`;
+}
+
+/** A path argument that names nothing (statSync: ENOENT or ENOTDIR). */
+function missing(path: string): boolean {
+  try { statSync(path); return false; } catch (e) { const c = (e as NodeJS.ErrnoException)?.code; return c === 'ENOENT' || c === 'ENOTDIR'; }
+}
+const looksLikePath = (s: string): boolean => /[\\/]/.test(s) || s.endsWith('.jsonl') || s === '.' || s === '..';
+/** A missing path argument shaped like a word: no / and not ending in .jsonl. */
+const wordNotPath = (s: string): boolean => !/[\\/]/.test(s) && !s.endsWith('.jsonl') && missing(s);
+
+/** The query names an existing path, and looks like one: it holds a / or ends in .jsonl, or is . or .. */
+const queryNamesPath = (query: string): boolean => looksLikePath(query) && !missing(query);
+/** The query and the paths in the wrong order: a path argument names nothing and looks like a word; or the query names
+ *  an existing path (queryNamesPath) and no path argument names one, so the query was left out. Null when neither: a
+ *  query that names a path, with a path argument that exists, is searched (with a notice). */
+function misorder(query: string, paths: string[]): string | null {
+  const queryIsPath = queryNamesPath(query);
+  const words = paths.filter(wordNotPath);
+  if (!words.length && !(queryIsPath && paths.every(missing))) return null;
+  const given = `Read as the query: '${query}'${queryIsPath ? ', which is an existing path' : ''}; as paths: ${paths.length ? paths.map((p) => `'${p}'${words.includes(p) ? ' (no such file or directory)' : ''}`).join(', ') : 'none'}.`;
+  const intended = [...(queryIsPath ? [] : [query]), ...words];
+  const rest = [...(queryIsPath ? [query] : []), ...paths.filter((p) => !words.includes(p))];
+  const example = `ltms search${dashFor([intended.join(' '), ...rest])} ${intended.length ? quoted(intended.join(' ')) : "'<query>'"} ${rest.length ? rest.map(shellWord).join(' ') : '<path>...'}`;
+  return `ltms search: the query comes first, as one quoted argument, then the paths. ${given} ${intended.length ? `If the query is '${intended.join(' ')}'` : 'For example'}: ${example}`;
+}
+
+/** search's arguments, or the exit status of a usage error already reported (or of --help, --version). */
+function readSearchArgs(args: string[]): SearchSetup | number {
+  const usage = (m: string): number => { err(`ltms search: ${m}`); return 2; };
+  const positional: string[] = [];
+  const kinds = new Set<SearchKind>();
+  let kindsGiven = false, substring = false, count = false, oldest = false, max = 20, skip = 0, ended = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!ended && a === '--') { ended = true; continue; }
+    if (ended || !a.startsWith('-')) { positional.push(a); continue; }
+    if (a === '--help' || a === '-h') { out(SEARCH_HELP); return 0; }
+    if (a === '--version' || a === '-v') return printVersion();
+    if (a === '-') return usage(`reading from standard input ('-') is not supported. Give the transcripts' folder or files after the query, e.g. ltms search 'compaction summary' ~/.claude/projects/<project>`);
+    const eq = a.indexOf('='), name = eq < 0 ? a : a.slice(0, eq);
+    if (name === '--kind' || name === '--max' || name === '--skip') {
+      let v: string;
+      if (eq >= 0) v = a.slice(eq + 1);
+      else if (i + 1 < args.length) v = args[++i];
+      else return usage(name === '--kind' ? `--kind needs a list of kinds after it: ${KINDS_TEXT} (e.g. --kind input,reply).` : name === '--max' ? '--max needs a number after it: the turns to print (0 prints every one).' : '--skip needs a number after it: the matching turns to pass over before printing.');
+      if (name === '--max') {
+        if (!/^\d+$/.test(v)) return usage(`--max takes a whole number of turns to print (0 prints every one); '${v}' is not one.`);
+        max = Number(v);
+        continue;
+      }
+      if (name === '--skip') {
+        if (!/^\d+$/.test(v)) return usage(`--skip takes a whole number of matching turns to pass over before printing; '${v}' is not one.`);
+        skip = Number(v);
+        continue;
+      }
+      const names = v.split(',').map((x) => x.trim()).filter((x) => x !== '');
+      if (!names.length) return usage(`--kind '${v}' names no kind. The kinds are ${KINDS_TEXT}.`);
+      for (const k of names) {
+        if (k === 'all') { for (const x of SEARCH_KINDS) kinds.add(x); continue; }
+        if (!(SEARCH_KINDS as readonly string[]).includes(k)) return usage(`unknown kind '${k}'${names.length > 1 ? ` in --kind '${v}'` : ''}. The kinds are ${KINDS_TEXT}.`);
+        kinds.add(k as SearchKind);
+      }
+      kindsGiven = true;
+      continue;
+    }
+    if (a === '--substring') { substring = true; continue; }
+    if (a === '--count') { count = true; continue; }
+    if (a === '--oldest') { oldest = true; continue; }
+    if (name === '--substring' || name === '--count' || name === '--oldest') return usage(`${name} takes no value; '${a}' gives it one.`);
+    return usage(`unknown option '${a}'. The options are ${SEARCH_OPTIONS}; put -- before a query or a path that starts with '-'.`);
+  }
+  if (!positional.length) {
+    const p = projectFolder(), folder = p && !p.long && isDirectory(p.real) ? p.folder : `${projectsDir().base}/<project>`;
+    return usage(`no query given. The query comes first, as one quoted argument, then the transcripts' folder or files: ltms search 'compaction summary' ${folder}`);
+  }
+  const [query, ...paths] = positional;
+  const wrong = misorder(query, paths);
+  if (wrong) { err(wrong); return 2; }
+  if (!paths.length) { err(noPathMessage(query)); return 2; }
+  return { query, paths, kinds: kindsGiven ? kinds : new Set(SEARCH_DEFAULT_KINDS), kindsGiven, substring, max, skip, count, oldest, queryIsPath: queryNamesPath(query) };
+}
+
+/** The notices about the query, before the scan: terms dropped, an unclosed quote, the scripts whose words this search
+ *  can miss (with the --substring command), and a Segmenter without dictionaries. */
+function searchNotices(q: SearchQuery, s: SearchSetup): string[] {
+  const notes: string[] = [];
+  if (s.queryIsPath) notes.push(`ltms search: notice: the query '${s.query}' is also an existing path; it is searched for, in the paths after it. If it was meant as a path, the query comes first: ltms search${dashFor([s.query, ...s.paths])} '<query>' ${[s.query, ...s.paths].map(shellWord).join(' ')}`);
+  for (const d of q.dropped) notes.push(`ltms search: notice: the query's term '${d}' has no letter or digit, so it is left out.`);
+  if (q.unbalanced) notes.push(`ltms search: notice: a quote in the query '${s.query}' is not closed, so its phrase runs to the end of the query.`);
+  const termsIn = (scripts: string[]) => q.terms.filter((t) => t.gapScripts.some((x) => scripts.includes(x)));
+  const echo = (scripts: string[]) => {
+    const ts = termsIn(scripts);
+    return { words: listed(ts.map((t) => `'${t.text}'`)), is: ts.length === 1 ? 'is' : 'are', them: ts.length === 1 ? 'it' : 'them' };
+  };
+  const substring = searchCommand({ ...s, substring: true }, '');
+  if (q.mode === 'substring') {
+    // its cost, for every query: every term is found inside longer words too
+    notes.push(`ltms search: notice: --substring finds ${listed(q.terms.map((t) => `'${t.text}'`))} inside longer words too, so it also finds words that only contain ${q.terms.length === 1 ? 'it' : 'them'} (as cat finds concatenate).`);
+    return notes;
+  }
+  const clitics = q.gapScripts.filter((x) => SEARCH_GAP_SCRIPTS[x] === 'clitics');
+  const spaceless = q.gapScripts.filter((x) => SEARCH_GAP_SCRIPTS[x] === 'spaceless');
+  if (clitics.length) {
+    const e = echo(clitics);
+    const examples = clitics.map((x) => `${CLITIC_EXAMPLE[x][0]} does not find ${CLITIC_EXAMPLE[x][1]}`);
+    notes.push(`ltms search: notice: ${e.words} ${e.is} in the ${listed(clitics)} script${clitics.length > 1 ? 's' : ''}, whose words take letters attached before or after them, and words mode finds whole words only: for example, ${listed(examples)}. To find ${e.them} inside longer words too: ${substring}`);
+  }
+  if (spaceless.length) {
+    const e = echo(spaceless);
+    const how = q.segmenter === 'icu'
+      ? "a word in the dictionary of this Node's Intl.Segmenter is found, an inflected or compound form of it may not be"
+      : "this Node's Intl.Segmenter has no dictionary for them, so a run of such text is read as one word, and only a whole run is found";
+    notes.push(`ltms search: notice: ${e.words} ${e.is} in the ${listed(spaceless)} script${spaceless.length > 1 ? 's' : ''}, written without spaces between words: ${how}. To find ${e.them} inside any run of text: ${substring}`);
+  } else if (q.segmenter === 'no-dictionary') {
+    notes.push("ltms search: notice: this Node's Intl.Segmenter does not cut Chinese and Thai into words (it has no dictionary for them), so a run of Chinese, Japanese, Thai, Lao, Khmer or Myanmar text is read as one word: only a whole run is found, and --substring finds a word inside one.");
+  }
+  return notes;
+}
+
+/** U+FFFD, which the text listing of a directory puts in a name for each byte that is not UTF-8. */
+const REPLACEMENT = cp(0xfffd);
+/** A name's bytes as text: printable ASCII as it is, every other byte (and the backslash) as backslash, x and two hex
+ *  digits. */
+const escapedName = (b: Buffer): string => [...b].map((x) => (x >= 0x20 && x < 0x7f && x !== 0x5c ? String.fromCharCode(x) : `${BS}x${x.toString(16).padStart(2, '0')}`)).join('');
+/** A directory's entries whose names are not valid UTF-8, read again as bytes: `lossy` holds them as the text listing
+ *  gives them (which opens nothing), `report` the directories and the files named .jsonl among them (in the listing's
+ *  order: on Unix, libuv sorts the names by their bytes). */
+function notUtf8Names(d: string): { lossy: Set<string>; report: { name: Buffer; dir: boolean }[] } {
+  const lossy = new Set<string>(), report: { name: Buffer; dir: boolean }[] = [];
+  let names: Buffer[];
+  try { names = readdirSync(d, { encoding: 'buffer' }); } catch { return { lossy, report }; }
+  for (const b of names) {
+    const s = b.toString('utf8');
+    if (Buffer.from(s, 'utf8').equals(b)) continue;
+    lossy.add(s);
+    let st;
+    try { st = lstatSync(Buffer.concat([Buffer.from(d + '/'), b])); } catch { continue; }
+    if (st.isDirectory()) report.push({ name: b, dir: true });
+    else if (!st.isSymbolicLink() && s.endsWith('.jsonl')) report.push({ name: b, dir: false });
+  }
+  return { lossy, report };
+}
+
+/** What the walk found: the files to read; the paths that failed (reported); the symbolic links met; the entries
+ *  named .jsonl that are not regular files, beyond those a no-.jsonl warning already named; and the directories met
+ *  again (the same device and inode as one already read). */
+interface SearchWalk { files: { path: string; named: boolean }[]; failed: number; symlinks: number; special: number; again: number }
+/** The files to read: each path given, and the *.jsonl files under each directory given (sorted by UTF-16 code
+ *  units), each file once by its real path. Under a directory given, each directory is entered once, by its device
+ *  and inode. Paths that cannot be read, directories that cannot be listed, and names that are not UTF-8 are reported
+ *  here and counted as failed. */
+function walkSearchPaths(paths: string[]): SearchWalk {
+  const all: { path: string; named: boolean }[] = [];
+  let failed = 0, symlinks = 0, special = 0, again = 0;
+  for (const p of paths) {
+    let dir: boolean;
+    try { dir = statSync(p).isDirectory(); }
+    catch (e) { err(cannotRead('search', p, e)); failed++; continue; }
+    if (!dir) { all.push({ path: p, named: true }); continue; }
+    const found: string[] = [], stack = [p], entered = new Set<string>();
+    let links = 0, reported = 0, pipes = 0;
+    while (stack.length) {
+      const d = stack.pop()!;
+      let id: string | null = null;
+      try { const st = statSync(d, { bigint: true }); id = `${st.dev}:${st.ino}`; } catch { /* the listing below reports it */ }
+      if (id !== null) { if (entered.has(id)) { again++; continue; } entered.add(id); }
+      let entries: Dirent[];
+      try { entries = readdirSync(d, { withFileTypes: true }); }
+      catch (e) {
+        const code = (e as NodeJS.ErrnoException)?.code;
+        err(code === 'EACCES' || code === 'EPERM'
+          ? `ltms search: cannot read the directory '${d}': permission denied, so the files under it are not searched. Check its permissions with: ls -ld '${d}'`
+          : `ltms search: cannot read the directory '${d}': ${(e as Error)?.message ?? String(e)}; the files under it are not searched.`);
+        failed++; reported++;
+        continue;
+      }
+      const bad = entries.some((e) => e.name.includes(REPLACEMENT)) ? notUtf8Names(d) : null;
+      for (const e of entries) {
+        if (bad?.lossy.has(e.name)) { if (e.isSymbolicLink()) links++; continue; }   // reported below, by its bytes
+        const full = join(d, e.name);
+        if (e.isSymbolicLink()) links++;
+        else if (e.isDirectory()) stack.push(full);
+        else if (e.name.endsWith('.jsonl')) { if (e.isFile()) found.push(full); else pipes++; }
+      }
+      for (const b of bad?.report ?? []) {
+        const what = b.dir ? `the directory '${join(d, escapedName(b.name))}'` : `'${join(d, escapedName(b.name))}'`;
+        err(`ltms search: cannot read ${what} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${b.dir ? 'the files under it are' : 'it is'} not searched. Give it a UTF-8 name to search it; ls -b '${d}' shows the name.`);
+        failed++; reported++;
+      }
+    }
+    symlinks += links;
+    if (!found.length && !reported) {
+      const notes = [
+        links ? `${plural(links, 'symbolic link', 'symbolic links')} met there ${links === 1 ? 'was' : 'were'} not followed` : '',
+        pipes ? `${plural(pipes, 'entry', 'entries')} named .jsonl there ${pipes === 1 ? 'is not a regular file, such as a pipe or a socket, and was' : 'are not regular files, such as pipes or sockets, and were'} not read` : '',
+      ].filter((x) => x);
+      err(`ltms search: warning: '${p}' holds no .jsonl file at any depth${notes.length ? ` (${notes.join('; ')})` : ''}, so nothing in it is searched. ${TRANSCRIPTS_HINT}`);
+    } else special += pipes;
+    for (const f of found.sort()) all.push({ path: f, named: false });
+  }
+  const seen = new Set<string>(), files: { path: string; named: boolean }[] = [];
+  for (const f of all) {
+    let real: string;
+    try { real = realpathSync(f.path); } catch { real = resolve(f.path); }
+    if (seen.has(real)) continue;
+    seen.add(real);
+    files.push(f);
+  }
+  return { files, failed, symlinks, special, again };
+}
+
+/** A file too large to read within this Node's memory: skipped, with the command that gives Node enough. */
+function tooLargeToSearch(s: SearchSetup, file: string, size: number, limit: number): string {
+  const bytes = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const need = Math.ceil((size * SEARCH_HEAP_SHARE) / 2 ** 30) * 1024;
+  return `ltms search: '${file}' is ${bytes(size)} bytes, over the ${bytes(limit)} this Node can search in one file (a tenth of its memory limit: reading it could run out of memory, which would stop the whole search and lose every hit), so it is skipped. To search it, give Node more memory: NODE_OPTIONS=--max-old-space-size=${need} ${searchCommand(s, '', [file])}`;
+}
+
+/** A file read under the directories given, with the kinds of warning it has of its own. */
+interface WarnedFile { path: string; kinds: string[] }
+/** What the files read under the directories add up to, in the walk's one summary line; null when nothing is worth it.
+ *  The files with warnings of their own come last: up to four are named, with the command that shows their warnings. */
+function walkSummary(s: SearchSetup, w: { read: number; journal: number; empty: number; unknown: number; noTurn: number; warned: WarnedFile[] }, walk: SearchWalk): string | null {
+  const parts: string[] = [];
+  const kinds = [
+    w.journal ? `${w.journal} ${w.journal === 1 ? 'is a workflow journal' : 'are workflow journals'}` : '',
+    w.empty ? `${w.empty} ${w.empty === 1 ? 'is' : 'are'} empty` : '',
+    w.unknown ? `${w.unknown} ${w.unknown === 1 ? 'has' : 'have'} no conversation records` : '',
+    w.noTurn ? `${w.noTurn} ${w.noTurn === 1 ? 'has' : 'have'} no turn on ${w.noTurn === 1 ? 'its' : 'their'} live path` : '',
+  ].filter((x) => x);
+  const none = w.journal + w.empty + w.unknown + w.noTurn;
+  if (none) parts.push(`of the ${plural(w.read, 'file', 'files')} read under the directories given, ${listed(kinds)}, so nothing in ${none === 1 ? 'it' : 'them'} is searched (files.notConversation)`);
+  if (walk.symlinks) parts.push(`${plural(walk.symlinks, 'symbolic link was', 'symbolic links were')} met under the directories given and not followed (files.symlinks)`);
+  if (walk.special) parts.push(`${plural(walk.special, 'entry', 'entries')} named .jsonl under the directories given ${walk.special === 1 ? 'is not a regular file, such as a pipe or a socket, and was' : 'are not regular files, such as pipes or sockets, and were'} not read`);
+  if (walk.again) parts.push(`${plural(walk.again, 'directory', 'directories')} met under the directories given ${walk.again === 1 ? 'has' : 'have'} the same device and inode as one already read (a bind mount can do that), so ${walk.again === 1 ? 'it was' : 'they were'} not read again`);
+  const n = w.warned.length;
+  if (n) {
+    const named = w.warned.slice(0, 4).map((x) => `'${x.path}' (${listed(x.kinds)})`), more = n - named.length;
+    parts.push(`${plural(n, 'file', 'files')} read under the directories given ${n === 1 ? 'has' : 'have'} warnings of ${n === 1 ? 'its' : 'their'} own: ${more ? `${named.join(', ')} and ${more} more` : listed(named)}: name ${n === 1 ? 'it' : 'one'} on the command line to see its warnings: ${searchCommand(s, '', [w.warned[0].path])}`);
+  }
+  // a line that ends in a command ends without a period, which would be read as part of the last path
+  return parts.length ? `ltms search: warning: ${parts.join('; ')}${n ? '' : '.'}` : null;
+}
+
+/** search, with an internal error outside any one file reported by its kind and its place, never its message. */
+function searchMain(args: string[]): number {
+  try { return searchRun(args); }
+  catch (e) { err(`ltms search: stopped with an internal error (${internalError(e)}). This is a bug in ltms; anything printed before it is incomplete.`); return 1; }
+}
+function searchRun(args: string[]): number {
+  const started = Date.now();
+  const s = readSearchArgs(args);
+  if (typeof s === 'number') return s;
+  const support = checkSearchSupport();
+  if (!support.ok) { err(`ltms search: this Node cannot run the search: it has no ${support.missing}. skeleton, stats and pin do not need it. Node 20 or newer, built with Intl (as the builds from nodejs.org are), has it.`); return 2; }
+  const q = parseSearchQuery(s.query, { mode: s.substring ? 'substring' : 'words', segmenter: support.segmenter ?? 'no-dictionary' });
+  if (!q.terms.length) {
+    const why = q.dropped.length === 0 ? 'it is empty' : q.dropped.length === 1 ? 'it has no letter or digit' : 'none of its terms has a letter or digit';
+    err(`ltms search: the query '${s.query}' has no word to search: ${why}. Give words, e.g. ltms search${dashFor(s.paths)} 'compaction summary' ${s.paths.map(shellWord).join(' ')}`);
+    return 2;
+  }
+  for (const n of searchNotices(q, s)) err(n);
+
+  const walk = walkSearchPaths(s.paths);
+  let failed = walk.failed;
+  const limit = Math.floor(getHeapStatistics().heap_size_limit / SEARCH_HEAP_SHARE);
+  const sum = { turns: 0, records: 0, notConversation: 0, hitFiles: 0, hitTurns: 0, hitRecords: 0 };
+  const notSearched: SearchNotSearched = { offPath: 0, toolUseResult: 0, wireInputs: 0, redactedThinking: 0, sidecars: 0,
+    images: 0, spilled: 0, replays: 0, beforeFirstTurn: 0, unreadableLines: 0, kindsOff: 0 };
+  const byKind: Record<string, number> = {};
+  for (const k of SEARCH_KINDS) if (s.kinds.has(k)) byKind[k] = 0;
+  const gap: Record<string, number> = {};
+  for (const x of q.gapScripts) gap[x] = 0;
+  const walked = { read: 0, journal: 0, empty: 0, unknown: 0, noTurn: 0, warned: [] as WarnedFile[] };
+  const held: { path: string; prefix: string; last: string | null; order: number; turns: SearchTurnHit[] }[] = [];
+  const add = (c: SearchCounts): void => {
+    sum.turns += c.turns; sum.records += c.searched; sum.hitTurns += c.hits.turns; sum.hitRecords += c.hits.records;
+    for (const k of Object.keys(notSearched) as (keyof SearchNotSearched)[]) notSearched[k] += c.notSearched[k];
+    for (const [k, v] of Object.entries(c.hits.byKind)) byKind[k] = (byKind[k] ?? 0) + (v ?? 0);
+    for (const [k, v] of Object.entries(c.gapScripts)) gap[k] = (gap[k] ?? 0) + v;
+  };
+  for (const f of walk.files) {
+    let size: number;
+    try { size = statSync(f.path).size; } catch (e) { err(cannotRead('search', f.path, e)); failed++; continue; }
+    if (size > limit) { err(tooLargeToSearch(s, f.path, size, limit)); failed++; continue; }
+    let text: string;
+    try { text = readFileSync(f.path, 'utf8'); } catch (e) { err(cannotRead('search', f.path, e)); failed++; continue; }
+    try {
+      const t = parseTranscript(text);
+      const r = searchTranscript(t, q, { kinds: [...s.kinds], prefix: prefixOf(f.path) });
+      const noTurn = r.counts.turns === 0;
+      if (t.fileKind !== 'transcript' || noTurn) sum.notConversation++;
+      if (f.named) for (const w of fileWarnings('search', f.path, t, noTurn, 0)) err(w);
+      else {
+        walked.read++;
+        if (t.fileKind === 'journal') walked.journal++;
+        else if (t.fileKind === 'empty') walked.empty++;
+        else if (t.fileKind === 'unknown') walked.unknown++;
+        else if (noTurn) walked.noTurn++;
+        const kinds = [t.problems.length ? 'lines that could not be read' : '', t.fileKind === 'transcript' && cycleRecords(t) ? 'records on a parentUuid cycle' : '',
+          t.stats.requestKeyGuessed ? 'responses read from parent links' : ''].filter((x) => x);
+        if (kinds.length) walked.warned.push({ path: f.path, kinds });
+      }
+      add(r.counts);
+      if (r.turns.length) { sum.hitFiles++; held.push({ path: f.path, prefix: prefixOf(f.path), last: r.last, order: held.length, turns: r.turns }); }
+    } catch (e) {
+      err(`ltms search: '${f.path}': stopped with an internal error (${internalError(e)}), so nothing in it was searched. This is a bug in ltms; the other files are processed as usual.`);
+      failed++;
+    }
+  }
+  const summary = walkSummary(s, walked, walk);
+  if (summary) err(summary);
+
+  // newest first (or oldest), by the latest timestamp; files without one last; ties in the order they were read
+  const time = (l: string | null): number => (l !== null && ISO_TIME.test(l) ? Date.parse(l) : NaN);
+  held.sort((a, b) => {
+    const x = time(a.last), y = time(b.last);
+    if (Number.isNaN(x) || Number.isNaN(y)) return Number.isNaN(x) && Number.isNaN(y) ? a.order - b.order : Number.isNaN(x) ? 1 : -1;
+    return x === y ? a.order - b.order : s.oldest ? x - y : y - x;
+  });
+  // the matching turns in the order printed: the first `skipped` passed over, then at most --max printed
+  const cap = s.count ? 0 : s.max === 0 ? Infinity : s.max, skipped = Math.min(s.skip, sum.hitTurns);
+  const lines: string[] = [];
+  let shown = 0, passed = 0, fileNo = 0;
+  for (const h of held) {
+    if (shown >= cap) break;
+    let fileLine = false;
+    for (const turn of h.turns) {
+      if (shown >= cap) break;
+      if (passed < skipped) { passed++; continue; }
+      if (!fileLine) {
+        fileNo++; fileLine = true;
+        lines.push(JSON.stringify({ k: 'file', f: fileNo, p: h.prefix, path: h.path, last: h.last === null ? null : ISO_TIME.test(h.last) ? h.last : WITHHELD }));
+      }
+      lines.push(JSON.stringify({ k: 'hit', f: fileNo, ta: turn.ta, ch: turn.ch, at: turn.entries }));
+      shown++;
+    }
+  }
+  const found = walk.files.length + walk.failed, read = found - failed, left = sum.hitTurns - skipped - shown;
+  const coverage = {
+    k: 'coverage', query: q.terms.map((t) => t.text), mode: q.mode,
+    kinds: SEARCH_KINDS.filter((k) => s.kinds.has(k)), kindsOff: SEARCH_KINDS.filter((k) => !s.kinds.has(k)),
+    files: { given: s.paths.length, found, read, failed, notConversation: sum.notConversation, symlinks: walk.symlinks },
+    turns: sum.turns, records: sum.records, notSearched,
+    hits: { files: sum.hitFiles, turns: sum.hitTurns, records: sum.hitRecords, byKind },
+    shown: { skipped, turns: shown, order: s.oldest ? 'oldest' : 'newest' }, left,
+    next: left > 0 ? searchCommand({ ...s, count: false }, ` --skip ${skipped + shown} --max ${s.max}`) : null,
+    segmenter: q.segmenter,
+    ...(q.gapScripts.length ? { gapScripts: gap } : {}),
+    ms: Date.now() - started,
+  };
+  out(JSON.stringify(coverage) + '\n');
+  for (let i = 0; i < lines.length; i += 10000) out(lines.slice(i, i + 10000).join('\n') + '\n');
+
+  const n = sum.hitTurns;
+  let close = `ltms search: ${plural(n, 'matching turn', 'matching turns')} in ${n ? `${sum.hitFiles} of ` : ''}${plural(found, 'file', 'files')} (${read} read, ${failed} failed${failed ? ', as reported above' : ''}); ${shown} shown`;
+  if (s.count && n) close += ' (--count prints the coverage line only)';
+  else if (n && !shown) close += `: --skip ${s.skip} passes over all ${n}`;
+  else {
+    if (skipped) close += ` after the first ${skipped}`;
+    if (left > 0) close += `, ${left} left: --skip ${skipped + shown} shows the next ${s.max === 0 ? left : Math.min(left, s.max)}`;
+  }
+  close += '.';
+  if (sum.hitTurns === 0 && sum.turns > 0) {
+    const ways: string[] = [];
+    if (q.terms.length > 1) ways.push('fewer words');
+    if (coverage.kindsOff.length) ways.push(`--kind all (${listed(coverage.kindsOff)} ${coverage.kindsOff.length === 1 ? 'was' : 'were'} not searched)`);
+    if (q.mode === 'words') ways.push('--substring (each term inside longer words too)');
+    const wider = q.mode === 'words' ? searchCommand({ ...s, substring: true, count: false }, '') : coverage.kindsOff.length ? searchCommand({ ...s, kinds: new Set(SEARCH_KINDS), kindsGiven: true, count: false }, '') : '';
+    if (ways.length) close += ` To find more, try ${listed(ways, 'or')}${wider ? `: ${wider}` : '.'}`;
+  }
+  err(close);
+  return failed ? 1 : 0;
+}
+
+// ---- ltms pin ---------------------------------------------------------------------------------------------------
+// The command around the ./pin library (pin.ts): the arguments, the hook's JSON, the output lines, the messages and
+// the exit status. What is pinned, how, and the refusals' own sentences are the library's.
+
+const PIN_HELP = `ltms pin: copies of Claude Code's transcripts that its cleanup does not
+delete, and a log to check them against.
+
+Usage:
+  ltms pin <path>... --to <dir> [--root <dir>] [--list] [--rehash]
+  ltms pin --from-hook --to <dir> [--root <dir>] [--list] [--rehash]
+  ltms pin --check <dir> [--root <dir>]
+
+Claude Code deletes a session's transcript, and the session's directory with
+it, once the transcript has not been modified for cleanupPeriodDays (30 by
+default), and deletes each file under a session's tool-results/ by its own
+age, even while the transcript lives. pin copies them into <dir>, which the
+cleanup does not reach, and appends what changed to <dir>/PINS.log.
+
+The root is <config>/projects, where <config> is $CLAUDE_CONFIG_DIR, or
+~/.claude when that is unset or empty; --root names another. Paths resolve
+against the current directory and must be under the root; a file's place in
+the pin (its rel) is its path under the root. Under each project directory (a
+directory directly under the root) pin copies <name>.jsonl,
+<name>.jsonl.superseded-*, and every file under subagents/, tool-results/,
+workflows/ and mcp-tasks/ of a session directory (one named by a UUID, or by
+a <name> whose <name>.jsonl is beside it). A <sid>.jsonl given by itself
+brings its <sid>/. Other files are counted, not copied; memory/, .git and
+symbolic links met under a path are counted, not entered.
+
+Each file is read once. A .jsonl is copied up to its last new line, so a line
+still being written waits for a later pin; one with no new line yet is not
+copied (notCopied). A file is new; grown (its copy is a prefix of it);
+rewritten (anything else: the old copy is first kept by a hard link,
+<stem>.superseded-<sha12>.jsonl, or <name>.superseded-<sha12> for another
+file); or unchanged (the same size and sha256). A file whose size and mtime
+are what its last line in PINS.log records is not read again, unless
+--rehash is given; --rehash also reads each copy whose source still holds
+the version its last line records, and writes it again from that source when
+it holds other bytes. pin never writes through a symbolic link inside <dir>,
+never reads PINS.log, the lock or a kept copy through one, and never waits on
+a FIFO there: one of those that is not a regular file is a failure
+(not-a-regular-file), or, for PINS.log before a pin starts, a refusal.
+
+The pin directory <dir>:
+  <rel>           the newest bytes of each file, with its source's mtime
+  PINS.log        JSON lines: a root line, then one line per change (new,
+                  grown, rewritten, recovered, takeover), each holding the
+                  sha256 of the line before it
+  .ltms-pin.lock  while a pin runs: its pid, host and start time
+Copies and PINS.log are 0600 (or the source's mode, when stricter);
+directories are 0700.
+
+Refused (exit 2, nothing written): no --to; --to inside Claude Code's config
+directory, a path given or the root; a path inside --to or outside the root;
+a --to that is not a directory, or that holds files and no PINS.log; a
+PINS.log that is not a regular file, has another name (a hard link), or does
+not open with its root line; a root other than the one PINS.log records. Each
+message gives the next command.
+
+stdout: one coverage line, then one line per failure.
+  {"k":"coverage","root","to","files":{"seen","new","grown","rewritten",
+  "unchanged","notCopied","failed"},"failures","partial","skipped":{
+  "notSessionShaped","symlinks","memory","git"},"bytesCopied",
+  "keptSourceGone","lastLog","ms"}
+  seen            new + grown + rewritten + unchanged + notCopied + failed
+  notCopied       .jsonl files with no new line yet (empty, or their first
+                  line still being written): nothing whole to copy
+  failed          the source files that could not be read, kept or written
+  failures        every failure line that follows: failed of them are
+                  source files, the rest the pin directory, its lock or log,
+                  a path or a directory under it, or a copy recovery read
+  partial         .jsonl files with bytes after their last new line, left
+                  for a later pin; also counted among the six above
+  skipped         found under the paths and not copied
+  bytesCopied     the bytes written into copies
+  keptSourceGone  pinned files under the paths whose source is gone: what
+                  only the pin now keeps
+  lastLog         when PINS.log's last line was written
+  {"k":"failure","path","rel","op","code"}: a file or directory that could
+  not be read or written; op is to, lock, log, walk, read, keep, write or
+  recover, and code the error code (symlink-in-pin: a directory on the way
+  to the copy is a symbolic link, which pin does not write through;
+  not-a-regular-file: PINS.log, the lock or a kept copy's name is a link, a
+  FIFO or another thing that is not a regular file)
+--list adds one line per line appended to PINS.log for a file:
+  {"k":"pin","rel","how","bytes","prev","kept"}: prev is the length of the
+  version before (null for a new file); kept, after a rewrite, the old one's
+  rel
+stderr: what recovery found and did, and one closing line when something
+failed or nothing was found to pin.
+
+--from-hook reads a Claude Code hook's JSON from standard input and pins the
+directory its transcript_path is in: the session's project directory. It
+refuses (exit 2), saying why, when standard input is a terminal or empty, is
+not JSON, is not an object, or has no transcript_path string. In a SessionEnd
+hook, set "timeout": 60 (Claude Code gives SessionEnd hooks 1.5 s by
+default); the README has the settings.json lines.
+
+A lock held by a running pin is waited for up to 30 s; then pin exits 1 with
+the holder's pid and start time, and the rm command. A lock whose pid is no
+longer running on this host is taken over. SIGINT, SIGTERM or SIGHUP stops a
+pin between two files: it removes the lock, and every file it pinned is
+whole and in PINS.log.
+
+--check <dir> reads every version PINS.log records back from the copy that
+holds it, checks that each line holds the sha256 of the line before it, and
+counts the files under the root (the one PINS.log records, or --root) that
+are missing from the pin or longer than their copy (a .jsonl with no new
+line yet is not missing, and one whose copy is a prefix of it, longer only
+by an unfinished line, which a pin does not copy, is counted apart:
+unfinished). It writes nothing, and first waits for a pin that is running,
+as pin does: up to 30 s. After a mismatch in a current copy whose source is
+there (under the root PINS.log records, as a file pin copies), its closing
+line gives the --rehash command for the projects of those copies: it writes
+back what the sources still hold, and --check, run again, says what
+remains. While PINS.log has another name (a hard link), which a pin
+refuses, it says so and gives no pin command.
+stdout: one line, then one line per finding.
+  {"k":"check","dir","root","lines","versions","files","mismatches",
+  "chainBreaks","unreadableLines","unlogged","temps","lock","lastLog",
+  "staleness":{"root","fromLog","sources","missing","longer","unfinished",
+  "projectsNotPinned","failed"},"ms"}
+  {"k":"mismatch","rel","copy","line","want":{"bytes","sha256"},"got"}
+  {"k":"chain","line","want","got"}
+  {"k":"unreadable","line"}
+  {"k":"unlogged","rel"}
+In the first line, lines, versions and files count PINS.log's lines, the
+versions they record and the copies read. line is a line's number in
+PINS.log; copy is the rel of the copy read (rel's own, or a kept copy); got
+is null when that copy is missing or cannot be read.
+
+Exit status: 0 when every file was pinned; 1 when a file or directory failed,
+or the lock stayed held; 2 on a usage error or a refusal. --check: 0 when the
+pin holds what PINS.log records; 1 on a mismatch, a chain break, a line that
+is not a log line, a directory under the root that could not be read, or a
+lock held for the whole wait (unlogged files, temp files, a lock left by a
+pin that stopped, and missing sources are reported, and fail nothing); 2 on
+a usage error or a directory that is not a pin.
+`;
+
+/** pin's arguments, read as cli.ts reads skeleton's: --help and --version anywhere before --, and -- ends the options. */
+interface PinArgs { k: 'args'; paths: string[]; to?: string; root?: string; check?: string; fromHook: boolean; list: boolean; rehash: boolean }
+type PinArgsRead = PinArgs | { k: 'usage'; message: string } | { k: 'help' } | { k: 'version' };
+const PIN_VALUE_OPTIONS = ['--to', '--root', '--check'] as const;
+type PinValueOption = typeof PIN_VALUE_OPTIONS[number];
+const PIN_OPTION_KEY = { '--to': 'to', '--root': 'root', '--check': 'check' } as const;
+const PIN_OPTIONS = '--to, --root, --from-hook, --check, --list, --rehash, --help and --version';
+/** A path in a next command: single-quoted, a quote in it written as the shell reads it back. */
+const q = quoted;
+
+function readPinArgs(argv: string[]): PinArgsRead {
+  const a: PinArgs = { k: 'args', paths: [], fromHook: false, list: false, rehash: false };
+  const usage = (message: string): PinArgsRead => ({ k: 'usage', message });
+  let ended = false;
+  for (let n = 0; n < argv.length; n++) {
+    const x = argv[n];
+    if (ended || !x.startsWith('-')) { a.paths.push(x); continue; }
+    if (x === '--') { ended = true; continue; }
+    if (x === '--help' || x === '-h') return { k: 'help' };
+    if (x === '--version' || x === '-v') return { k: 'version' };
+    if (x === '-') return usage(`'-' is not a path: pin reads no file from standard input (a hook's JSON comes in with --from-hook).`);
+    if (x === '--from-hook') { a.fromHook = true; continue; }
+    if (x === '--list') { a.list = true; continue; }
+    if (x === '--rehash') { a.rehash = true; continue; }
+    const eq = x.indexOf('=');
+    const name = (eq < 0 ? x : x.slice(0, eq)) as PinValueOption;
+    if (!PIN_VALUE_OPTIONS.includes(name)) return usage(`unknown option '${x}'. The options are ${PIN_OPTIONS}; put -- before a path that starts with '-'.`);
+    let value: string;
+    if (eq >= 0) value = x.slice(eq + 1);
+    else {
+      if (n + 1 >= argv.length) return usage(`${name} needs a directory after it: ${name} <dir>.`);
+      value = argv[++n];
+      if (value.startsWith('-')) return usage(`${name} needs a directory after it, and '${value}' starts with '-': for a directory whose name starts with '-', write ${name}=<dir> or ${name} ./<dir>.`);
+    }
+    if (value === '') return usage(`${name} is empty: name a directory, ${name} <dir>.`);
+    const key = PIN_OPTION_KEY[name], before = a[key];
+    if (before !== undefined) return usage(`${name} is given twice ('${before}' and '${value}'): give it once.`);
+    a[key] = value;
+  }
+  return a;
+}
+
+/** The project directory a Claude Code hook's JSON names: the directory of its transcript_path. Nothing of the JSON
+ *  is echoed but its keys (label-checked) and transcript_path: a hook's JSON can hold a prompt. */
+type HookRead = { k: 'hook'; transcript: string; project: string } | { k: 'usage'; message: string };
+async function readHook(to: string, root: string): Promise<HookRead> {
+  const byHand = `In a hook, Claude Code writes that JSON; to try it by hand: echo '{"transcript_path":"${root}/<project>/<session>.jsonl"}' | ltms pin --from-hook --to ${q(to)}`;
+  const usage = (what: string): HookRead => ({ k: 'usage', message: `--from-hook reads a Claude Code hook's JSON from standard input, and ${what}. ${byHand}` });
+  if (process.stdin.isTTY) return usage('standard input is a terminal');
+  let raw: Buffer;
+  try {
+    raw = await new Promise<Buffer>((done, fail) => {
+      const chunks: Buffer[] = [];
+      process.stdin.on('data', (c: Buffer | string) => chunks.push(typeof c === 'string' ? Buffer.from(c) : c));
+      process.stdin.on('end', () => done(Buffer.concat(chunks)));
+      process.stdin.on('error', fail);
+    });
+  } catch (e) { return usage(`standard input could not be read (${(e as NodeJS.ErrnoException)?.code ?? 'error'})`); }
+  const text = raw.toString('utf8');
+  if (text.trim() === '') return usage(raw.length ? `standard input holds only blanks (${raw.length} bytes)` : 'standard input is empty');
+  let o: unknown;
+  try { o = JSON.parse(text); } catch { return usage(`standard input (${raw.length} bytes) is not JSON`); }
+  /** What a JSON value is, in words, never the value. */
+  const kind = (v: unknown): string => (v === null ? 'null' : Array.isArray(v) ? 'an array' : v === '' ? 'an empty string'
+    : typeof v === 'object' ? 'an object' : `a ${typeof v}`);
+  if (!isRecord(o)) return usage(`standard input holds JSON that is not an object (${kind(o)})`);
+  const tp = o.transcript_path;
+  if (tp === undefined) {
+    const keys = Object.keys(o).map((k) => label(k, '(empty)'));
+    const shown = keys.length ? `its keys: ${keys.slice(0, 8).join(', ')}${keys.length > 8 ? `, and ${keys.length - 8} more` : ''}` : 'it has no keys';
+    return usage(`its JSON object has no transcript_path (${shown})`);
+  }
+  if (typeof tp !== 'string' || tp === '') return usage(`its transcript_path is not a path (${kind(tp)})`);
+  return { k: 'hook', transcript: tp, project: dirname(resolve(tp)) };
+}
+
+/** A path's real path, or the path made absolute when it has none (it does not exist). */
+const realOr = (p: string): string => { try { return realpathSync.native(p); } catch { return resolve(p); } };
+/** p is dir or under it, by their real paths, as the library measures them (without case on darwin and win32). */
+function isUnder(p: string, dir: string): boolean {
+  const fold = (x: string): string => (process.platform === 'darwin' || process.platform === 'win32' ? x.toLowerCase() : x);
+  const r = relative(fold(realOr(dir)), fold(realOr(p)));
+  return r === '' || (r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r));
+}
+const isLink = (p: string): boolean => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } };
+/** Whether this process may read the file at p (access, R_OK). */
+const readable = (p: string): boolean => { try { accessSync(p, fsConstants.R_OK); return true; } catch { return false; } };
+
+/** The next command after a refusal, from its reason and the arguments as given. */
+function pinNext(r: PinRefusal, a: PinArgs, paths: string[], root: string): string {
+  const given = paths.map(q).join(' ');
+  const elsewhere = `Choose a directory outside it, e.g. ltms pin ${given} --to ~/claude-pins`;
+  switch (r.reason) {
+    case 'to-inside-config': return elsewhere;
+    case 'to-inside-path': case 'to-inside-root': return `Choose a pin directory outside the paths given and outside the root, e.g. ltms pin ${given} --to ~/claude-pins`;
+    case 'path-inside-to': return `A pin is not pinned again: give paths under the root ${q(root)}. To check this pin: ltms pin --check ${q(a.to!)}`;
+    case 'path-outside-root': {
+      // a project directory under the root that is a symbolic link leads outside it: pin goes by where a path leads
+      const link = paths.find((p) => isLink(p) && !isUnder(p, root));
+      if (link !== undefined) {
+        const real = realOr(link);
+        return `${q(link)} is a symbolic link to ${q(real)}, and pin measures a path by where it leads, so it does not pin through a link. To pin where it leads, into a pin directory of its own: ltms pin ${q(real)} --to <dir> --root ${q(dirname(real))}`;
+      }
+      return `Give paths under ${q(root)}, or name the root they are under: ltms pin ${given} --to ${q(a.to!)} --root <dir>`;
+    }
+    case 'to-not-a-directory': return `Give a directory, new or a pin, e.g. ltms pin ${given} --to ~/claude-pins`;
+    case 'root-differs': {
+      const rec = r.recordedRoot;   // as the library read it: the log is not read again here
+      if (rec === undefined) return 'Give the root it records with --root, or pin into another directory (--to).';
+      // paths outside the root it records would be refused with that root too: only another directory takes them
+      if (!paths.every((p) => isUnder(p, rec))) return `The paths given are not under the root it records, so pin them into another directory, e.g. ltms pin ${given} --to ~/claude-pins${a.root === undefined ? '' : ` --root ${q(a.root)}`}`;
+      return `Pin with the root it records: ltms pin ${given} --to ${q(a.to!)} --root ${q(rec)}; or pin into another directory (--to).`;
+    }
+    case 'log-unreadable': {
+      // head would read through a link, and wait on a FIFO: what is not a regular file is looked at with ls. One that
+      // cannot be read (pin opens it before it counts its names) too: ls shows its mode and owner, where head would
+      // meet the same refusal. A log with another name (a hard link) is the same file under that name, wherever it
+      // is: find names them
+      const log = join(a.to!, 'PINS.log');
+      let kind: 'file' | 'named' | 'unreadable' | 'other' = 'other';
+      try { const s = lstatSync(log); kind = !s.isFile() ? 'other' : !readable(log) ? 'unreadable' : s.nlink > 1 ? 'named' : 'file'; } catch { /* gone since */ }
+      return kind === 'named' ? `Find its other names: find / -samefile ${q(log)} 2>/dev/null; to start a pin elsewhere, give another --to.`
+        : kind === 'file' ? `Look at its first line: head -n 1 ${q(log)}; to start a pin elsewhere, give another --to.`
+          : kind === 'unreadable' ? `See its mode and owner: ls -l ${q(log)}; to start a pin elsewhere, give another --to.`
+            : `See what it is: ls -l ${q(log)}; to start a pin elsewhere, give another --to.`;
+    }
+    case 'to-holds-files': return `Pin into a directory of its own, e.g. ltms pin ${given} --to ${q(join(a.to!, 'claude-pins'))}; what it holds now: ls -A ${q(a.to!)}`;
+    case 'not-a-pin': {
+      // a PINS.log that is there is looked at with ls, which reads nothing through it: one that is not a regular file (a
+      // link, a FIFO, a directory) for what it is, a regular file the check could not read for its mode and owner. The
+      // directory given is the pin, so it is not sent elsewhere
+      const log = join(a.check!, 'PINS.log');
+      let there: 'file' | 'other' | null = null;
+      try { there = lstatSync(log).isFile() ? 'file' : 'other'; } catch { /* no PINS.log: the directory given is not a pin */ }
+      return there === 'other' ? `See what it is: ls -l ${q(log)}`
+        : there === 'file' ? `See its mode and owner: ls -l ${q(log)}`
+          : 'Give the directory a pin wrote into (the --to of ltms pin): ltms pin --check <dir>';
+    }
+    default: return 'ltms pin --help has the forms.';
+  }
+}
+
+/** The coverage line, its fields in the documented order. */
+function coverageLine(c: PinCoverage): Record<string, unknown> {
+  const f = c.files, s = c.skipped;
+  return { k: 'coverage', root: c.root, to: c.to,
+    files: { seen: f.seen, new: f.new, grown: f.grown, rewritten: f.rewritten, unchanged: f.unchanged, notCopied: f.notCopied, failed: f.failed }, failures: c.failures,
+    partial: c.partial, skipped: { notSessionShaped: s.notSessionShaped, symlinks: s.symlinks, memory: s.memory, git: s.git },
+    bytesCopied: c.bytesCopied, keptSourceGone: c.keptSourceGone, lastLog: c.lastLog, ms: c.ms };
+}
+/** --list: one line per line appended to PINS.log for a file. */
+function listLine(l: PinLogLine): Record<string, unknown> {
+  return { k: 'pin', rel: l.rel, how: l.how, bytes: l.bytes, prev: l.prev ? l.prev.bytes : null, ...(l.kept === undefined ? {} : { kept: l.kept }) };
+}
+/** --check's first line: the counts, the staleness and the time of the last log line. */
+function checkLine(r: PinCheckDone): Record<string, unknown> {
+  const s = r.staleness;
+  return { k: 'check', dir: r.dir, root: r.root, lines: r.lines, versions: r.versions, files: r.files, mismatches: r.mismatches.length,
+    chainBreaks: r.chainBreaks.length, unreadableLines: r.unreadableLines.length, unlogged: r.unlogged.length, temps: r.temps, lock: r.lock,
+    lastLog: r.lastLog,
+    staleness: s === null ? null : { root: s.root, fromLog: s.fromLog, sources: s.sources, missing: s.missing, longer: s.longer, unfinished: s.unfinished, projectsNotPinned: s.projectsNotPinned, failed: s.failed },
+    ms: r.ms };
+}
+const jsonLine = (o: unknown): string => JSON.stringify(o) + '\n';
+/** How long ago an ISO time was, in the unit that reads best; '' when it cannot be read. */
+function ago(iso: string | null): string {
+  const ms = iso === null ? NaN : Date.now() - Date.parse(iso);
+  if (!(ms >= 0)) return '';
+  const min = Math.round(ms / 60000);
+  return min < 120 ? `${min} min ago` : min < 2880 ? `${Math.round(min / 60)} h ago` : `${Math.round(min / 1440)} days ago`;
+}
+
+function printPinned(r: PinDone, a: PinArgs, paths: string[], root: string): number {
+  const c = r.coverage, f = c.files;
+  out(jsonLine(coverageLine(c)) + r.failures.map((x) => jsonLine({ k: 'failure', path: x.path, rel: x.rel, op: x.op, code: x.code })).join('')
+    + (a.list ? r.lines.filter((l) => l.rel !== undefined).map((l) => jsonLine(listLine(l))).join('') : ''));
+  for (const n of r.notices) err(`ltms pin: ${n}`);
+  if (r.failures.length) {
+    const x = r.failures[0];
+    // a lock that is not a regular file stops a pin before any file, at every pin until it is gone: what is at its name
+    // is looked at with ls, which reads nothing through it
+    const look = x.op === 'lock' && x.code === 'not-a-regular-file' ? ` See what is at the lock: ls -l ${q(x.path)}` : '';
+    err(`ltms pin: ${plural(r.failures.length, 'failure', 'failures')}, each named on stdout ("k":"failure": the path, the step and the error code; the first: ${x.op} ${q(x.path)}, ${x.code}). Every file pinned is whole and in PINS.log; once the cause is fixed, the same command pins the rest.${look}`);
+    return 1;
+  }
+  if (f.seen === 0) {
+    const s = c.skipped;
+    err(`ltms pin: nothing to pin under ${paths.map(q).join(', ')}: no file there is of a transcript's shape (<name>.jsonl and <name>.jsonl.superseded-* in a project directory, and the files under a session's subagents/, tool-results/, workflows/ and mcp-tasks/); passed over: ${plural(s.notSessionShaped, 'other file', 'other files')}, ${plural(s.symlinks, 'symbolic link', 'symbolic links')}, ${plural(s.memory, 'memory/ directory', 'memory/ directories')} and ${plural(s.git, '.git directory', '.git directories')}. Pin a project directory under the root, e.g. ltms pin ${q(root)} --to ${q(a.to!)}`);
+  }
+  return r.interrupted !== null ? 1 : 0;
+}
+
+/** A pinned rel's source is there, under the root PINS.log records, as itself: a regular file at that path whose real path
+ *  is that path (no symbolic link on the way to it, or at its end), so that a pin of its project with that root is not
+ *  refused for leading elsewhere. Nothing of the file is read. */
+function sourceThere(root: string, rel: string): boolean {
+  const p = join(root, ...rel.split('/'));
+  try { return lstatSync(p).isFile() && realpathSync.native(p) === p; } catch { return false; }
+}
+
+function printChecked(r: PinCheckDone): number {
+  out(jsonLine(checkLine(r)) + r.mismatches.map((m) => jsonLine({ k: 'mismatch', rel: m.rel, copy: m.copy, line: m.line, want: m.want, got: m.got })).join('')
+    + r.chainBreaks.map((b) => jsonLine({ k: 'chain', line: b.line, want: b.want, got: b.got })).join('')
+    + r.unreadableLines.map((n) => jsonLine({ k: 'unreadable', line: n })).join('')
+    + r.unlogged.map((rel) => jsonLine({ k: 'unlogged', rel })).join(''));
+  for (const n of r.notices) err(`ltms pin: ${n}`);
+  const log = q(join(r.dir, 'PINS.log'));
+  // a PINS.log with another name makes every pin into this directory a refusal (the notice above says so): no pin
+  // command is given until it has one name again
+  const pinRuns = r.logNames <= 1;
+  const damage = r.mismatches.length + r.chainBreaks.length + r.unreadableLines.length;
+  if (damage) {
+    const first = r.mismatches[0]?.line ?? r.chainBreaks[0]?.line ?? r.unreadableLines[0];
+    const parts = [`ltms pin: ${q(r.dir)} does not hold what ${log} records: ${plural(r.mismatches.length, 'mismatch', 'mismatches')}, ${plural(r.chainBreaks.length, 'chain break', 'chain breaks')} and ${plural(r.unreadableLines.length, 'line that is not a log line', 'lines that are not log lines')}, each on stdout with its line in PINS.log`,
+      `To read the first: sed -n '${first}p' ${log}`];
+    // The --rehash command, for the projects of the current copies with a mismatch whose source is there, of the sweep's
+    // shape (one a pin copies): it writes back what the sources still hold, and a check run again says what remains.
+    // Nothing here predicts which mismatches that clears (a kept copy is never written again; a source may no longer
+    // hold a version). Only when PINS.log records its root, which the rels are measured from and a pin into this
+    // directory needs. The command names projects, not the whole root
+    const root = r.root;
+    if (root !== null && pinRuns) {
+      const projects = [...new Set(r.mismatches.filter((m) => m.copy === m.rel && isSweepShaped(root, m.rel) && sourceThere(root, m.rel)).map((m) => m.rel.split('/')[0]))];
+      if (projects.length) parts.push(`To write back into the current copies what their sources still hold (ltms pin --check, run again, then says what remains): ltms pin ${projects.map((p) => q(join(root, p))).join(' ')} --to ${q(r.dir)} --root ${q(root)} --rehash`);
+    }
+    // every part after the first ends in a command, so the line has no closing period
+    err(parts.join('. '));
+  }
+  if (r.unlogged.length) err(`ltms pin: ${plural(r.unlogged.length, 'file', 'files')} in ${q(r.dir)} ${r.unlogged.length === 1 ? 'is' : 'are'} named by no line in PINS.log (on stdout, "k":"unlogged"); the next pin records each with a recovered line.`);
+  if (r.temps) err(`ltms pin: ${plural(r.temps, 'temp file', 'temp files')} in ${q(r.dir)} ${r.temps === 1 ? 'was' : 'were'} left by a pin that stopped; the next pin removes ${r.temps === 1 ? 'it' : 'them'}.`);
+  if (r.lock) err(`ltms pin: ${q(join(r.dir, '.ltms-pin.lock'))} names pid ${r.lock.pid} on ${r.lock.host}, since ${r.lock.started}: a pin is running, or one stopped without removing it (the next pin takes over a lock whose pid is no longer running on this host).`);
+  const s = r.staleness;
+  if (s !== null && s.failed) {
+    let rootCode: string | null = null;   // the root itself, read again here to name its code: it fails the whole count
+    try { readdirSync(s.root); } catch (e) { rootCode = (e as NodeJS.ErrnoException)?.code ?? 'Error'; }
+    err(rootCode !== null
+      ? `ltms pin: the root ${q(s.root)} could not be read (${rootCode}), so no file under it was counted, and the counts of files missing from the pin are short of the truth. Check it: ls -ld ${q(s.root)}`
+      : `ltms pin: ${plural(s.failed, 'directory', 'directories')} under the root ${q(s.root)} could not be read, so the counts of files missing from the pin are short of the truth. Check it: ls -ld ${q(s.root)}`);
+  }
+  if (s !== null && (s.missing || s.longer)) {
+    const when = r.lastLog === null ? '' : ` (PINS.log's last line: ${r.lastLog}${ago(r.lastLog) ? `, ${ago(r.lastLog)}` : ''})`;
+    err(`ltms pin: ${plural(s.missing, 'file', 'files')} under the root ${q(s.root)} ${s.missing === 1 ? 'is' : 'are'} missing from the pin, and ${s.longer} ${s.longer === 1 ? 'is' : 'are'} longer than ${s.longer === 1 ? 'its copy' : 'their copies'}${when}.${pinRuns ? ` To pin them: ltms pin ${q(s.root)} --to ${q(r.dir)}` : ''}`);
+  }
+  // longer only by a line not yet finished: a pin would copy nothing of it, so no command is given
+  if (s !== null && s.unfinished) {
+    const one = s.unfinished === 1;
+    err(`ltms pin: ${plural(s.unfinished, 'file', 'files')} under the root ${q(s.root)} ${one ? 'ends' : 'end'} in an unfinished line, which a pin does not copy: ${one ? 'it is longer than its copy' : 'they are longer than their copies'} only by that line, and ${one ? 'is' : 'are'} not counted as longer.`);
+  }
+  return damage || (s !== null && s.failed) ? 1 : 0;
+}
+
+async function pinMain(argv: string[]): Promise<number> {
+  const a = readPinArgs(argv);
+  if (a.k === 'help') { out(PIN_HELP); return 0; }
+  if (a.k === 'version') return printVersion();
+  if (a.k === 'usage') { err(`ltms pin: ${a.message}`); return 2; }
+  const config = claudeConfigDir().path;   // the rule's one copy, in pin.ts
+  const root = a.root ?? join(config, 'projects');
+  if (a.check !== undefined) {
+    const extra = [...a.paths.map(q), ...(a.to === undefined ? [] : [`--to ${q(a.to)}`]), ...(a.fromHook ? ['--from-hook'] : []), ...(a.list ? ['--list'] : []), ...(a.rehash ? ['--rehash'] : [])];
+    if (extra.length) { err(`ltms pin: --check reads a pin and takes only --root besides it, and ${extra.join(', ')} ${extra.length === 1 ? 'was' : 'were'} given too. To check: ltms pin --check ${q(a.check)}`); return 2; }
+    const r = await checkPin(a.check, a.root === undefined ? {} : { root: a.root });
+    if (r.k === 'refused') { err(`ltms pin: ${r.message} ${pinNext(r, a, [], root)}`); return 2; }
+    if (r.k === 'busy') { err(`ltms pin: ${r.message}`); return 1; }
+    return printChecked(r);
+  }
+  if (a.fromHook && a.paths.length) { err(`ltms pin: --from-hook takes the path from the hook's JSON, so it takes no paths, and ${a.paths.map(q).join(', ')} ${a.paths.length === 1 ? 'was' : 'were'} given. In a hook: ltms pin --from-hook --to ${a.to === undefined ? '<dir>' : q(a.to)}`); return 2; }
+  if (a.to === undefined) {
+    const what = a.fromHook ? '--from-hook' : a.paths.length ? a.paths.map(q).join(' ') : q(root);
+    err(`ltms pin: ${a.paths.length || a.fromHook ? 'no --to' : 'no paths and no --to'}: name the directory to write the copies into, outside Claude Code's config directory ${q(config)}, e.g. ltms pin ${what} --to ~/claude-pins`);
+    return 2;
+  }
+  let paths = a.paths;
+  if (a.fromHook) {
+    const h = await readHook(a.to, root);
+    if (h.k === 'usage') { err(`ltms pin: ${h.message}`); return 2; }
+    err(`ltms pin: --from-hook: the hook names ${q(h.transcript)}, so the path to pin is its directory ${q(h.project)}.`);
+    paths = [h.project];
+  }
+  if (!paths.length) { err(`ltms pin: no paths: give the directories or files to pin, under the root ${q(root)}, e.g. ltms pin ${q(root)} --to ${q(a.to)}; in a hook, ltms pin --from-hook --to ${q(a.to)}`); return 2; }
+  const r = await pinPaths(paths, { to: a.to, root, configDir: config, rehash: a.rehash });
+  if (r.k === 'refused') { err(`ltms pin: ${r.message} ${pinNext(r, a, paths, root)}`); return 2; }
+  if (r.k === 'busy') { err(`ltms pin: ${r.message}`); return 1; }
+  return printPinned(r, a, paths, root);
+}
+
+function main(argv: string[]): number | Promise<number> {
   const cmd = argv[0];
   if (cmd === undefined) { err(`ltms: no command given.\n\n${USAGE}`); return 2; }
   if (cmd === '--help' || cmd === '-h' || cmd === 'help') { out(HELP); return 0; }
   if (cmd === '--version' || cmd === '-v') return printVersion();
+  if (cmd === 'search') return searchMain(argv.slice(1));
+  if (cmd === 'pin') return pinMain(argv.slice(1));
   if (cmd !== 'skeleton' && cmd !== 'stats') {
     if (cmd.startsWith('-')) err(`ltms: unknown option '${cmd}'. The options are --help and --version.\n\n${USAGE}`);
-    else err(`ltms: unknown command '${cmd}'. The commands are skeleton and stats.\n\n${USAGE}`);
+    else err(`ltms: unknown command '${cmd}'. The commands are skeleton, stats, search and pin.\n\n${USAGE}`);
     return 2;
   }
 
@@ -637,4 +1733,12 @@ process.stdout.on('error', (e: NodeJS.ErrnoException) => {
   process.stderr.write(`ltms: cannot write the output (${e.code ?? e.message}); what was written so far is incomplete.\n`);
   process.exit(1);
 });
-process.exitCode = main(process.argv.slice(2));
+const status = main(process.argv.slice(2));
+if (typeof status === 'number') process.exitCode = status;
+else {
+  // pin is the only command that runs asynchronously: the lock is removed on a signal only while the event loop turns
+  status.then((s) => { process.exitCode = s; }, (e: unknown) => {
+    err(`ltms pin: stopped with an internal error (${internalError(e)}). This is a bug in ltms; a pin's lock is removed when it stops, and the next pin records what this one left.`);
+    process.exitCode = 1;
+  });
+}

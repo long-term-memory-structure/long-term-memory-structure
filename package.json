@@ -1,8 +1,31 @@
 {
   "name": "long-term-memory-structure",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "description": "Index a Claude Code session transcript to find what compaction took out of the context: one line per turn and tool call, with its address in the file and no content.",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "pin": [
+        "./dist/pin.d.ts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./pin": {
+      "types": "./dist/pin.d.ts",
+      "default": "./dist/pin.js"
+    },
+    "./dist/*.js": "./dist/*.js",
+    "./dist/*": "./dist/*.js",
+    "./package": "./package.json",
+    "./*": "./*"
+  },
   "bin": {
     "ltms": "dist/cli.js",
     "long-term-memory-structure": "dist/cli.js"
@@ -18,7 +41,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
-    "test": "node --test test/cli.test.mjs"
+    "test": "node --test test/cli.test.mjs test/package-paths.test.mjs test/library-docs.test.mjs test/library.test.mjs test/search.test.mjs test/pin.test.mjs test/bashverb-limit.test.mjs"
   },
   "keywords": [
     "claude-code",

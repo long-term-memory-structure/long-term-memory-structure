@@ -99,8 +99,9 @@ export interface TextBlock      { type: 'text'; text: string }
 export interface ThinkingBlock  { type: 'thinking'; thinking?: string; signature?: string }
 export interface RedactedBlock  { type: 'redacted_thinking'; data?: string }
 /** `caller` is present on nearly every tool_use block and appears in no
- *  release note and no doc. Blocks without it come from older CLI versions. */
-export interface ToolUseBlock   { type: 'tool_use'; id: string; name: string; input?: Record<string, any>; caller?: string }
+ *  release note and no doc. Blocks without it come from older CLI versions.
+ *  It is not a string: Claude Code 2.1.319 writes an object there, `{"type":"direct"}`. */
+export interface ToolUseBlock   { type: 'tool_use'; id: string; name: string; input?: Record<string, any>; caller?: unknown }
 export interface ToolResultBlock{ type: 'tool_result'; tool_use_id: string; content?: string | any[]; is_error?: boolean }
 export interface ImageBlock     { type: 'image'; source?: any }
 export type ContentBlock = TextBlock | ThinkingBlock | RedactedBlock | ToolUseBlock | ToolResultBlock | ImageBlock | { type: string; [k: string]: any };
@@ -132,11 +133,15 @@ export interface Message {
 export interface AssistantRecord extends Envelope {
   type: 'assistant';
   message: Message;
-  requestId?: string;        // groups the blocks of one API response; absent on the oldest records
-  effort?: string;           // added in CLI 2.1.212
-  apiBlockIndex?: number;    // added in CLI 2.1.258: block order WITHIN a request
+  /** groups the blocks of one API response; absent on the oldest records */
+  requestId?: string;
+  /** added in CLI 2.1.212 */
+  effort?: string;
+  /** added in CLI 2.1.258: block order WITHIN a request */
+  apiBlockIndex?: number;
   agentId?: string;
-  attributionAgent?: string; // undocumented
+  /** undocumented */
+  attributionAgent?: string;
   attributionSkill?: string;
   isApiErrorMessage?: boolean;
   error?: any;
@@ -146,14 +151,17 @@ export interface AssistantRecord extends Envelope {
 export interface UserRecord extends Envelope {
   type: 'user';
   message: Message;
-  promptId: string;               // user-only; assistant carries requestId instead
-  sourceToolAssistantUUID?: string; // on most tool results: links a result back to the calling block
+  /** user-only; assistant carries requestId instead */
+  promptId: string;
+  /** on most tool results: links a result back to the calling block */
+  sourceToolAssistantUUID?: string;
   /** Undocumented, present in every version observed, and RICHER than the
    *  tool_result content block. Usually an object; a string in the error form. */
   toolUseResult?: any;
   permissionMode?: string;
   promptSource?: string;
-  origin?: any;                   // a sibling of `message`, NOT inside it
+  /** a sibling of `message`, NOT inside it */
+  origin?: any;
   isMeta?: boolean;
   toolEndsTurn?: boolean;
   toolDenialKind?: string;
@@ -165,8 +173,10 @@ export interface AttachmentRecord extends Envelope {
   type: 'attachment';
   attachment: { type: Open<string>; [k: string]: any };
   agentId?: string;
-  rendered?: any;             // added in CLI 2.1.263
-  renderedInHumanTurn?: any;  // added in CLI 2.1.263; rare
+  /** added in CLI 2.1.263 */
+  rendered?: any;
+  /** added in CLI 2.1.263; rare */
+  renderedInHumanTurn?: any;
   [k: string]: any;
 }
 
@@ -225,7 +235,7 @@ export interface ApiRequest {
   messageId?: string;
   model?: string;
   effort?: string;
-  timestamp: string;
+  timestamp: string | undefined;
   /** Every assistant record of this request, in `apiBlockIndex` order where the
    *  field exists (added in CLI 2.1.258), else file order. */
   records: AssistantRecord[];
@@ -241,8 +251,8 @@ export interface ApiRequest {
 
 /** A tool_use paired with whatever came back, from either representation. */
 export interface ToolCall {
-  id: string;
-  name: string;
+  id: string | undefined;
+  name: string | undefined;
   /** The HARNESS-NORMALIZED input, which is not always what the model emitted. The emission is the record's
    *  `wireToolInputs[id]` (on records that carry it, one entry per tool_use in that record). The two often
    *  differ: a leading `cd <cwd> && ` stripped from Bash commands, `replace_all: false` filled into Edit,
@@ -259,7 +269,8 @@ export interface ToolCall {
    *  main sessions. The wire copy arrived in CLI 2.1.267: on anything older, absence is the format's age, not
    *  sameness. */
   wireDiffers?: boolean;
-  caller?: string;
+  /** The tool_use block's `caller`, as written: an object in Claude Code 2.1.319 (see ToolUseBlock). */
+  caller?: unknown;
   callNode: TreeNode;
   resultNode?: TreeNode;
   /** The flattened string form, from the tool_result content block. */
@@ -326,7 +337,9 @@ export interface TranscriptStats {
   agentIds: string[];
   /** Nodes with more than one child: parallel tool calls, retries, hook races, rarely a rewind. */
   branchPoints: number;
-  /** Input turns (typed, sdk, parent, input; see inputChannel()); harness-written user records excluded. */
+  /** Input turns: the records isInputTurn() accepts, anywhere in the file, not only on the live path: every input
+   *  channel (typed, sdk, input, task, loop, parent, another agent's word; see inputChannel()); harness-written user
+   *  records excluded. */
   inputTurns: number;
   toolResultRecords: number;
   firstTimestamp: string | null;
@@ -991,6 +1004,7 @@ export function repairedLivePath(t: Transcript): { path: TreeNode[]; from: 'leaf
     prepend(pathTo(t, via.uuid));
   }
   compactions.reverse();                            // the earliest join first, as the path reads
+  bridges.reverse();                                // the earliest bridge first too: path order
   if (segments.length) {
     const joined: TreeNode[] = [];
     for (let k = segments.length - 1; k >= 0; k--) for (const n of segments[k]) joined.push(n);

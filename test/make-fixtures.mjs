@@ -1,7 +1,8 @@
 // Writes the generated test fixtures (each is introduced by a comment below: labels, unanswered, cycle, rare-shapes,
-// journal-launched, lexer, labels2, errors, parallel, compacted, stale-head, retried3, orphan-first, the cycle-* three,
-// content, parallel-msgid, request-two-turns, errors2, unicode, parallel-fail, api-request-records, types-only,
-// passed-over, nul-padding).
+// journal-launched, lexer, labels2, errors, parallel, compacted and compacted-nopointer, stale-head, retried3,
+// orphan-first, the cycle-* three, content, parallel-msgid, request-two-turns, errors2, unicode, parallel-fail,
+// api-request-records, types-only, passed-over, nul-padding; then the library-* fixtures of test/library.test.mjs, and
+// the search-* fixtures of test/search.test.mjs).
 // Every string in them is invented; the record format follows the hand-written
 // fixtures (edges.jsonl). The output is the same on every run.
 //
@@ -626,4 +627,477 @@ writeFileSync(join(DIR, 'types-only.jsonl'), [
     NUL.repeat(8) + JSON.stringify(['ZQXV05 an invented array behind NUL bytes']),
     JSON.stringify({ type: 'last-prompt', lastPrompt: 'Build the invented demo once more.', leafUuid: u(5), sessionId: sid }),
   ].join('\n') + '\n');
+}
+
+// ---- the library's fixtures (test/library.test.mjs reads every value the library computes from them) ----
+// Every record is written out in full, so each value the test expects can be read off its generator: a uuid ends in
+// the number of the line it is written on (a replay keeps the uuid of the record it copies), and every timestamp is
+// written by hand.
+const libEnv = (sid, version) => ({ isSidechain: false, userType: 'external', cwd: '/work/demo-project', version, gitBranch: 'main', entrypoint: 'cli', sessionId: sid });
+const libUuid = (pre, k) => `${pre}-0000-4000-8000-${String(k).padStart(12, '0')}`;
+const libWrite = (name, lines) => writeFileSync(join(DIR, name), lines.map((o) => (typeof o === 'string' ? o : JSON.stringify(o))).join('\n') + '\n');
+const libReply = (model, content, extra = {}) => ({ type: 'message', role: 'assistant', model, content, stop_reason: 'end_turn', ...extra });
+
+// library-lines.jsonl: one line of each shape the line parser tells apart, each short enough to count its bytes by
+// hand: a record holding a 2-byte character (line 1), a blank line, a record holding a 4-byte character, a line of
+// three blanks, four JSON values that are not objects (null, an array, a string, a number), a record ending in a
+// carriage return, a line cut short, a line of 121 UTF-16 code units whose 120th is the first half of a surrogate
+// pair, a line nested 1,001 levels deep, a record behind a NUL byte, and a last record. The characters outside ASCII,
+// the NUL byte and the carriage return are built from their code points.
+{
+  const NUL = String.fromCharCode(0), CR = String.fromCharCode(13);
+  const E_ACUTE = String.fromCodePoint(0xe9), GRIN = String.fromCodePoint(0x1f600);
+  libWrite('library-lines.jsonl', [
+    `{"type":"a","s":"${E_ACUTE}"}`,
+    '',
+    `{"type":"b","s":"${GRIN}"}`,
+    '   ',
+    'null',
+    '[1,2]',
+    '"x"',
+    '42',
+    `{"type":"c"}${CR}`,
+    '{"type":',
+    `{"s":"${'a'.repeat(113)}${GRIN}`,
+    '['.repeat(1001) + ']'.repeat(1001),
+    `${NUL}{"type":"d"}`,
+    '{"type":"e"}',
+  ]);
+}
+
+// library-forest.jsonl: the tree and the census. A prompt; one response written as two records (a thinking block and
+// a call, one message id, one usage); the call's result, an attachment and a system record. Then a rewind: a prompt
+// and its reply abandoned, and a prompt typed again under the same parent (the one node with two children). On that
+// branch: a reply, a harness note (isMeta), a task's notification and its reply, another agent's message (in a second
+// session id) and its reply (whose version is ''). Then two replays: the result written again as it was, and the
+// thinking record written again with keys a census would read (another version, an agentId, isSidechain true and the
+// earliest timestamp of all), so a census that counted replays would show them. Then a prompt whose parent is in no
+// file and its reply (the latest timestamp, with a smaller one written after it); two records whose parents name
+// each other (one timestamp is a number); an ai-title record in a third session id; three last-prompt records (the
+// head moved, and the last names its leaf with a number); a record with no type; and the call written again as it was.
+{
+  const S1 = 'f1f1f1f1-1111-4111-8111-111111111111', S2 = 'f1f1f1f1-2222-4222-8222-222222222222', S3 = 'f1f1f1f1-3333-4333-8333-333333333333';
+  const U = (k) => libUuid('f1000000', k);
+  const e = (k, parent) => ({ parentUuid: parent, ...libEnv(S1, '2.1.300'), uuid: U(k) });
+  const at = (mmss) => `2026-08-02T09:${mmss}.000Z`;
+  const prompt = (k, parent, content, ts, extra = {}) => ({ ...e(k, parent), type: 'user', promptSource: 'typed', message: { role: 'user', content }, timestamp: ts, ...extra });
+  const reply = (k, parent, n, text, ts, extra = {}) => ({ ...e(k, parent), type: 'assistant', requestId: `req_f1_0${n}`, message: { id: `msg_f1_0${n}`, ...libReply('claude-demo-model', [{ type: 'text', text }]) }, timestamp: ts, ...extra });
+  const usage = { input_tokens: 10, output_tokens: 5 };
+  const recs = [
+    prompt(1, null, 'An invented first prompt.', at('00:10')),
+    { ...e(2, U(1)), type: 'assistant', requestId: 'req_f1_01', message: { id: 'msg_f1_01', ...libReply('claude-demo-model', [{ type: 'thinking', thinking: 'An invented thought.', signature: 'invented-signature' }], { stop_reason: null, usage }) }, timestamp: at('00:11') },
+    { ...e(3, U(2)), type: 'assistant', requestId: 'req_f1_01', message: { id: 'msg_f1_01', ...libReply('claude-demo-model', [{ type: 'tool_use', id: 'toolu_f1_01', name: 'Bash', input: { command: 'make demo' } }], { stop_reason: 'tool_use', usage }) }, timestamp: at('00:12') },
+    { ...e(4, U(3)), type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_f1_01', content: 'invented demo output' }] }, toolUseResult: { stdout: 'invented demo output', stderr: '' }, sourceToolAssistantUUID: U(3), timestamp: at('00:13') },
+    { ...e(5, U(4)), type: 'attachment', attachment: { type: 'hook_success', content: 'an invented hook note' }, timestamp: at('00:14') },
+    { ...e(6, U(5)), type: 'system', subtype: 'turn_duration', durationMs: 4000, timestamp: at('00:15') },
+    prompt(7, U(6), 'An invented prompt, rewound.', at('00:20')),
+    reply(8, U(7), 2, 'An invented reply, rewound.', at('00:21')),
+    prompt(9, U(6), 'An invented prompt, typed again.', at('00:30')),
+    reply(10, U(9), 3, 'An invented reply.', at('00:31')),
+    { ...e(11, U(10)), type: 'user', isMeta: true, message: { role: 'user', content: 'An invented note from the harness.' }, timestamp: at('00:32') },
+    { ...e(12, U(11)), type: 'user', message: { role: 'user', content: '<task-notification>An invented task finished.</task-notification>' }, timestamp: at('00:33') },
+    reply(13, U(12), 4, 'An invented reply to the task.', at('00:34'), { agentId: 'agent-f1-a' }),
+    { ...e(14, U(13)), sessionId: S2, type: 'user', origin: { kind: 'peer' }, message: { role: 'user', content: 'An invented message from another agent.' }, timestamp: at('00:35') },
+    reply(15, U(14), 5, 'An invented reply to the other agent.', at('00:36'), { version: '', agentId: 'agent-f1-b' }),
+  ];
+  recs.push(recs[3]);
+  recs.push({ ...recs[1], version: '2.1.319', agentId: 'agent-f1-replay', isSidechain: true, slug: 'invented-slug', timestamp: '2026-08-02T08:58:00.000Z' });
+  recs.push(
+    prompt(18, libUuid('f1999999', 999), 'An invented prompt whose parent is in no file.', '2026-08-02T08:59:00.000Z'),
+    reply(19, U(18), 6, 'An invented reply below it.', at('10:00')),
+    reply(20, U(21), 7, 'An invented record whose parent is the next one.', at('00:42')),
+    reply(21, U(20), 8, 'An invented record whose parent is the previous one.', 99),
+    { type: 'ai-title', aiTitle: 'An invented title', sessionId: S3 },
+    { type: 'last-prompt', lastPrompt: 'An invented prompt, typed again.', leafUuid: U(10), sessionId: S1 },
+    { type: 'last-prompt', lastPrompt: 'An invented message from another agent.', leafUuid: U(15), sessionId: S1 },
+    { type: 'last-prompt', lastPrompt: 'An invented message from another agent.', leafUuid: 7, sessionId: S1 },
+    { note: 'an invented record without a type', sessionId: S1 },
+  );
+  recs.push(recs[2]);   // line 27: the call written again as it was, so the copies as written (2) and the copies that differ (1) are not equal in number
+  libWrite('library-forest.jsonl', recs);
+}
+
+// library-requests.jsonl: requests, tool calls and turns. Turn 1: one response written as two records, the call
+// first (apiBlockIndex 1) and the thinking block second (apiBlockIndex 0), with one usage; the call's result, an
+// error written as a string in toolUseResult. Then one record holding two calls, with wireToolInputs: the Bash
+// command as the model emitted it (with a `cd` the harness stripped), and the Read input with its keys in another
+// order; their results, the Read's first; a second result record for the Read, without toolUseResult; and a reply
+// with no requestId (an older version). Turn 2: two calls made in parallel by one response; the second call's result
+// is written first, and the session goes on from the first call's result (an is_error), so the second call and its
+// result are off the live path.
+{
+  const S = 'f2f2f2f2-1111-4111-8111-111111111111';
+  const R = (k) => libUuid('f2000000', k);
+  const e = (k, parent) => ({ parentUuid: parent, ...libEnv(S, '2.1.319'), uuid: R(k) });
+  const at = (ss) => `2026-08-03T10:00:${ss}Z`;
+  const prompt = (k, parent, content, ts) => ({ ...e(k, parent), type: 'user', promptSource: 'typed', message: { role: 'user', content }, timestamp: ts });
+  const result = (k, parent, block, ts, extra = {}) => ({ ...e(k, parent), type: 'user', message: { role: 'user', content: [{ type: 'tool_result', ...block }] }, timestamp: ts, ...extra });
+  const usageA = { input_tokens: 100, cache_creation_input_tokens: 20, cache_read_input_tokens: 300, output_tokens: 40, output_tokens_details: { thinking_tokens: 15 } };
+  const usageD = { input_tokens: 2, cache_read_input_tokens: 1000, output_tokens: 30 };
+  libWrite('library-requests.jsonl', [
+    prompt(1, null, 'Run the invented demo and fix what fails.', at('00.000')),
+    { ...e(2, R(1)), type: 'assistant', requestId: 'req_f2_01', effort: 'high', apiBlockIndex: 1, message: { id: 'msg_f2_01', ...libReply('claude-demo-model', [{ type: 'tool_use', id: 'toolu_f2_01', name: 'Bash', input: { command: 'make demo' }, caller: { type: 'direct' } }], { stop_reason: 'tool_use', usage: usageA }) }, timestamp: at('02.000') },
+    { ...e(3, R(2)), type: 'assistant', requestId: 'req_f2_01', effort: 'high', apiBlockIndex: 0, message: { id: 'msg_f2_01', ...libReply('claude-demo-model', [{ type: 'thinking', thinking: 'An invented thought.', signature: 'invented-signature' }], { stop_reason: 'tool_use', usage: usageA }) }, timestamp: at('03.000') },
+    result(4, R(3), { tool_use_id: 'toolu_f2_01', content: 'Exit code 2\nan invented failure' }, at('04.000'), { toolUseResult: 'Error: Exit code 2\nan invented failure', sourceToolAssistantUUID: R(2) }),
+    { ...e(5, R(4)), type: 'assistant', requestId: 'req_f2_02', message: { id: 'msg_f2_02', ...libReply('claude-demo-model', [
+      { type: 'tool_use', id: 'toolu_f2_02', name: 'Bash', input: { command: 'make demo' }, caller: { type: 'direct' } },
+      { type: 'tool_use', id: 'toolu_f2_03', name: 'Read', input: { file_path: '/work/demo-project/notes.txt', limit: 20 } },
+    ], { stop_reason: 'tool_use', usage: { input_tokens: 7, cache_read_input_tokens: 500, output_tokens: 60 } }) },
+    wireToolInputs: { toolu_f2_02: { command: 'cd /work/demo-project && make demo' }, toolu_f2_03: { limit: 20, file_path: '/work/demo-project/notes.txt' } }, timestamp: at('05.000') },
+    result(6, R(5), { tool_use_id: 'toolu_f2_03', content: 'invented notes', is_error: false }, at('06.000'), { toolUseResult: { type: 'text', file: { filePath: '/work/demo-project/notes.txt', numLines: 1 } }, sourceToolAssistantUUID: R(5) }),
+    result(7, R(6), { tool_use_id: 'toolu_f2_02', content: 'invented build output', is_error: false }, at('07.000'), { toolUseResult: { stdout: 'invented build output', stderr: '', interrupted: false, isImage: false }, sourceToolAssistantUUID: R(5) }),
+    result(8, R(7), { tool_use_id: 'toolu_f2_03', content: 'invented notes, recorded again' }, at('08.000')),
+    { ...e(9, R(8)), type: 'assistant', message: { id: 'msg_f2_03', ...libReply('claude-demo-model', [{ type: 'text', text: 'The invented demo builds now.' }], { usage: { input_tokens: 3, cache_creation_input_tokens: 40, output_tokens: 9 } }) }, timestamp: at('09.000') },
+    prompt(10, R(9), 'Now read the two invented files.', at('10.000')),
+    { ...e(11, R(10)), type: 'assistant', requestId: 'req_f2_04', message: { id: 'msg_f2_04', ...libReply('claude-demo-model', [{ type: 'tool_use', id: 'toolu_f2_04', name: 'Read', input: { file_path: '/work/demo-project/one.txt' } }], { stop_reason: 'tool_use', usage: usageD }) }, timestamp: at('11.000') },
+    { ...e(12, R(11)), type: 'assistant', requestId: 'req_f2_04', message: { id: 'msg_f2_04', ...libReply('claude-demo-model', [{ type: 'tool_use', id: 'toolu_f2_05', name: 'Read', input: { file_path: '/work/demo-project/two.txt' } }], { stop_reason: 'tool_use', usage: usageD }) }, timestamp: at('11.500') },
+    result(13, R(12), { tool_use_id: 'toolu_f2_05', content: 'the invented second file' }, at('12.000'), { toolUseResult: { type: 'text' }, sourceToolAssistantUUID: R(12) }),
+    result(14, R(11), { tool_use_id: 'toolu_f2_04', content: 'File does not exist.', is_error: true }, at('13.000'), { toolUseResult: { invented: 'an invented structured error' }, sourceToolAssistantUUID: R(11) }),
+    { ...e(15, R(14)), type: 'assistant', requestId: 'req_f2_05', message: { id: 'msg_f2_05', ...libReply('claude-demo-model', [{ type: 'text', text: 'The first invented file is missing; the second was read.' }], { usage: { input_tokens: 1, cache_read_input_tokens: 1100, output_tokens: 8 } }) }, timestamp: at('14.000') },
+    { type: 'last-prompt', lastPrompt: 'Now read the two invented files.', leafUuid: R(15), sessionId: S },
+  ]);
+}
+
+// library-request-keys.jsonl: crafted shapes of the grouping and the charging. A response of two records, each with
+// its own message id, model, effort, usage and timestamp, the second-written one first by apiBlockIndex; a response
+// whose message id was charged already; a response of two records with no message id, each charged; a record with
+// neither a requestId nor a message id, and its child (one group, read from the parent link); an assistant record
+// without the envelope and with neither key; a record whose requestId is empty; and one record of three calls: two
+// with one id, and one whose id is a number. The result of the first id is a record without the envelope.
+{
+  const S = 'f3f3f3f3-1111-4111-8111-111111111111';
+  const K = (k) => libUuid('f3000000', k);
+  const e = (k, parent) => ({ parentUuid: parent, ...libEnv(S, '2.1.319'), uuid: K(k) });
+  const at = (ss) => `2026-08-04T11:00:${ss}.000Z`;
+  const text = (t) => [{ type: 'text', text: t }];
+  libWrite('library-request-keys.jsonl', [
+    { ...e(1, null), type: 'user', promptSource: 'typed', message: { role: 'user', content: 'Write the invented responses.' }, timestamp: at('00') },
+    { ...e(2, K(1)), type: 'assistant', requestId: 'req_e', apiBlockIndex: 1, effort: 'low', message: { id: 'msg_e1', ...libReply('model-e1', text('the second block, written first'), { usage: { input_tokens: 1, output_tokens: 2 } }) }, timestamp: at('01') },
+    { ...e(3, K(2)), type: 'assistant', requestId: 'req_e', apiBlockIndex: 0, effort: 'max', message: { id: 'msg_e2', ...libReply('model-e2', text('the first block, written second'), { usage: { input_tokens: 4, cache_read_input_tokens: 8, output_tokens: 16, output_tokens_details: { thinking_tokens: 32 } } }) }, timestamp: at('02') },
+    { ...e(4, K(3)), type: 'assistant', requestId: 'req_f', message: { id: 'msg_e1', ...libReply('model-e1', text('a response whose message id was charged already'), { usage: { input_tokens: 1000, output_tokens: 1000 } }) }, timestamp: at('03') },
+    { ...e(5, K(4)), type: 'assistant', requestId: 'req_g', message: libReply('model-g', text('a record with no message id'), { usage: { input_tokens: 3, output_tokens: 1 } }), timestamp: at('04') },
+    { ...e(6, K(5)), type: 'assistant', requestId: 'req_g', message: libReply('model-g', text('another record with no message id'), { usage: { input_tokens: 3, output_tokens: 1 } }), timestamp: at('05') },
+    { ...e(7, K(6)), type: 'assistant', message: { role: 'assistant', content: text('a record with neither key') }, timestamp: at('06') },
+    { ...e(8, K(7)), type: 'assistant', message: { role: 'assistant', content: text('its child, with neither key either') }, timestamp: at('07') },
+    { type: 'assistant', message: { role: 'assistant', content: text('an assistant record without the envelope') } },
+    { ...e(10, K(8)), type: 'assistant', requestId: '', message: { id: 'msg_j', ...libReply('model-j', text('a record whose requestId is empty')) }, timestamp: at('09') },
+    { ...e(11, K(10)), type: 'assistant', requestId: 'req_t', message: { id: 'msg_t', ...libReply('model-t', [
+      { type: 'tool_use', id: 'toolu_dup', name: 'Bash', input: { command: 'make one' } },
+      { type: 'tool_use', id: 'toolu_dup', name: 'Bash', input: { command: 'make two' } },
+      { type: 'tool_use', id: 42, name: 'Read', input: { file_path: '/work/demo-project/n.txt' } },
+    ], { stop_reason: 'tool_use' }) }, timestamp: at('10') },
+    { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_dup', content: 'invented output of make two' }] }, toolUseResult: { stdout: 'invented output of make two', stderr: '' } },
+    { type: 'last-prompt', lastPrompt: 'Write the invented responses.', leafUuid: K(11), sessionId: S },
+  ]);
+}
+
+// library-bridges.jsonl: two records whose parents are in no file, on the live path. The head's record is written
+// before its own parent (the second orphan), so the bridge from that orphan passes over it, already on the path, to
+// the record written before it; the first orphan is bridged to the reply written just before it.
+{
+  const S = 'f4f4f4f4-1111-4111-8111-111111111111';
+  const B = (k) => libUuid('f4000000', k);
+  const e = (k, parent) => ({ parentUuid: parent, ...libEnv(S, '2.1.319'), uuid: B(k) });
+  const at = (ss) => `2026-08-05T12:00:${ss}.000Z`;
+  const reply = (k, parent, t, ts) => ({ ...e(k, parent), type: 'assistant', requestId: `req_f4_0${k}`, message: { id: `msg_f4_0${k}`, ...libReply('claude-demo-model', [{ type: 'text', text: t }]) }, timestamp: ts });
+  libWrite('library-bridges.jsonl', [
+    { ...e(1, null), type: 'user', promptSource: 'typed', message: { role: 'user', content: 'Carry on with the invented work.' }, timestamp: at('00') },
+    reply(2, B(1), 'An invented first reply.', at('01')),
+    reply(3, libUuid('f4999999', 999), 'An invented reply whose parent was never written.', at('02')),
+    reply(4, B(5), 'An invented reply written before its parent.', at('04')),
+    reply(5, libUuid('f4999999', 998), 'Another invented reply whose parent was never written.', at('03')),
+    { type: 'last-prompt', lastPrompt: 'Carry on with the invented work.', leafUuid: B(4), sessionId: S },
+  ]);
+}
+
+// library-preserved.jsonl: a compaction whose kept segment is written after its summary (the terminal UI's shape):
+// the boundary's logicalParentUuid names the kept segment's tail, written after the summary, and the history before
+// the boundary hangs off compactMetadata.preservedSegment.headUuid. Its compactMetadata holds all four values.
+{
+  const S = 'f5f5f5f5-1111-4111-8111-111111111111';
+  const C = (k) => libUuid('f5000000', k);
+  const e = (k, parent) => ({ parentUuid: parent, ...libEnv(S, '2.1.319'), uuid: C(k) });
+  const at = (ss) => `2026-08-06T13:00:${ss}.000Z`;
+  const prompt = (k, parent, content, ts) => ({ ...e(k, parent), type: 'user', promptSource: 'typed', message: { role: 'user', content }, timestamp: ts });
+  const reply = (k, parent, t, ts) => ({ ...e(k, parent), type: 'assistant', requestId: `req_f5_0${k}`, message: { id: `msg_f5_0${k}`, ...libReply('claude-demo-model', [{ type: 'text', text: t }]) }, timestamp: ts });
+  libWrite('library-preserved.jsonl', [
+    prompt(1, null, 'An invented first prompt.', at('00')),
+    reply(2, C(1), 'An invented first reply.', at('01')),
+    prompt(3, C(2), 'An invented second prompt.', at('02')),
+    reply(4, C(3), 'An invented second reply.', at('03')),
+    { ...e(5, null), logicalParentUuid: C(7), type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 150000, postTokens: 30000, durationMs: 45000, preservedSegment: { headUuid: C(3), tailUuid: C(7) } }, timestamp: at('10') },
+    { ...e(6, C(5)), type: 'user', isCompactSummary: true, message: { role: 'user', content: 'An invented summary of the first prompt.' }, timestamp: at('11') },
+    reply(7, C(6), 'The invented second reply, kept.', at('12')),
+    prompt(8, C(7), 'An invented third prompt.', at('20')),
+    reply(9, C(8), 'An invented third reply.', at('21')),
+    { type: 'last-prompt', lastPrompt: 'An invented third prompt.', leafUuid: C(9), sessionId: S },
+  ]);
+}
+
+// library-detached.jsonl: a detached compaction (CLI 2.1.295 and 2.1.300), with no compactMetadata: the boundary and
+// its summary are a branch of their own, and the /compact command (stamped before them, written after them) and its
+// output are parented around them.
+{
+  const S = 'f6f6f6f6-1111-4111-8111-111111111111';
+  const D = (k) => libUuid('f6000000', k);
+  const e = (k, parent) => ({ parentUuid: parent, ...libEnv(S, '2.1.300'), uuid: D(k) });
+  const at = (ss) => `2026-08-07T14:00:${ss}.000Z`;
+  const user = (k, parent, content, ts, extra = {}) => ({ ...e(k, parent), type: 'user', message: { role: 'user', content }, timestamp: ts, ...extra });
+  const reply = (k, parent, t, ts) => ({ ...e(k, parent), type: 'assistant', requestId: `req_f6_0${k}`, message: { id: `msg_f6_0${k}`, ...libReply('claude-demo-model', [{ type: 'text', text: t }]) }, timestamp: ts });
+  libWrite('library-detached.jsonl', [
+    user(1, null, 'An invented first prompt.', at('00'), { promptSource: 'typed' }),
+    reply(2, D(1), 'An invented first reply.', at('01')),
+    { ...e(3, null), logicalParentUuid: D(2), type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', timestamp: at('05') },
+    user(4, D(3), 'An invented summary.', at('05'), { isCompactSummary: true }),
+    user(5, D(2), '<command-name>/compact</command-name>', at('02')),
+    user(6, D(5), '<local-command-stdout>Compacted</local-command-stdout>', at('06')),
+    user(7, D(6), 'An invented prompt after the compaction.', at('10'), { promptSource: 'typed' }),
+    reply(8, D(7), 'An invented reply after the compaction.', at('11')),
+    { type: 'last-prompt', lastPrompt: 'An invented prompt after the compaction.', leafUuid: D(8), sessionId: S },
+  ]);
+}
+
+// library-compacted-twice.jsonl: two full compactions, each boundary naming the last record before it, so the walk
+// back from the head meets the later one first.
+{
+  const S = 'fbfbfbfb-1111-4111-8111-111111111111';
+  const G = (k) => libUuid('fb000000', k);
+  const e = (k, parent) => ({ parentUuid: parent, ...libEnv(S, '2.1.319'), uuid: G(k) });
+  const at = (ss) => `2026-08-08T15:00:${ss}.000Z`;
+  const prompt = (k, parent, content, ts) => ({ ...e(k, parent), type: 'user', promptSource: 'typed', message: { role: 'user', content }, timestamp: ts });
+  const reply = (k, parent, t, ts) => ({ ...e(k, parent), type: 'assistant', requestId: `req_fb_${k}`, message: { id: `msg_fb_${k}`, ...libReply('claude-demo-model', [{ type: 'text', text: t }]) }, timestamp: ts });
+  const boundary = (k, logical, compactMetadata, ts) => ({ ...e(k, null), logicalParentUuid: logical, type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata, timestamp: ts });
+  const summary = (k, parent, ts) => ({ ...e(k, parent), type: 'user', isCompactSummary: true, message: { role: 'user', content: 'An invented summary.' }, timestamp: ts });
+  libWrite('library-compacted-twice.jsonl', [
+    prompt(1, null, 'An invented first prompt.', at('00')),
+    reply(2, G(1), 'An invented first reply.', at('01')),
+    boundary(3, G(2), { trigger: 'manual', preTokens: 1000 }, at('10')),
+    summary(4, G(3), at('11')),
+    prompt(5, G(4), 'An invented second prompt.', at('20')),
+    reply(6, G(5), 'An invented second reply.', at('21')),
+    boundary(7, G(6), { trigger: 'auto', preTokens: 2000, postTokens: 500, durationMs: 3000 }, at('30')),
+    summary(8, G(7), at('31')),
+    prompt(9, G(8), 'An invented third prompt.', at('40')),
+    reply(10, G(9), 'An invented third reply.', at('41')),
+    { type: 'last-prompt', lastPrompt: 'An invented third prompt.', leafUuid: G(10), sessionId: S },
+  ]);
+}
+
+// library-detached-first.jsonl: a detached compaction (its boundary and summary a branch of their own, the /compact
+// command and its output parented around them), then a full compaction later in the session. The walk finds the
+// later one; the detached one is placed afterwards, earlier in the path.
+{
+  const S = 'fcfcfcfc-1111-4111-8111-111111111111';
+  const H = (k) => libUuid('fc000000', k);
+  const e = (k, parent) => ({ parentUuid: parent, ...libEnv(S, '2.1.300'), uuid: H(k) });
+  const at = (ss) => `2026-08-09T16:00:${ss}.000Z`;
+  const user = (k, parent, content, ts, extra = {}) => ({ ...e(k, parent), type: 'user', message: { role: 'user', content }, timestamp: ts, ...extra });
+  const reply = (k, parent, t, ts) => ({ ...e(k, parent), type: 'assistant', requestId: `req_fc_${k}`, message: { id: `msg_fc_${k}`, ...libReply('claude-demo-model', [{ type: 'text', text: t }]) }, timestamp: ts });
+  const boundary = (k, logical, compactMetadata, ts) => ({ ...e(k, null), logicalParentUuid: logical, type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', compactMetadata, timestamp: ts });
+  libWrite('library-detached-first.jsonl', [
+    user(1, null, 'An invented first prompt.', at('00'), { promptSource: 'typed' }),
+    reply(2, H(1), 'An invented first reply.', at('01')),
+    boundary(3, H(2), { trigger: 'manual', preTokens: 4000 }, at('05')),
+    user(4, H(3), 'An invented summary.', at('05'), { isCompactSummary: true }),
+    user(5, H(2), '<command-name>/compact</command-name>', at('02')),
+    user(6, H(5), '<local-command-stdout>Compacted</local-command-stdout>', at('06')),
+    user(7, H(6), 'An invented second prompt.', at('10'), { promptSource: 'typed' }),
+    reply(8, H(7), 'An invented second reply.', at('11')),
+    boundary(9, H(8), { trigger: 'auto', preTokens: 6000 }, at('20')),
+    user(10, H(9), 'An invented summary.', at('21'), { isCompactSummary: true }),
+    user(11, H(10), 'An invented third prompt.', at('30'), { promptSource: 'typed' }),
+    reply(12, H(11), 'An invented third reply.', at('31')),
+    { type: 'last-prompt', lastPrompt: 'An invented third prompt.', leafUuid: H(12), sessionId: S },
+  ]);
+}
+
+// ---- the search fixtures (S358, ltms search): every string invented. A planted zqk* word marks where a test expects a
+// term to be found, or not to be. Every character outside ASCII, every new line and tab, and every backslash of the
+// JSON-escaped text are built from code points, never typed: an editor or a tool can turn a typed escape into the
+// character it names.
+const cpS = (...c) => String.fromCodePoint(...c);
+const BSL = String.fromCharCode(92), NL = String.fromCharCode(10);
+/** A file whose envelope records are written in order, one second apart, each parented to the one before unless told
+ *  otherwise. */
+function searchFile(name, sid, pre) {
+  const lines = [];
+  let k = 0, last = null;
+  const uuid = (i) => `${pre}-0000-4000-8000-${String(i).padStart(12, '0')}`;
+  const stamp = (i) => new Date(Date.UTC(2026, 8, 1, 9, 0, 0) + i * 1000).toISOString();
+  const api = {
+    rec(type, body, parent = last) {
+      const u = uuid(++k);
+      lines.push(JSON.stringify({ parentUuid: parent, ...env(sid), type, ...body, uuid: u, timestamp: stamp(k) }));
+      last = u;
+      return u;
+    },
+    prompt(content, parent = last) {
+      return api.rec('user', { message: { role: 'user', content }, promptId: `${pre}-1111-4000-8000-${String(k + 1).padStart(12, '0')}`, promptSource: 'typed' }, parent);
+    },
+    reply(content, extra = {}, parent = last) {
+      const blocks = Array.isArray(content) ? content : [{ type: 'text', text: content }];
+      return api.rec('assistant', { message: { id: `msg_${pre}_${k + 1}`, type: 'message', role: 'assistant', model: 'claude-demo-model', content: blocks,
+        stop_reason: blocks.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end_turn', usage: { input_tokens: 10, output_tokens: 10 } }, requestId: `req_${pre}_${k + 1}`, ...extra }, parent);
+    },
+    call(id, name, input, extra = {}) { return api.reply([{ type: 'tool_use', id, name, input }], extra); },
+    result(id, content, extra = {}) {
+      return api.rec('user', { message: { role: 'user', content: [{ tool_use_id: id, type: 'tool_result', content, is_error: false }] },
+        toolUseResult: { stdout: 'invented standard output', stderr: '', interrupted: false, isImage: false }, sourceToolAssistantUUID: last, ...extra });
+    },
+    side(obj) { lines.push(JSON.stringify(obj)); },
+    line(text) { lines.push(text); },
+    replay(lineNo) { lines.push(lines[lineNo - 1]); },
+    uuid, get last() { return last; }, set last(v) { last = v; },
+    write() { writeFileSync(join(DIR, name), lines.join(NL) + NL); },
+  };
+  return api;
+}
+
+// search-kinds.jsonl: a record of every kind of text, each holding its own word, and everything search does not read. The
+// line of each record is given beside it; the tests name the lines.
+{
+  const sid = 'f1f1f1f1-2a2a-4b3b-8c4c-5d5d5d5d5d5d', f = searchFile('search-kinds.jsonl', sid, 'f1000000');
+  // L1, before the first prompt: a SessionStart hook's attachment (kind attachment, so off by default; it is T001's)
+  f.rec('attachment', { attachment: { type: 'hook_success', hookName: 'SessionStart:startup', toolUseID: 'toolu_sk_00', hookEvent: 'SessionStart',
+    content: 'zqkhook: the session start context', stdout: 'zqkhook', stderr: '', exitCode: 0, command: 'bash /work/hooks/start.sh', durationMs: 7 } }, null);
+  f.prompt('Find the zqkinput word in the demo project.');                                                   // L2: T001
+  f.reply([{ type: 'thinking', thinking: 'zqkthinking about where to look', signature: 'c2lnbmF0dXJl' }]);    // L3: thinking
+  f.reply('zqkreply: I will search the project.');                                                          // L4: reply
+  f.call('toolu_sk_01', 'Bash', { command: 'grep -rn zqkcall .', description: 'Search for the zqkdesc word' },   // L5: call,
+    { wireToolInputs: { toolu_sk_01: { command: 'cd /work/demo-project && grep -rn zqkwire .', description: 'Search for the zqkdesc word' } } });   // wire inputs
+  f.result('toolu_sk_01', 'zqkresult: one file holds it',                                                   // L6: result,
+    { toolUseResult: { stdout: 'zqktur: the structured copy', stderr: '', interrupted: false, isImage: false } });   // toolUseResult
+  f.rec('system', { subtype: 'stop_hook_summary', hookCount: 1, hookInfos: [{ command: 'bash /work/hooks/zqksystem.sh', durationMs: 12 }], hookErrors: [],
+    hookAdditionalContext: [], preventedContinuation: false, stopReason: '', hasOutput: false, level: 'info', toolUseID: 'toolu_sk_01' });   // L7: system
+  f.rec('user', { message: { role: 'user', content: 'zqkmeta: a caveat the harness wrote' }, isMeta: true });   // L8: meta
+  f.rec('attachment', { attachment: { type: 'todo_reminder', content: [{ content: 'zqkattach: the remaining item', status: 'pending' }], itemCount: 1 } });   // L9
+  f.reply([{ type: 'redacted_thinking', data: 'zqkredacted' }]);                                             // L10: redacted
+  f.reply('API Error: zqkapierror, the server is overloaded', { isApiErrorMessage: true });                  // L11: system
+  f.prompt([{ type: 'text', text: 'Look at the zqkimage screenshot.' },                                      // L12: T002, with
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'zqkbase64' } }]);             // an image
+  f.call('toolu_sk_02', 'Read', { file_path: '/work/demo-project/build.log' });                              // L13
+  f.result('toolu_sk_02', NL + '<persisted-output>' + NL + 'Output too large. Full output saved to: /work/demo-project/tool-results/toolu_sk_02.txt' + NL + NL +
+    'Preview (first 2KB):' + NL + 'zqkspill: the preview line' + NL + '</persisted-output>');               // L14: spilled
+  f.call('toolu_sk_03', 'Bash', { command: 'cat notes.txt', 'a key with spaces': 'zqkkey value' });          // L15
+  f.result('toolu_sk_03', 'The notes quote the marker <persisted-output> mid-text: zqkquote.');              // L16: not spilled
+  f.rec('system', { subtype: 'compact_boundary', content: 'Conversation compacted', isMeta: false, level: 'info', logicalParentUuid: f.last,
+    compactMetadata: { trigger: 'manual', preTokens: 9000 } }, null);                                       // L17: the boundary
+  f.rec('user', { message: { role: 'user', content: 'zqksummary: the session searched the project and read a log.' }, isCompactSummary: true,
+    isVisibleInTranscriptOnly: true });                                                                     // L18: summary
+  const queued = f.rec('attachment', { attachment: { type: 'queued_command', prompt: [{ type: 'text', text: 'zqkqueued: also check the tests' }],
+    commandMode: 'prompt', timestamp: '2026-09-01T09:00:19.500Z' } });                                       // L19: input
+  f.prompt('zqkrewound: an abandoned question');                                                            // L20: rewound
+  f.reply('zqkrewound reply, abandoned');                                                                    // L21: rewound
+  f.prompt('Run the zqkthird check, zqkleft side.', queued);                                                // L22: T003
+  const end = f.reply('The zqkthird check passed on the zqkright side.');                                   // L23
+  f.side({ type: 'last-prompt', lastPrompt: 'Run the zqkthird check, zqkleft side.', leafUuid: end, sessionId: sid });   // L24: side
+  f.side({ type: 'queue-operation', operation: 'enqueue', timestamp: '2026-09-01T09:00:30.000Z', sessionId: sid, content: 'zqkqueueop' });   // L25
+  f.line('this line is not JSON: zqkbad');                                                                  // L26
+  f.replay(4);                                                                                              // L27: replay
+  f.write();
+}
+
+// search-entries.jsonl: one record holding three kinds (thinking, a reply and a call) and a result whose two text blocks
+// hold different words: one entry per record and kind, by line, then by kind; each names the first field of its kind
+// that holds a term.
+{
+  const sid = 'f2f2f2f2-3b3b-4c4c-8d5d-6e6e6e6e6e6e', f = searchFile('search-entries.jsonl', sid, 'f2000000');
+  f.prompt('zqkmulti: the order of the entries');                                                           // L1
+  f.reply([{ type: 'thinking', thinking: 'zqkmulti thinking comes first', signature: 'c2ln' }, { type: 'text', text: 'the zqkmulti reply comes second' },
+    { type: 'tool_use', id: 'toolu_se_01', name: 'Bash', input: { command: 'echo zqkmulti', description: 'zqkmulti call' } }]);   // L2
+  f.result('toolu_se_01', [{ type: 'text', text: 'the first block holds zqkother' }, { type: 'text', text: 'the second block holds zqkmulti' }]);   // L3
+  const end = f.reply('done');                                                                               // L4
+  f.side({ type: 'last-prompt', lastPrompt: 'zqkmulti: the order of the entries', leafUuid: end, sessionId: sid });
+  f.write();
+}
+
+// search-escapes.jsonl: results holding JSON-escaped text: a backslash-n glued to a word, a Hebrew word written as four
+// backslash-u escapes, a surrogate pair and a lone surrogate, two invalid escapes beside a valid one, a Windows path that
+// the written form reads right, phrases in each form, and an escaped backslash before an n.
+{
+  const sid = 'f3f3f3f3-4c4c-4d5d-8e6e-7f7f7f7f7f7f', f = searchFile('search-escapes.jsonl', sid, 'f3000000');
+  const u = (hex) => BSL + 'u' + hex;
+  f.prompt('Read the invented JSON files.');                                                                 // L1
+  f.call('toolu_es_01', 'Bash', { command: 'cat data.json' });                                              // L2
+  f.result('toolu_es_01', '{"text":"done' + BSL + 'nzqkglued: failed"}');                                   // L3
+  f.call('toolu_es_02', 'Bash', { command: 'cat hebrew.json' });                                            // L4
+  f.result('toolu_es_02', 'name: ' + u('05e9') + u('05dc') + u('05d5') + u('05dd') + ' end');                // L5
+  f.call('toolu_es_03', 'Bash', { command: 'cat emoji.json' });                                             // L6
+  f.result('toolu_es_03', 'face ' + u('d83d') + u('de00') + 'zqkpair and ' + u('d83d') + 'zqklone');          // L7
+  f.call('toolu_es_04', 'Bash', { command: 'cat broken.json' });                                            // L8
+  f.result('toolu_es_04', 'bad ' + BSL + 'xzqkinvalid and ' + BSL + 'u12zqkshort ok ' + BSL + 'tzqktab');      // L9
+  f.call('toolu_es_05', 'Bash', { command: 'cat path.txt' });                                               // L10
+  f.result('toolu_es_05', 'C:' + BSL + 'new' + BSL + 'zqkpath');                                            // L11
+  f.call('toolu_es_06', 'Bash', { command: 'cat phrases.txt' });                                            // L12
+  f.result('toolu_es_06', 'zqkone' + BSL + 'nzqktwo then ' + BSL + 'nzqkaa zqkbb' + BSL + 'tzqkcc and ' + BSL + BSL + 'nzqkliteral');   // L13
+  const end = f.reply('The invented files were read.');                                                      // L14
+  f.side({ type: 'last-prompt', lastPrompt: 'Read the invented JSON files.', leafUuid: end, sessionId: sid });
+  f.write();
+}
+
+// search-scripts.jsonl: one turn per known string (a prompt of one '.', then a reply holding the string): Hebrew with
+// prefixes, a Hebrew prefix letter glued to Latin words, pointed Hebrew, Arabic with al- and tatweel, Chinese, Japanese,
+// Thai, Greek capitals before a period and an apostrophe, a zero-width space, full-width letters, a ligature and
+// mathematical bold capitals, code tokens, Hangul with a word written in conjoining jamo, a Persian word with a
+// zero-width non-joiner, and a soft hyphen.
+{
+  const sid = 'f4f4f4f4-5d5d-4e6e-8f7f-8a8a8a8a8a8a', f = searchFile('search-scripts.jsonl', sid, 'f4000000');
+  const strings = [
+    'zqk1 ' + cpS(0x5d5, 0x5d4, 0x5d1, 0x5d9, 0x5ea) + ' ' + cpS(0x5de, 0x5d4, 0x5e2, 0x5d9, 0x5e8),
+    cpS(0x5d1) + 'ltms ' + cpS(0x5d4) + 'API node' + cpS(0x5d9, 0x5dd),
+    cpS(0x5d5, 0x5b0, 0x5d4, 0x5b7, 0x5d1, 0x5b7, 0x5bc, 0x5d9, 0x5b4, 0x5ea) + ' ' + cpS(0x5d1, 0x5b0, 0x5bc, 0x5e9, 0x5b8, 0x5c1, 0x5dc, 0x5d5, 0x5b9, 0x5dd),
+    cpS(0x648, 0x627, 0x644, 0x643, 0x62a, 0x627, 0x628) + ' ' + cpS(0x643, 0x640, 0x62a, 0x640, 0x627, 0x628),
+    cpS(0x6211, 0x4eec, 0x4eca, 0x5929, 0x5728, 0x5317, 0x4eac, 0x5927, 0x5b66, 0x5f00, 0x4f1a),
+    cpS(0x6771, 0x4eac, 0x5927, 0x5b66, 0x3067, 0x30b3, 0x30fc, 0x30d2, 0x30fc, 0x3092, 0x98f2, 0x307f, 0x307e, 0x3057, 0x305f),
+    cpS(0xe20, 0xe32, 0xe29, 0xe32, 0xe44, 0xe17, 0xe22, 0xe44, 0xe21, 0xe48, 0xe21, 0xe35, 0xe01, 0xe32, 0xe23, 0xe40, 0xe27, 0xe49, 0xe19, 0xe27, 0xe23, 0xe23, 0xe04),
+    cpS(0x39f, 0x394, 0x39f, 0x3a3) + '.' + cpS(0x39a, 0x391, 0x399) + ' ' + cpS(0x39f, 0x394, 0x39f, 0x3a3) + "'" + cpS(0x391),
+    'zqkfoo' + cpS(0x200b) + 'zqkbar',
+    cpS(0xff3a, 0xff31, 0xff2b, 0xff37, 0xff29, 0xff24, 0xff25) + ' zqk' + cpS(0xfb01) + 'nd ' + cpS(0x1d419, 0x1d410, 0x1d40a) + ' zqkafter',
+    'parseQueryString node:sqlite 2.1.314 snake_case_name C++',
+    cpS(0xd559, 0xad50) + ' ' + cpS(0x1112, 0x1161, 0x11a8) + ' zqkko',
+    cpS(0x645, 0x6cc, 0x200c, 0x62e, 0x648, 0x627, 0x647, 0x645),
+    'co' + cpS(0xad) + 'operate',
+  ];
+  for (const s of strings) { f.prompt('.'); f.reply(s); }
+  f.side({ type: 'last-prompt', lastPrompt: '.', leafUuid: f.last, sessionId: sid });
+  f.write();
+}
+
+// search-noturn.jsonl: conversation records but no input turn (a hook's attachment, a reply, an isMeta record): every
+// path record is counted as before the first turn, and nothing matches.
+{
+  const sid = 'f5f5f5f5-6e6e-4f7f-8a8a-9b9b9b9b9b9b', f = searchFile('search-noturn.jsonl', sid, 'f5000000');
+  f.rec('attachment', { attachment: { type: 'hook_success', hookEvent: 'SessionStart', content: 'zqknoturn context' } }, null);
+  f.reply('zqknoturn reply with no prompt before it');
+  f.rec('user', { message: { role: 'user', content: 'zqknoturn meta text' }, isMeta: true });
+  f.write();
+}
+
+// search-cases.jsonl: the scouts' 18 known strings (scout-search/cases.mjs, invented), one turn each: a prompt of one
+// '.', then a reply holding the string. The 120 queries, and what each must give, are in test/search.test.mjs.
+{
+  const sid = 'f6f6f6f6-7f7f-4a8a-8b9b-acacacacacac', f = searchFile('search-cases.jsonl', sid, 'f6000000');
+  const cases = [
+    { id: 'english', text: "The user's file doesn't exist; it's on the U.S. mirror, v3.5 (re-run it)." },
+    { id: 'hebrew-prefixes', text: cpS(0x5d7, 0x5d6, 0x5e8, 0x5e0, 0x5d5) + ' ' + cpS(0x5de, 0x5d4, 0x5e2, 0x5d9, 0x5e8) + ' ' + cpS(0x5d5, 0x5d4, 0x5d1, 0x5d9, 0x5ea) + ' ' + cpS(0x5d4, 0x5d9, 0x5d4) + ' ' + cpS(0x5d1, 0x5e9, 0x5dc, 0x5d5, 0x5dd) },
+    { id: 'hebrew-pointed', text: cpS(0x5d5, 0x5b0, 0x5d4, 0x5b7, 0x5d1, 0x5b7, 0x5bc, 0x5d9, 0x5b4, 0x5ea) + ' ' + cpS(0x5d1, 0x5b0, 0x5bc, 0x5e9, 0x5b8, 0x5c1, 0x5dc, 0x5d5, 0x5b9, 0x5dd) },
+    { id: 'hebrew-maqaf-geresh', text: cpS(0x5d1, 0x5d9, 0x5ea, 0x5be, 0x5d4, 0x5db, 0x5e0, 0x5e1, 0x5ea) + ' ' + cpS(0x5e9, 0x5dc) + ' ' + cpS(0x5e8, 0x5f3) + ' ' + cpS(0x5d9, 0x5d4, 0x5d5, 0x5d3, 0x5d4) + ', ' + cpS(0x5db, 0x5de, 0x5d5) + ' ' + cpS(0x5e9, 0x5db, 0x5ea, 0x5d1) + ' ' + cpS(0x5e8, 0x5e9, 0x5f4, 0x5d9) + ' (' + cpS(0x5e8, 0x5e9) + '"' + cpS(0x5d9) + ')' },
+    { id: 'arabic-al', text: cpS(0x630, 0x647, 0x628, 0x62a) + ' ' + cpS(0x625, 0x644, 0x649) + ' ' + cpS(0x627, 0x644, 0x645, 0x62f, 0x631, 0x633, 0x629) + ' ' + cpS(0x648, 0x627, 0x644, 0x643, 0x62a, 0x627, 0x628) + ' ' + cpS(0x645, 0x639, 0x64a) + ' ' + cpS(0x648, 0x643, 0x62a, 0x627, 0x628, 0x647, 0x645) + ' ' + cpS(0x628, 0x627, 0x644, 0x628, 0x64a, 0x62a) },
+    { id: 'arabic-marks-tatweel-forms', text: cpS(0x627, 0x644, 0x652, 0x643, 0x650, 0x62a, 0x64e, 0x627, 0x628, 0x64f) + ' ' + cpS(0x643, 0x640, 0x62a, 0x640, 0x627, 0x628) + ' ' + cpS(0xfedb, 0xfe98, 0xfe8e, 0xfe8f) },
+    { id: 'chinese', text: cpS(0x6211, 0x4eec, 0x4eca, 0x5929, 0x5728, 0x5317, 0x4eac, 0x5927, 0x5b66, 0x5f00, 0x4f1a, 0x3002, 0x4f1a, 0x8bae, 0x5728, 0x4e0b, 0x5348, 0x4e09, 0x70b9, 0x3002) },
+    { id: 'japanese', text: cpS(0x79c1, 0x306f, 0x6771, 0x4eac, 0x5927, 0x5b66, 0x3067, 0x30b3, 0x30fc, 0x30d2, 0x30fc, 0x3092, 0x98f2, 0x307f, 0x307e, 0x3057, 0x305f, 0x3002, 0x6771, 0x4eac, 0x90fd, 0x306b, 0x4f4f, 0x3093, 0x3067, 0x3044, 0x307e, 0x3059, 0x3002) },
+    { id: 'thai', text: cpS(0xe20, 0xe32, 0xe29, 0xe32, 0xe44, 0xe17, 0xe22, 0xe44, 0xe21, 0xe48, 0xe21, 0xe35, 0xe01, 0xe32, 0xe23, 0xe40, 0xe27, 0xe49, 0xe19, 0xe27, 0xe23, 0xe23, 0xe04, 0xe23, 0xe30, 0xe2b, 0xe27, 0xe48, 0xe32, 0xe07, 0xe04, 0xe33) },
+    { id: 'korean', text: cpS(0xd559, 0xad50, 0xc5d0, 0xc11c) + ' ' + cpS(0xce5c, 0xad6c, 0xb97c) + ' ' + cpS(0xb9cc, 0xb0ac, 0xc2b5, 0xb2c8, 0xb2e4) },
+    { id: 'emoji', text: 'Great job ' + cpS(0x1f44d, 0x1f3fd) + ' and ' + cpS(0x1f642) + 'glued word, family ' + cpS(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467) + ', flag ' + cpS(0x1f1ee, 0x1f1f1) + ', heart ' + cpS(0x2764, 0xfe0f) },
+    { id: 'code', text: 'parseQueryString snake_case_name kebab-case-name /usr/local/bin --force 2.1.314 9f86d081 user.name@example.com node:sqlite file.test.mjs C++ S24.E' },
+    { id: 'fold', text: 'Caf' + cpS(0xe9) + ' and Cafe' + cpS(0x301) + ', ' + cpS(0x130) + 'stanbul, STRASSE and Stra' + cpS(0xdf) + 'e, ' + cpS(0xfb01) + 'le, ' + cpS(0xff26, 0xff35, 0xff2c, 0xff2c) + ' ' + cpS(0xff11, 0xff12, 0xff13) },
+    { id: 'fold-sharp-s-a', text: 'Die Stra' + cpS(0xdf) + 'e ist lang' },
+    { id: 'fold-sharp-s-b', text: 'DIE STRASSE IST LANG' },
+    { id: 'fold-greek-sigma', text: cpS(0x39f, 0x394, 0x39f, 0x3a3) + ' ' + cpS(0x3bf, 0x3b4, 0x3bf, 0x3c2) },
+    { id: 'escaped-json', text: 'alpha' + BSL + 'nbeta ' + BSL + '"gamma' + BSL + '" C:' + BSL + BSL + 'Users' + BSL + BSL + 'delta' },
+    { id: 'escaped-json-hebrew', text: cpS(0x5dc, 0x5d9, 0x5dc) + BSL + 'n' + cpS(0x5e9, 0x5d9, 0x5e9, 0x5d9) + ' ' + cpS(0x5d5, 0x5d2, 0x5dd) + ' ' + BSL + 'u05e9' + BSL + 'u05dc' + BSL + 'u05d5' + BSL + 'u05dd' },
+  ];
+  for (const c of cases) { f.prompt('.'); f.reply(c.text); }
+  f.side({ type: 'last-prompt', lastPrompt: '.', leafUuid: f.last, sessionId: sid });
+  f.write();
 }

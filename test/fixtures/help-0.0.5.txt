@@ -1,0 +1,150 @@
+Long-Term Memory Structure: an index of Claude Code transcripts,
+without their content.
+
+Usage:
+  ltms skeleton <file.jsonl>...   one JSON line per turn and per tool call
+  ltms stats <file.jsonl>...      one JSON line of counts per file
+  ltms --help                     show the help, with every output field
+  ltms --version                  show the version
+
+When Claude Code compacts a session, the conversation in the model's context
+is replaced by a summary, but the transcript on disk keeps every record:
+Claude Code only appends to it. ltms prints an index of the transcript,
+one line per turn and per tool call, each with the line of the file where it
+is written, so what compaction took out of the context can be found and read
+again (for line 22: sed -n 22p <file>).
+
+Claude Code keeps transcripts in ~/.claude/projects/<project>/<session>.jsonl.
+ltms reads only the files it is given, writes only to stdout and stderr,
+and uses no network.
+
+It follows each session's live path: the branch the session ended on, as the
+transcript's own last-prompt record names it (without one, the branch of the
+last record written), joined across compactions and late-written error
+records. No line holds a prompt, a reply, a tool input or a tool output (the
+labels are short words read from them, by the label rule below). A turn line
+gives the address of its prompt; a call line gives the addresses of the call
+and its result, and hashes of what went in and what came out. An address is
+<prefix>:L<line number>: the prefix is the file name's first 8 characters,
+or, for a subagent's agent-<id>.jsonl, agent- and the id's first 8. Files
+that get the same prefix cannot be told apart in one run (a warning names
+them): give them to separate runs.
+
+skeleton, one line per turn:
+  k             "turn"
+  a             address of the prompt
+  ta            turn id: <prefix>:T001, T002, ...
+  ch            channel the prompt came through: typed (typed at the CLI),
+                sdk (sent through the SDK or another entry point), input (the
+                record names no channel), task, loop, parent, or the record's
+                own word for another agent (for example peer); none when that
+                word is empty
+  n             length of the prompt text (JavaScript string length: UTF-16
+                code units)
+
+skeleton, one line per tool call, after the turn it belongs to:
+  k             "call"
+  a             address of the tool call
+  ta            the turn it belongs to
+  tool          tool name
+  verb          a short label for what the call did. Bash: the program the
+                command runs, by a whitelist (the README's "The Bash verb"
+                has every rule): printed only when it is a plain word and
+                every word before it can be passed over with certainty:
+                blank and comment lines; cd DIR (with redirections) followed
+                by && ; or a newline; NAME=value with a plain, '...', simple
+                "..." or $NAME value; an opening ( { or !; the wrappers nohup,
+                command, exec, time (-p; where a command starts, or right
+                after time), env
+                (-i, NAME=value; an unquoted $NAME withholds the verb),
+                timeout (a duration) and nice (-n N or -N). After nohup, env,
+                nice, timeout or exec, which look the next word up as a file,
+                command and exec are programs of their own; after command or
+                time they are still the shell's builtins. A path is cut to its
+                last part. (empty) when nothing runs after the words passed
+                over, or the call has no command; a command that only assigns
+                values is labelled by the program inside its first $(...) when
+                that is made of such words. A wrapper with nothing after it
+                but its own options is the program; [ [[ and shell keywords
+                print as themselves. Anything else before the program (a
+                redirection after a wrapper too), more than 63 assignments,
+                cd commands and wrappers before it, more than 15 commands
+                passed over, a program that is not a plain word, or a
+                function definition gives (withheld).
+                Read, Edit, Write, NotebookEdit: the file's extension (its
+                name when it has none; (none) when there is no path, or it
+                ends in /). Agent, Task: the subagent type (agent when the call
+                names none). Skill: the skill name (skill when it names none).
+                Other tools: the name
+  in            sha256 of the input as JSON.stringify writes it (keys that are
+                whole numbers up to 4294967294 first, ascending; a missing
+                input counts as {}), first 12 hex characters; (too large)
+                when the input, written as JSON,
+                would pass JavaScript's limit on a string's length
+  ok            true when the call succeeded; false when it failed (its
+                result is marked is_error, or Claude Code wrote the error as
+                a string in toolUseResult); null when no result was recorded
+                (the session ended, or the file was cut, before the call
+                returned, or the call was still running when the file was
+                read)
+  ek            error class, only when the call failed, from the result's
+                first line: exit-<code> (a leading "Exit code N", read
+                first), hook-block:<hook script name> or hook-block (Claude
+                Code's own format only: PreToolUse:<tool> hook error:
+                [<command>]; the name is the last part of the path of the one
+                word in the brackets with a script extension (.sh .bash .py
+                .js .mjs .cjs .ts .rb .pl; quotes and punctuation around it
+                are not part of it), cut at the extension, when that word is
+                the command or comes right after an interpreter (node or
+                nodejs, deno, bun, python, python3 or another python
+                version, bash, sh, zsh, dash, ksh, ruby, perl, tsx or
+                ts-node), after any leading env (-i) and NAME=value words;
+                and when it is made of ASCII letters, digits, _ . and - and is
+                at most 48 characters; a plain hook-block when two or more
+                words do, when the word stands anywhere else, when the name
+                does not qualify, or when the bracket is longer than 300
+                characters), no-anchor, not-read, bad-input, denied, other
+  r             address of the result, or null when none was recorded
+  out           sha256 of the result text (UTF-8), first 12 hex characters;
+                of the whole result as JSON when it holds anything but text
+                ((too large) as for in); null when no result was recorded
+  n             length of the result text, JavaScript string length (null
+                when no result was recorded)
+
+A label (tool, verb, ch, the hook name in ek) is printed only when it looks
+like one: at most 64 ASCII letters, digits and . _ : + - (a file name or
+extension: without ':'; the shell's [ and [[ as they are). Anything else
+prints as (withheld), except that a hook name that does not qualify gives a
+plain hook-block.
+
+stats, one line per file:
+  session       the file's address prefix
+  turns         turns on the live path
+  prompts       turns opened by a prompt (channel typed, sdk or input)
+  calls         tool calls
+  failures      tool calls that failed
+  unanswered    tool calls with no recorded result
+  errorClasses  failures by error class
+  retries       calls right after a failed call in the same turn, with the
+                same tool (any input), issued after its result
+  detours       the same, with a different tool
+  maxHops       the longest chain of failures with one verb, each issued
+                after the previous one's result, that a later success with
+                that verb closed in the same turn, counting the success. A
+                failure with another verb ends a chain and starts a new one,
+                even when it was sent in the same response
+  hopsOver2     chains of more than 2 hops
+
+Warnings go to stderr: lines that are not JSON objects (or are nested more
+than 1,000 levels deep), files with nothing to show (empty, a workflow journal,
+no conversation records, no turns), records whose parent links loop, values
+too large to hash, files in one run that share a prefix, and records whose
+response was read from their parent links (no requestId and no string
+message.id), so a zero never reads as a clean result. An internal error is
+reported by its kind and where in ltms it happened, never its message.
+
+Every rule in full is in the README:
+https://github.com/long-term-memory-structure/long-term-memory-structure
+
+Exit status: 0 when every file was processed, 1 when a file could not be read
+or processed, 2 on a usage error.

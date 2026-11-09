@@ -738,6 +738,7 @@ export function repairedLivePath(t) {
         prepend(pathTo(t, via.uuid));
     }
     compactions.reverse(); // the earliest join first, as the path reads
+    bridges.reverse(); // the earliest bridge first too: path order
     if (segments.length) {
         const joined = [];
         for (let k = segments.length - 1; k >= 0; k--)

@@ -1,6 +1,6 @@
 # Long-Term Memory Structure
 
-When a Claude Code session fills its context window, or on `/compact`, Claude Code compacts it: the conversation in the model's context is replaced by a summary, and the model carries on from the summary. The details, such as which commands ran, which of them failed and which files were read or changed, are no longer in front of the model. They are still on disk. Claude Code only ever appends to a session's transcript, the `.jsonl` file under `~/.claude/projects/`: a compaction adds a boundary record and the summary, and every record before them stays where it was. The summary itself gives the transcript's path, so the details can be read back from it. (Claude Code deletes old transcripts after 30 days by default; its `cleanupPeriodDays` setting changes that.)
+When a Claude Code session fills its context window, or on `/compact`, Claude Code compacts it: the conversation in the model's context is replaced by a summary, and the model carries on from the summary. The details, such as which commands ran, which of them failed and which files were read or changed, are no longer in front of the model. They are still on disk. Claude Code appends to a session's transcript, the `.jsonl` file under `~/.claude/projects/`; it can rewrite one only in rare cases, and `ltms pin` keeps both versions. A compaction adds a boundary record and the summary, and every record before them stays where it was. The summary itself gives the transcript's path, so the details can be read back from it. (Claude Code deletes old transcripts after 30 days by default; its `cleanupPeriodDays` setting changes that.)
 
 What compaction writes, and what each model keeps through it, measured: [Claude Code's compaction doesn't delete your history. It re-roots it.](https://long-term-memory-structure.github.io/long-term-memory-structure/compaction.html)
 
@@ -108,7 +108,7 @@ The verb is printed only when ltms can be certain it is the program bash runs. I
 - an opening `(`, `{` or `!`;
 - the wrappers `nohup`, `command`, `exec`, `time` (with `-p`; where a command starts, or right after another `time`, since elsewhere `time` is a program of its own), `env` (with `-i` and `NAME=value`, where an unquoted `$NAME` withholds the verb: after `env` it is an argument, and bash splits it), `timeout` (with a duration) and `nice` (with `-n N` or `-N`). After `nohup`, `env`, `nice`, `timeout` or `exec`, which look the next word up as a file, `command` and `exec` are programs of their own; after `command` or `time` they are still the shell's builtins.
 
-A path is cut to its last part. When nothing runs after the words passed over (a command of assignments only, or `cd DIR;` with nothing after it), the verb is `(empty)`; when an assignment's value is a command substitution made of such words, it is the program inside the first such substitution. A wrapper with nothing after it but its own options is the program. The shell's test brackets print as `[` and `[[`, and a shell keyword prints as itself. Anything else before the program (a here-document, another redirection, an option the wrapper list does not name, any other `$(...)` or `${...}`, a backslash, a redirection after a wrapper, more than 63 assignments, `cd` commands and wrappers before the program, more than 15 commands passed over), a program that is not a plain word, and a function definition make the verb `(withheld)`. The program then passes the label rule in [Privacy](#privacy), like every label, so a name holding `,` `%` `@` `=` `~` or `^` prints `(withheld)` too. What follows the program is never read.
+A path is cut to its last part. When nothing runs after the words passed over (a command of assignments only, or `cd DIR;` with nothing after it), the verb is `(empty)`; when an assignment's value is a command substitution made of such words, it is the program inside the first such substitution. A wrapper with nothing after it but its own options is the program. The shell's test brackets print as `[` and `[[`, and a shell keyword prints as itself. Anything else before the program (a here-document, another redirection, an option the wrapper list does not name, any other `$(...)` or `${...}`, a backslash, a redirection after a wrapper, more than 63 assignments, `cd` commands and wrappers before the program, more than 15 commands passed over), a program that is not a plain word, and a function definition make the verb `(withheld)`. The program then passes the label rule in [Privacy](#privacy), like every label, so a name holding `,` `%` `@` `=` `~` or `^` prints `(withheld)` too. What follows the program is never read, but for the command's end: a command that ends in `&&`, `||` or `|` (or `|&`), with nothing after it but blanks, new lines, line continuations and comment lines, is `(withheld)` however many commands come before it, since bash rejects it as a syntax error. That end is read as text: a comment on the operator's own line hides the operator (the program is printed), and an operator escaped or inside a comment at the very end counts (the verb is withheld). After the 15 commands that may be passed over, a 16th is passed over too when nothing but blank lines, comment lines and an opening `(`, `{` or `!` follows it, and the verb is then what a shorter command gets there: `(empty)`, or the first substitution's program.
 
 | command | verb |
 |---|---|
@@ -129,6 +129,7 @@ A path is cut to its last part. When nothing runs after the words passed over (a
 | `nohup command make demo` | `command` |
 | `time time make demo` | `make` |
 | `nohup >/dev/null make demo` | `(withheld)` |
+| `cd ~/proj && npm test &&` | `(withheld)` (bash rejects the dangling `&&`) |
 
 On the transcripts it was tested on, about 1 Bash call in 100 prints `(withheld)`.
 
@@ -156,35 +157,341 @@ One JSON line of counts per file. For the same test transcript:
 
 `ltms --help` lists every field; `ltms --version` prints the version.
 
+### `ltms search <query> <path>...`
+
+The turns that hold every word of a query, as addresses: no line holds the text that matched. The query comes first, as one quoted argument; the paths follow, transcripts or directories (every `.jsonl` file under a directory, at any depth, subagents' transcripts included). For the same test transcript:
+
+```sh
+ltms search 'npm test' test/fixtures/demo.jsonl
+```
+
+```
+{"k":"coverage","query":["npm","test"],"mode":"words","kinds":["input","summary","reply","thinking","call","result","system"],"kindsOff":["meta","attachment"],"files":{"given":1,"found":1,"read":1,"failed":0,"notConversation":0,"symlinks":0},"turns":4,"records":34,"notSearched":{"offPath":0,"toolUseResult":11,"wireInputs":0,"redactedThinking":0,"sidecars":2,"images":0,"spilled":0,"replays":0,"beforeFirstTurn":0,"unreadableLines":0,"kindsOff":1},"hits":{"files":1,"turns":1,"records":6,"byKind":{"input":0,"summary":0,"reply":0,"thinking":0,"call":1,"result":1,"system":0}},"shown":{"skipped":0,"turns":1,"order":"newest"},"left":0,"next":null,"segmenter":"icu","ms":21}
+{"k":"file","f":1,"p":"demo.jso","path":"test/fixtures/demo.jsonl","last":"2026-01-05T09:03:05.000Z"}
+{"k":"hit","f":1,"ta":"demo.jso:T003","ch":"typed","at":[{"a":"demo.jso:L24","kind":"call","field":["message","content",0,"input","command"],"at":0,"w":[0,1]},{"a":"demo.jso:L25","kind":"result","field":["message","content",0,"content"],"at":17,"w":[1]},{"a":"demo.jso:L26","kind":"call","field":["message","content",0,"input","command"],"at":17,"w":[0,1]},{"a":"demo.jso:L27","kind":"result","field":["message","content",0,"content"],"at":17,"w":[1]},{"a":"demo.jso:L30","kind":"call","field":["message","content",0,"input","command"],"at":25,"w":[0,1]},{"a":"demo.jso:L31","kind":"result","field":["message","content",0,"content"],"at":5,"w":[1]}]}
+```
+
+and on stderr:
+
+```
+ltms search: 1 matching turn in 1 of 1 file (1 read, 0 failed); 1 shown.
+```
+
+Both words are in turn 3, the turn shown above: in the three `npm test` commands (`call`, both words: `w` is `[0,1]`) and in what they printed (`result`, which holds `test` only: `w` is `[1]`). The first line is always the coverage: what was searched, what was not, and how many turns matched. Then, newest session first (by the latest timestamp in each file), a line for each file with a hit, followed by its matching turns in their order, one line per turn: at most `--max` turns in all, after the first `--skip`. The coverage's `left` counts the matching turns after the ones printed, and `next` is the command that prints the next ones (the same search with `--skip` past those printed, and the same `--max`). stderr holds the notices about the query, the warnings, and one closing line with the totals; when no turn matched, it names the ways to find more (fewer words, `--kind all`, `--substring`) with the command.
+
+To search one project's sessions, give its folder: `~/.claude/projects/` and the project's directory written as [Install](#install) says, as in `ltms search 'compaction summary' ~/.claude/projects/-home-me-my-app`. Given no path, `ltms search` prints that command for the current directory (or says that the current directory no longer exists). `ltms search --help` prints search's part of the help, with every field.
+
+| option | meaning |
+|---|---|
+| `--kind <list>` | the kinds of text searched, separated by commas (or `--kind=<list>`), `all` for every kind; given twice, the kinds add up. Without it: every kind but `meta` and `attachment` |
+| `--substring` | find each term inside longer words too, after the same folding: `cat` also finds `concatenate` |
+| `--max <n>` | the matching turns printed: 20 unless set, every one with `0`; given twice, the last counts |
+| `--skip <n>` | the matching turns passed over before printing: 0 unless set. The coverage's `next` gives it, so the next command prints the turns after those printed |
+| `--count` | print the coverage line only |
+| `--oldest` | oldest sessions first |
+
+Under a directory, the files with nothing to search (empty, a workflow journal, no conversation records, no turn), the symbolic links met, the entries named `.jsonl` that are not regular files (a pipe, a socket), the directories met again (see [Limits of search](#limits-of-search)) and the files with warnings of their own are counted in one warning line, not reported one by one; it names up to four of the files with warnings of their own, each with its kinds of warning, and ends with the command that shows them. A file named on the command line keeps skeleton's warnings, worded for search. Options may come before or after the query; `--` ends them, for a query or a path that starts with `-`, and every command a message gives puts it there when one does. A path that does not exist and looks like a word is refused with the reason: the query comes first, as one argument. So is a query that names an existing path (one with a `/`, or ending in `.jsonl`) when no path argument names one, as when the query was left out; when a path argument does, the query is searched, with a notice that it is also a path. Exit status: 0 when every file was read (with hits or none), 1 when a file or a directory could not be read or was too large, 2 on a usage error.
+
+#### Reading a hit
+
+A hit names each record of the turn that holds a word of the query: its address `a`, the kind of its text, the key path of the first field of that kind holding a word (`field`), and the offset of the first match in that field's string (`at`). Hit records can be large (in the sample measured for the design, half of them were over 8 KB and a tenth over 74 KB). Rather than the whole line, print a window of 600 characters around the match, from the file's path, the line number in `a`, `field` and `at`:
+
+```sh
+node -e 'const [p,l,f,a]=process.argv.slice(1),F=JSON.parse(f),K=v=>v!==null&&typeof v=="object"?Object.keys(v):[],s=(v,i)=>i<F.length?F[i]=="(withheld)"?K(v).some(x=>s(v[x],i+1)):s(v?.[F[i]],i+1):typeof v=="string"&&v.length>a;let v=JSON.parse(fs.readFileSync(p,"utf8").split("\n")[l-1]),w;for(const [i,k] of F.entries()){if(k=="(withheld)"){w=K(v).filter(x=>s(v[x],i+1));break}v=v?.[k]}console.log(w?"keys here: "+JSON.stringify(w):typeof v!="string"?"not a string here":a>=v.length?"at is past the end of this field":v.slice(Math.max(0,a-300),+a+300))' test/fixtures/demo.jsonl 25 '["message","content",0,"content"]' 17
+```
+
+```
+Exit code 1
+FAIL test/add.test.js
+  expected 4, received 5
+```
+
+The match itself can be invisible to `grep` on the raw line: it can differ in case or in accents, or be written there as a JSON escape. Where `field` holds `(withheld)` (a key below a tool's parameter or a system or attachment record's own keys, or one that fails the label rule), the command prints instead the keys at that place whose value leads, along the rest of `field`, to a string longer than `at` (`keys here: [...]`): put one in its place, and run it again. Where `field` leads to no string, it prints `not a string here`, and where the string is no longer than `at`, `at is past the end of this field`.
+
+#### The kinds of text
+
+| kind | text | searched without `--kind` |
+|---|---|---|
+| `input` | the record that opens a turn, on any channel (typed, sdk, a task, a loop, the parent agent, a peer), and a prompt typed while the model worked (a queued prompt) | yes |
+| `summary` | a compaction summary | yes |
+| `reply` | the assistant's text (an API error's text is `system`) | yes |
+| `thinking` | thinking text (most thinking blocks hold only a signature) | yes |
+| `call` | the string values of a tool's input, at any depth (its keys are not searched) | yes |
+| `result` | the text of a tool's result | yes |
+| `system` | every string value of a system record but its envelope (session id, directory, branch, version, time), its `subtype` and its `level` (names from a fixed list): hook summaries, API errors | yes |
+| `meta` | other user text: the notes the harness writes in the user's place, command output, caveats | no |
+| `attachment` | the string values of an attachment record's `attachment` object | no |
+
+`meta` and `attachment` hold the harness's own text: the system prompt, skill listings, reminders. On the demo corpus of the design, 570 words of five letters or more occur in that text in 28 or more of its 31 sessions, and in the prompts, replies, calls and results of at most 3 sessions: searched by default, they would make a query for any of them match nearly every session (`deferred`, for one, matches 135 turns with `--kind all`, and 1 without). Name them to search them (`--kind meta`, `--kind all`); the coverage's `kindsOff` lists what was left out.
+
+#### What is searched, and what is not
+
+- A turn's records are the ones `ltms skeleton` shows for it: its prompt, the live-path records up to the next prompt, and the call and result records of each of its tool calls, wherever they sit (a parallel call's result is often off the live path). Live-path records before the first prompt are the first turn's; in a file with no turn, they are counted (`beforeFirstTurn`).
+- A string that holds JSON escapes (a backslash and `n`, `t`, `r`, `b`, `f`, `"`, `/`, a backslash, or `u` and four hex digits) is searched as written and decoded: a word is found in either form, a phrase within one.
+- Not searched, and counted in `notSearched`: rewound branches, the harness's structured copy of a result (`toolUseResult`), the inputs as the model wrote them (`wireToolInputs`), redacted thinking, images, records outside the conversation, replayed copies of records, lines that are not JSON objects, and records whose only text is of the kinds left out. Of a result written to a file (`<persisted-output>`), only the preview the transcript holds is searched.
+
+#### Words, and what is folded
+
+The query and the text are read by one function. Text is split into runs of letters, marks, digits and format characters; a run holding Chinese, Japanese, Thai, Lao, Khmer or Myanmar letters is first cut into words by the dictionary of Node's `Intl.Segmenter`. Each piece is then folded: compatibility forms to plain letters (full-width letters, ligatures), lower case, final sigma to sigma, accents and other marks removed (Hebrew points and Arabic vowel marks too), format characters and the Arabic tatweel removed, a zero-width space read as a space. What is left is cut into runs of letters and digits, and between two adjacent letters of different scripts (a Hebrew prefix letter glued to a Latin word is a word of its own; `v2` is one word). A word of the query matches a word of a field; a phrase (`"..."`, also in curly quotes), or a word that reads as several (`node:sqlite`, `2.1.314`), matches when its words stand adjacent and in order within one field. `--substring` reads each field folded the same way, without the dictionary and the script cut, every run of anything but letters and digits as one space, and finds each term inside it. On 120 known queries over 18 strings (English, Greek, Hebrew, Arabic, Chinese, Japanese, Thai and Korean text, code, and emoji; the tests run them), words mode does not find 27 and `--substring` 9; 3 of each are emoji, which read as nothing.
+
+Nothing else is folded: no stems, no prefixes. In Hebrew, Arabic and Korean a word with letters attached is another word, and in a spaceless script a word the dictionary cuts otherwise is not found, so a query holding such letters draws a notice on stderr, with the `--substring` command:
+
+```
+ltms search: notice: 'בית' is in the Hebrew script, whose words take letters attached before or after them, and words mode finds whole words only: for example, בית does not find והבית. To find it inside longer words too: ltms search --substring 'בית' test/fixtures/demo.jsonl
+```
+
+With `gapScripts`, the coverage counts that script's letters in the text searched: the size of what the notice is about. If this Node's `Intl.Segmenter` cannot cut Thai and Chinese into words (it is tested at the start), the coverage says `"segmenter":"no-dictionary"`, a run of such text is read as one word, and a notice says so. A Node without `Intl` cannot run the search at all, and says so (exit 2); skeleton, stats and pin do not need it.
+
+#### The output's fields
+
+The coverage line:
+
+| field | meaning |
+|---|---|
+| `k` | always `"coverage"` |
+| `query` | the terms searched for, as typed; a hit's `w` holds indices into this list. A term that reads as nothing (no letter or digit) is left out, with a notice |
+| `mode` | either `"words"`, or `"substring"` with `--substring`: each term is then also found inside longer words (`cat` finds `concatenate`), and a notice on stderr says so |
+| `kinds` | the kinds of text searched |
+| `kindsOff` | the kinds left out |
+| `files` | the files, by the counts below |
+| `turns` | the turns in the files read, as skeleton numbers them |
+| `records` | the records of those turns that were searched |
+| `notSearched` | what was not searched, by the counts below |
+| `hits` | what matched, by the counts below |
+| `shown` | the matching turns passed over (`skipped`) and printed (`turns`), and their order (`order`: `"newest"` or `"oldest"`) |
+| `left` | the matching turns after the ones printed |
+| `next` | the command that prints the next ones (the same search with `--skip` past those printed, and the same `--max`), or `null` when none is left |
+| `segmenter` | either `"icu"` (the dictionary cuts spaceless scripts into words), or `"no-dictionary"` |
+| `gapScripts` | only for a query holding Hebrew, Arabic, Hangul, Han, Hiragana, Katakana, Thai, Lao, Khmer or Myanmar letters: that script's letters in the text searched |
+| `ms` | the time the search took, in milliseconds |
+
+In `files`:
+
+| field | meaning |
+|---|---|
+| `given` | path arguments |
+| `found` | the files named (whatever their name), the `.jsonl` files under the directories named, each file once by its real path; each path that does not exist; and each directory that could not be read |
+| `read` | found minus failed: the files read, `notConversation` included |
+| `failed` | what could not be read, each one reported on stderr: a path that does not exist, a directory that cannot be listed, a file too large (below), a file or a directory whose name is not valid UTF-8, a file that cannot be read or that stopped with an internal error |
+| `notConversation` | files read that hold no turn: empty, a workflow journal, no conversation records, or no turn on the live path |
+| `symlinks` | symbolic links met under the directories named, not followed (a link named on the command line is followed) |
+
+In `notSearched`, records unless named:
+
+| field | meaning |
+|---|---|
+| `offPath` | records on no turn: rewound branches |
+| `toolUseResult` | turn records that carry the harness's structured copy of a result; the result's own text is searched |
+| `wireInputs` | turn records that carry `wireToolInputs`, the inputs as the model wrote them; the inputs as run are searched |
+| `redactedThinking` | redacted thinking blocks (blocks) |
+| `sidecars` | records outside the conversation: last-prompt, queue-operation and the like |
+| `images` | images in turn records (blocks) |
+| `spilled` | turn records with a result written to a file: only its preview is searched |
+| `replays` | later copies of a record already written |
+| `beforeFirstTurn` | the live-path records of a file with no turn |
+| `unreadableLines` | lines that are not a JSON object (lines) |
+| `kindsOff` | turn records whose only text is of the kinds left out |
+
+records + offPath + replays + beforeFirstTurn + sidecars + kindsOff = the records in the files read (the lines that are JSON objects), in every file. toolUseResult, wireInputs, redactedThinking, images and spilled are counted over the turns' records, searched or not, so they overlap the others.
+
+In `hits`:
+
+| field | meaning |
+|---|---|
+| `files` | files with a matching turn |
+| `turns` | matching turns: the turns that hold every term |
+| `records` | records with an entry in those turns |
+| `byKind` | for each kind searched, the matching turns with an entry of that kind |
+
+In `shown`:
+
+| field | meaning |
+|---|---|
+| `skipped` | the matching turns passed over before those printed: `--skip`, or every matching turn when `--skip` is larger |
+| `turns` | the matching turns printed: at most `--max` |
+| `order` | either `"newest"`, or `"oldest"` with `--oldest` |
+
+A file line, before its turns:
+
+| field | meaning |
+|---|---|
+| `k` | always `"file"` |
+| `f` | the file's number: 1, 2, ... in the order printed |
+| `p` | its address prefix, as skeleton's |
+| `path` | its path, as named or as found under a directory named |
+| `last` | the latest timestamp among its records, which orders the files; `null` when there is none, and `(withheld)` when it is not an ISO 8601 time |
+
+A hit line, one per matching turn:
+
+| field | meaning |
+|---|---|
+| `k` | always `"hit"` |
+| `f` | the number of its file's line |
+| `ta` | the turn, as skeleton numbers it |
+| `ch` | the channel of the turn's prompt, as skeleton's `ch` |
+| `at` | one entry for each record and kind of text holding a term, in line order, below |
+
+An entry of a hit's `at`:
+
+| field | meaning |
+|---|---|
+| `a` | the record's address |
+| `kind` | the kind of text |
+| `field` | the key path of the first field of that kind that holds a term: key names and array indices. Keys are named down to a tool's parameter (the first level of its `input`) and a system or attachment record's own keys, each passing the label rule or printed `(withheld)`; a key below them is data a tool or the model wrote, and is `(withheld)` |
+| `at` | the UTF-16 offset of the first match in that field's string, as `JSON.parse` reads it (a match in a decoded escape is given at the escape) |
+| `w` | the terms found in that record's text of that kind, in any of its fields, as indices into `query` |
+
+#### Limits of search
+
+- Speed, measured on one machine (8 cores, Node 26), Node's start included, in two runs an hour and a half apart: 0.40 to 0.46 s for the 35 transcripts of the demo corpus (18.9 MB), 2.8 to 3.2 s for ten copies of it (189 MB), 0.9 to 1.0 s for one session of 43 MB: 40 to 65 MB a second. At that rate 6 GB of transcripts would take 1.5 to 2.5 minutes (arithmetic, not measured), around the default timeout of Claude Code's Bash tool (2 minutes): search the project's own folder rather than all of `~/.claude/projects/`, or give the command a longer timeout.
+- Memory: the files are read one at a time, each one whole, and only the hits (addresses) are kept to the end. Measured on one session of 43 MB: 270 MB at its peak, 5.2 times the file's size over Node's own 50 MB (skeleton: 4.9 times).
+- A file larger than a tenth of Node's heap limit is not read, because running out of memory cannot be caught and would end the search with every hit lost. With Node's default heap of about 2 GB the limit is about 210 MB; Node sizes its heap by the machine's memory or a container's. The file is reported and counted as failed, and the warning gives the command with more memory (`NODE_OPTIONS=--max-old-space-size=<MB>`), which raises the limit. Measured: a real session at the limit is read when Node's old space is 32 MB or more; at 16 MB it ran out of memory.
+- A copy of the transcripts under the path searched doubles the hits: each session is found twice, once in each place.
+- Symbolic links met under a directory are counted, not followed: a transcript reached only through a link is not searched unless the link is named on the command line.
+- Under a directory given, each directory is read once, known by its device and inode: one met again (a bind mount of a directory inside itself shows the same device and inode, and would have its files read twice) is not read again, and the warning line counts it. Tested on Linux with a real bind mount in a user namespace (`unshare -rm`), and with a stubbed `stat`; not on macOS or Windows.
+- A file or a directory whose name is not valid UTF-8 cannot be read by `ltms`, which takes paths as text: it is reported with the name's bytes written as `\xHH`, and counted as failed.
+
+### `ltms pin <path>... --to <dir>`
+
+Claude Code deletes old transcripts by itself. Its documentation, as read on 2026-11-08: "Claude Code deletes the files in the paths below once they're older than `cleanupPeriodDays`, as long as it can safely determine the retention period. The default is 30 days and the minimum is 1" ([Cleaned up automatically](https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically)). Those paths include each session's transcript, its subagents' transcripts and its `tool-results/`. The clock is a file's modification time, and a file under `tool-results/` goes by its own age even while its transcript lives (read in Claude Code 2.1.314's code, and seen on disk).
+
+To keep transcripts longer, raise `cleanupPeriodDays` in your settings ("pick a large value such as `3650` for long retention", [settings reference](https://code.claude.com/docs/en/settings-reference#cleanupperioddays)). `ltms pin` keeps copies that the cleanup never touches, whatever that setting says, and a log they can be checked against:
+
+```sh
+ltms pin ~/.claude/projects --to ~/claude-pins                  # every project
+ltms pin ~/.claude/projects/-home-me-my-app --to ~/claude-pins  # one project
+ltms pin --check ~/claude-pins
+```
+
+**What it copies: the cleanup's own shape.** The root is `~/.claude/projects` (`$CLAUDE_CONFIG_DIR/projects` when that is set; `--root <dir>` names another), and every path given must be under it; a relative path starts from the current directory. In each project directory (a directory directly under the root), pin copies `<name>.jsonl`, Claude Code's own set-aside copies `<name>.jsonl.superseded-*`, and every file under `subagents/`, `tool-results/`, `workflows/` and `mcp-tasks/` of a session directory: one named by a UUID, or by a `<name>` whose `<name>.jsonl` is beside it. A `<session>.jsonl` given by itself brings its `<session>/`. Other files are counted (`notSessionShaped`), not copied; `memory/`, `.git` and symbolic links met under a path are counted, not entered. A project directory's name starts with `-`, so a relative one needs `--` before it: `ltms pin --to ~/claude-pins -- -home-me-my-app`.
+
+**The pin directory.** pin refuses, with the reason and the next command, before it writes anything (exit 2): no `--to`; a `--to` inside Claude Code's config directory (its cleanup manages it), inside a path given or inside the root; a path inside `--to`; a path outside the root; a `--to` that is not a directory, or that holds files and no `PINS.log` (a pin starts in a new or empty directory, and pin never writes among files it did not make); a `PINS.log` that is a symbolic link or not a regular file (a FIFO), has another name (a hard link, under which every line appended later could be read), or does not open with its root line; and a root other than the one the pin's log records.
+
+- `<to>/<rel>`: the newest bytes of each file, where `<rel>` is its path under the root, with its source's modification time, so `ls -t` works in the pin. A `.jsonl` is copied up to its last new line: a line still being written waits for the next pin (`partial`), and a `.jsonl` with no new line yet is not copied at all (`notCopied`).
+- A file whose copy is not a prefix of it was rewritten. Its old copy is kept first, by a hard link, as `<stem>.superseded-<sha12>.jsonl` (`<name>.superseded-<sha12>` for another file), named by the first 12 hex characters of its sha256. A kept copy is never overwritten: nothing is renamed onto its name.
+- `<to>/PINS.log`: JSON lines, only ever appended to. The first names the root; then one line per change, `new`, `grown`, `rewritten` (with `kept`), `recovered` or `takeover`, with the file's `rel`, its length and sha256, the version before it, the source's modification time, and `chain`, the sha256 of the line before it. It is not named `.jsonl`, so nothing reads it as a transcript.
+- Files are `0600` (or the source's mode, when stricter); directories are `0700`.
+
+Each file is read once, and its copy is written from the very bytes that were hashed: into a temp file, which is fsynced, then renamed over the copy. A file whose size and modification time are what its last line records is not read again. `--rehash` reads every file, and also reads each copy whose source still holds the version its last line records: a copy that holds other bytes (changed in place, at the same size or not) is written again from its source, with a `recovered` line. pin never writes through a symbolic link inside the pin directory: a file whose copy would go through one is a failure (`symlink-in-pin`), so every copy stays inside the pin, where its own scan finds it. `PINS.log`, the lock and a kept copy are read and appended to only as regular files: at one of those names, a symbolic link is never read or written through and a FIFO is never waited on (a failure, `not-a-regular-file`; `PINS.log`, before a pin starts, is a refusal). While a pin runs it holds `<to>/.ltms-pin.lock` (its pid, host and start time). Another pin waits for it up to 30 s, then exits 1, naming the holder and the `rm` command; a lock whose pid is no longer running on this host is taken over. SIGINT, SIGTERM or SIGHUP stop a pin between two files, and it removes the lock. A pin that was killed is repaired by the next one: its temp files are removed, and each copy whose size is not the one its last line records (or beside which a kept copy waits that no line names) is read, and gets a `recovered` line when it holds other bytes; under `--rehash`, a copy that no longer holds that version at its start, with no kept copy beside it, gets none when its source, pinned in that run, still holds the version at its start: the copy is written again from it. A copy changed in place at the same size is not seen there: `--check` finds it, and `--rehash` writes it again.
+
+**Output.** stdout is one line, then one line per failure. A first pin of the demo transcripts, copied under a stand-in `~/.claude` (paths shortened):
+
+```
+  {"k":"coverage","root":"/home/me/.claude/projects","to":"/home/me/claude-pins","files":{"seen":39,"new":39,"grown":0,"rewritten":0,"unchanged":0,"notCopied":0,"failed":0},"failures":0,"partial":0,"skipped":{"notSessionShaped":0,"symlinks":0,"memory":1,"git":0},"bytesCopied":18871673,"keptSourceGone":0,"lastLog":"2026-11-08T15:47:06.529Z","ms":234}
+```
+
+| field | meaning |
+|---|---|
+| `root`, `to` | the real paths of the root and of the pin directory |
+| `files` | the counts, where `seen` = `new` + `grown` + `rewritten` + `unchanged` + `notCopied` + `failed`: the files of the cleanup's shape under the paths. `notCopied`: a `.jsonl` with no new line yet (empty, or its first line still being written), with nothing whole to copy. `failed`: a source file that could not be read, kept or written |
+| `failures` | every failure line that follows: `failed` of them are source files, the rest the pin directory, its lock or its log, a path or a directory under it, or a copy that recovery could not read |
+| `partial` | the `.jsonl` files with bytes after their last new line (or no new line yet), left for a later pin; they are counted in `files` too |
+| `skipped` | found under the paths and not copied: `notSessionShaped`, `symlinks`, `memory`, `git` |
+| `bytesCopied` | the bytes written into copies |
+| `keptSourceGone` | pinned files under the paths whose source is gone: what only the pin now keeps |
+| `lastLog` | when PINS.log's last line was written |
+| `ms` | how long the run took, in milliseconds |
+
+A failure line is `{"k":"failure","path","rel","op","code"}`: `op` is the step (`to`, `lock`, `log`, `walk`, `read`, `keep`, `write` or `recover`) and `code` the error code, or `symlink-in-pin`. `--list` adds one line per line appended to PINS.log for a file: `{"k":"pin","rel","how","bytes","prev","kept"}`, where `prev` is the length of the version before (`null` for a new file) and `kept`, after a rewrite, the old copy's `rel`. stderr says what recovery found and did, and closes with one line when something failed or nothing was found to pin.
+
+**Checking a pin.** `ltms pin --check <dir>` writes nothing. A pin that is running is waited for first, as a pin waits for one (up to 30 s; then exit 1, as pin does), since a file it is writing would read as damage. It reads every version PINS.log records back from the copy that holds it (the file, or the kept copy a later line names), checks every line's `chain`, and counts the files under the root (the one PINS.log records, or `--root`) that the pin is missing or holds shorter than they are now (a `.jsonl` with no new line yet is not missing: pin does not copy it; one whose copy is a byte prefix of it, longer only by an unfinished line, is counted apart, `unfinished`, since pin copies whole lines only; one rewritten under an unfinished line is longer). That count, with the time of the last line, is how a pin that has stopped is seen. stdout is one line, then one line per finding:
+
+```
+  {"k":"check","dir":"/home/me/claude-pins","root":"/home/me/.claude/projects","lines":40,"versions":39,"files":39,"mismatches":0,"chainBreaks":0,"unreadableLines":0,"unlogged":0,"temps":0,"lock":null,"lastLog":"2026-11-08T15:47:06.529Z","staleness":{"root":"/home/me/.claude/projects","fromLog":true,"sources":39,"missing":0,"longer":0,"unfinished":0,"projectsNotPinned":0,"failed":0},"ms":36}
+```
+
+`lines` counts PINS.log's lines, `versions` the versions they record, and `files` the copies read; `staleness` counts the `sources` under the root, those `missing` from the pin, those `longer` than their copy, those whose copy is a prefix of them, longer only by an unfinished line (`unfinished`), the project directories of which the pin holds nothing, and the directories that could not be read (`failed`). The findings: `{"k":"mismatch","rel","copy","line","want","got"}` (a version the copy does not hold: `copy` is the copy read, `rel` itself or a kept copy, `line` its line in PINS.log, `got` what the copy holds, or `null` when it is missing, cannot be read, or is not a regular file), `{"k":"chain","line","want","got"}`, `{"k":"unreadable","line"}` (a line that is not a log line) and `{"k":"unlogged","rel"}` (a file in the pin that no line names; the next pin records it). After a mismatch in a current copy (not a kept one) whose source is there, under the root PINS.log records, as itself (a regular file of the cleanup's shape, reached through no symbolic link), the closing line gives the `--rehash` command for the projects of those copies: it writes back into the current copies what their sources still hold, and `ltms pin --check`, run again, says what remains. While `PINS.log` has another name (a hard link), which makes every pin into the directory a refusal, a notice says so, with the `find` command that names the others, and no pin command is given.
+
+**At the end of every session.** A `SessionEnd` hook, with ltms installed globally (`npm install -g long-term-memory-structure`; npx may download it at the end of a session). In `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "ltms pin --from-hook --to ~/claude-pins", "timeout": 60 }] }
+    ]
+  }
+}
+```
+
+`--from-hook` reads the JSON that Claude Code gives a hook on standard input, and pins the directory of its `transcript_path`: that session's project directory. When standard input is a terminal or empty, is not JSON or not an object, or has no `transcript_path` string, it is a usage error (exit 2) that says which, and on `SessionEnd` Claude Code shows that message to the user. Claude Code gives `SessionEnd` hooks 1.5 s by default; a per-hook `timeout` raises that, "up to 60 seconds" ([hooks](https://code.claude.com/docs/en/hooks)). The hook runs only when a session ends: a session whose process is killed (SIGKILL, a crash, a power loss) never runs it.
+
+**A cron line** catches what the hook misses. cron starts with a short `PATH` (`/usr/bin:/bin`) and none of your shell's variables, so name everything in full (`command -v ltms` gives ltms's path), and `CLAUDE_CONFIG_DIR` too if you set it. ltms starts with `#!/usr/bin/env node`, so the line's `PATH` must also hold node's directory (`dirname $(command -v node)` gives it; with nvm, Volta or a Node under `/usr/local`, cron's own `PATH` lacks it, and the line would fail with exit 127):
+
+```
+17 * * * * PATH=/usr/local/bin:/usr/bin:/bin CLAUDE_CONFIG_DIR=/home/me/.claude /usr/local/bin/ltms pin /home/me/.claude/projects --to /home/me/claude-pins >> /home/me/claude-pins.log 2>&1
+```
+
+**Exit status:** 0 when every file was pinned; 1 when a file or directory failed (each failure line names one), or another pin held the lock for the whole wait; 2 on a usage error or a refusal. `--check`: 0 when the pin holds what PINS.log records; 1 on a mismatch, a chain break, a line that is not a log line, a directory under the root that could not be read, or a running pin that held the lock for the whole wait; 2 on a usage error or a directory that is not a pin. Unlogged files, temp files, a lock left by a pin that stopped, and missing sources are reported, and fail nothing.
+
+**Limits.**
+- Each file is read into memory whole, one file at a time.
+- The pin's file system must have hard links: the lock and the kept copies use them. FAT and exFAT have none, and pin fails there at the lock. Not measured.
+- Nothing outside `projects/` is copied (`file-history/`, `todos/` and the rest), though the cleanup deletes some of it too.
+- A project directory under the root that is a symbolic link (a project moved to another disk) is not pinned: a pin of the whole root counts it in `symlinks`, and a pin of it by name, or by the hook of a session in it, is refused, since its real path is outside the root. The refusal names where it leads, and the command that pins that directory into a pin of its own.
+- A symbolic link inside the pin directory is never written through. A directory on the way to a copy that is one makes each file under it a failure, `symlink-in-pin`, at every pin, until the link is gone; that check is made before each write, so a link put in place during the write itself is not seen. `PINS.log`, the lock or a kept copy's name that is a link, a FIFO or anything else but a regular file is a failure, `not-a-regular-file` (`PINS.log`, before a pin starts, a refusal); the open itself also refuses a link and does not wait (`O_NOFOLLOW`, `O_NONBLOCK`) where Node defines them, which it does not on Windows. Tested on Linux.
+- Whoever can write into the pin directory can replace pin's files there with their own (pin refuses a `PINS.log` that has another name, a hard link, but not a regular file of theirs put in its place, which would then receive every line appended later), so keep the directory closed to others, as pin makes it (`0700`).
+- A copy that a pin found holding other bytes than its log line records gets a `recovered` line with the copy's modification time, so until its source changes, that file is read and hashed on every pin.
+- Two pins that find the same dead lock at the same moment can both take it over (a window of microseconds), and both then run.
+- On Windows, a rename that fails because another program holds the file is retried for about 2 s. Windows itself has not been tested.
+- A `.jsonl` with no new line yet is not copied; it counts as `notCopied`, and as `partial` when it holds any bytes.
+- A copy missing from the pin while its source has been rewritten cannot be kept: the version its last line records is lost, and a notice says so. `--check` then reports that line at every check, and while the source is there its closing line still gives the `--rehash` command, which writes back only what the source holds.
+- `--rehash` cannot clear damage in a kept copy, which is never written again, and `--check` reports the versions such a copy no longer holds at every check, with no command; a pin keeps a damaged copy that is no prefix of its source as it is, as the old copy of a rewrite, when the source has been rewritten since the version the copy's last line records, and a pin without `--rehash` also when the copy's size is not that version's.
+
 ## What it reads
 
-- Only the files named on the command line.
+- `skeleton` and `stats`: only the files named on the command line. `search`: the files named and every `.jsonl` file under the directories named; symbolic links met there are not followed, and a directory met there twice (the same device and inode) is read once. `pin`: the files of a transcript's shape under the paths it is given (with `--from-hook`, under the project directory of the transcript the hook names), and its own pin directory; `pin --check`: the pin directory, and the files under the root: their sizes, to count what the pin is missing; of a `.jsonl` longer than its copy, the bytes past its copy's length, to see whether a whole line was added, and, when none was, its first bytes, as many as its copy holds, to see whether its copy is a prefix of it; and whether the source of a damaged copy is there, as a regular file of the cleanup's shape reached through no symbolic link (not its bytes), to give the `--rehash` command.
 - Only the live path of each session: the branch it ended on, as the transcript's own `last-prompt` record names it (a file without one is read along the branch of the last record written). The path is joined across compactions, and across API-error records that Claude Code writes late, after the retry that followed the error, and a record whose parent is not in the file is joined to the record written just before it. Branches that were rewound are not shown. Calls made in parallel by one response all belong to their turn, even when their results came back out of order; a response is known by its `requestId`, or by its `message.id` in versions that wrote none, and a response whose records fall in two turns gives its calls to the first.
 - Compaction, as measured on Claude Code 2.1.270, 2.1.272 and 2.1.300: the file before a `/compact` is a byte-for-byte prefix of the file after it. The compaction appends a boundary record, which starts a new root and points back to the last record before it, and then the summary. ltms follows that pointer, so the turns before and after a compaction appear in order.
 - The transcript format is internal to Claude Code and changes between versions. Records of a shape ltms does not know are passed over, not treated as errors.
 - A file is read into memory whole: it takes about five to eight times the file's size (up to about nine for a file packed with very small tool calls). For a file over about 200 MB, give Node more memory, for example `NODE_OPTIONS=--max-old-space-size=4096`; a file over about 500 MB cannot be read at all (JavaScript's limit on a string's length).
-- A line that is not a JSON object, or that is nested more than 1,000 levels deep, is skipped and reported on stderr. A file with nothing to show (empty, a workflow journal, no conversation records, no turns) is reported too, so a zero never reads as a clean result, and so are records whose parent links loop instead of reaching the start of the session, files in one run that share an address prefix, and assistant records with neither a `requestId` nor a string `message.id` (which records form one response is then read from their parent links). An internal error is reported by its kind and the place in ltms where it happened, never by its message, which could quote the transcript.
+- A line that is not a JSON object, or that is nested more than 1,000 levels deep, is skipped and reported on stderr. A file with nothing to show (empty, a workflow journal, no conversation records, no turns) is reported too, so a zero never reads as a clean result, and so are records whose parent links loop instead of reaching the start of the session, files in one run that share an address prefix (search tells them apart by `f`, and says nothing), and assistant records with neither a `requestId` nor a string `message.id` (which records form one response is then read from their parent links). An internal error is reported by its kind and the place in ltms where it happened, never by its message, which could quote the transcript.
 
 Exit status: 0 when every file was processed, 1 when a file could not be read or processed, 2 on a usage error.
 
 ## Privacy
 
-- ltms reads local files only, writes only to stdout and stderr, makes no network connections and collects no telemetry. It has no runtime dependencies.
+- ltms reads local files only, writes only to stdout and stderr, except `pin`, which writes only into its `--to` directory, makes no network connections and collects no telemetry. It has no runtime dependencies.
+- `pin`'s copies are the transcripts themselves, with everything in them: keep the pin directory as private as `~/.claude`. pin makes its files `0600` (or the source's mode, when stricter) and its directories `0700`. What it prints, like every command's output, holds paths, counts, lengths and hashes, not the content.
 - The output contains no prompts, replies, tool inputs or tool outputs. It does contain a few short labels derived from them: the program a shell command runs (or a shell keyword), a file's extension (or its name, when it has none), a subagent type, a skill name, a tool's name, the channel a prompt came through, the name of a hook script that blocked a call, an error class, and the lengths of prompts and results.
 - A label is printed only when it looks like one: at most 64 ASCII letters, digits and `. _ : + -` (a file's name or extension: without `:`; the shell's `[` and `[[` as they are). Anything else (free text, a quoted or computed command, a value that is not a string) prints as `(withheld)`, except that a hook name that does not qualify gives a plain `hook-block`. The shell command's label is read by the whitelist in [The Bash verb](#the-bash-verb): it is printed only when it and every word before it are words bash reads exactly as written, so an argument, a quoted string or a here-document is never taken for the program. The record types named in a warning pass the same label rule.
 - A hash cannot be reversed, but it can confirm a guess: whoever can guess the exact bytes of an input or a result (a short command and its description, a one-line output) can hash the guess and compare. Treat the output as derived from your transcripts.
+- A search hit says which records hold the words asked for, so, like a hash, it can confirm a guess: whoever can guess a word learns which turn of which session holds it. search's output also holds the key names of the fields that matched, down to a tool's parameter and a system or attachment record's own keys (each by the label rule; a key below them prints `(withheld)`), the offsets of the matches, the latest timestamp of each file with a hit, the query's own words, and the paths of the files with hits.
+- The library (below) returns the transcript's content: its parser returns the records themselves, with every prompt, reply, tool input and tool output in them. The rules above are the command's, applied to what it prints; none of them applies to what the parser returns. The library's search applies the label rule itself, so its results hold no transcript text but the query's own words, the key names of the fields that matched, the channel, and each file's latest timestamp, as the file holds it (unchecked); `pin`'s functions return paths, sizes, hashes and times, while the copies they write are the transcripts themselves.
+
+## Library
+
+The parser `ltms` is built on is exported as a library: plain functions over a transcript's text, with no dependencies and no Node imports, so they run unchanged in Node and in a browser. The package is ESM: `require()` loads it on Node 20.19 or newer in Node 20, 22.12 or newer in Node 22, and any Node from 23 on. Its type declarations ship with it.
+
+- `long-term-memory-structure`: the parser (`parseTranscript`, `repairedLivePath`, `turnsOf`, and the types of what they return) and the search functions that `ltms search` uses.
+- `long-term-memory-structure/pin`: the file I/O of `ltms pin`, for Node only.
+- Every path that 0.0.5 resolved, such as `long-term-memory-structure/dist/parser.js`, still resolves.
+
+This is how `ltms` reads a transcript:
+
+```js
+import { readFileSync } from 'node:fs';
+import { parseTranscript, repairedLivePath, turnsOf } from 'long-term-memory-structure';
+
+const t = parseTranscript(readFileSync(file, 'utf8'));
+const turns = turnsOf(t, repairedLivePath(t).path);   // each turn: its prompt, its records, its tool calls
+```
+
+`turnsOf(t)` without the repaired path stops at the last compaction: on a demo project's 35 transcripts it gives 201 turns, where `ltms` counts 218. Every exported function, type and field is described in [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.1.0/docs/library.md), with its meaning, its unit, and when it is absent.
 
 ## Status
 
-Version 0.0.5. Early: the output format may change between versions.
+Version 0.1.0. Early: the output format may change between versions.
 
 ## Development
 
 ```sh
 npm install      # TypeScript and Node type definitions, for building only
 npm run build    # compiles src/ to dist/
-npm test         # runs test/cli.test.mjs against dist/cli.js
+npm test         # runs the tests in test/ against dist/
 ```
+
+The package's own tests pack it with `npm pack` and install the tarball offline into a temporary project, to check every import path and the installed command; they are skipped when `npm` is not on PATH. The tests that read TypeScript (the declarations, and the member comments in `src/`) use the `typescript` package, and are skipped without it.
 
 `LTMS_HEAVY=1 npm test` also runs two tests that write files of about 125 MB, one file at a time (the second writes nine), and need about 3 GB of memory.
 
