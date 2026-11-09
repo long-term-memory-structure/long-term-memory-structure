@@ -480,11 +480,41 @@ test('repairedLivePath: a late-written API error spliced (retried3.jsonl)', () =
     splices: [[u(30), u(3), [4, 5, 6, 7, 8, 9].map(u), 'late-write', 'system:api_error']] });
 });
 
+/** Where the orphans stand on a path, by a forward scan: each one's first place AFTER the place of the one before it,
+ *  or -1 where it has none (the next is then searched after the last place found). A repaired path can hold a node
+ *  twice (0.1.0's fuzz: 2,174 of 40,000 random transcripts), so a node's first place on the whole path (indexOf from
+ *  its start) can stand before an earlier orphan's place though the node stands after it too; and two orphans never
+ *  share one place. */
+const orphanPlaces = (path, orphans) => {
+  let from = 0;
+  return orphans.map((o) => { const p = path.indexOf(o, from); if (p >= 0) from = p + 1; return p; });
+};
 // the bridges' orphans stand on the returned path in the order the list gives them: path order, the earliest first
 const bridgesInPathOrder = (r) => {
-  const at = r.bridges.map((b) => r.path.indexOf(b.orphan));
-  assert.ok(at.every((p, i) => p >= 0 && (i === 0 || p > at[i - 1])), `the bridges' orphans stand at ${JSON.stringify(at)} on the path: not in path order`);
+  const at = orphanPlaces(r.path, r.bridges.map((b) => b.orphan));
+  assert.ok(at.every((p) => p >= 0), `the bridges' orphans stand at ${JSON.stringify(at)} on the path, each searched after the place of the one before (-1: none there): not in path order`);
 };
+
+test('bridgesInPathOrder, the helper: where its forward scan finds each orphan, and its verdict, on a path that holds a node twice, in order and out of order (crafted paths)', () => {
+  // Known by construction. The path A X B X C holds X twice, at places 1 and 3; A X B holds it once, at 1. Each
+  // orphan's place is its first place after the place of the orphan before it:
+  //   [B, X]: B at 2, then X at 3: in order (X's first place on the whole path, 1, stands before B's)
+  //   [X, B]: X at 1, B at 2: in order.          [A, C]: A at 0, C at 4: in order
+  //   [C, X]: C at 4, and X at no place after it: not in order (X stands at 1 and 3, both before C)
+  //   [X, X]: one X at each of its places, 1 and 3: in order; on A X B, the second X has no place after the first's:
+  //   not in order (two bridges never share a place)
+  const [A, X, B, C] = ['A', 'X', 'B', 'C'].map((uuid) => ({ uuid }));
+  const twice = [A, X, B, X, C], once = [A, X, B];
+  const verdict = (path, orphans) => {
+    try { bridgesInPathOrder({ path, bridges: orphans.map((orphan) => ({ orphan })) }); return 'in order'; }
+    catch (e) { if (e instanceof assert.AssertionError) return e.message; throw e; }
+  };
+  const out = (at) => `the bridges' orphans stand at ${JSON.stringify(at)} on the path, each searched after the place of the one before (-1: none there): not in path order`;
+  const cases = [[twice, [B, X]], [twice, [X, B]], [twice, [A, C]], [twice, [C, X]], [twice, [X, X]], [once, [X, X]]];
+  assert.deepEqual(cases.map(([path, orphans]) => [orphanPlaces(path, orphans), verdict(path, orphans)]), [
+    [[2, 3], 'in order'], [[1, 2], 'in order'], [[0, 4], 'in order'], [[4, -1], out([4, -1])], [[1, 3], 'in order'], [[1, -1], out([1, -1])],
+  ]);
+});
 
 test('repairedLivePath: two bridges, in path order (the earliest first), one passing over a node already on the path (library-bridges.jsonl)', () => {
   // the head 4 hangs off 5, whose parent ...998 is in no file: livePath is [5, 4]. The bridge from 5 takes the node

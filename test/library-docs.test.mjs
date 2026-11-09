@@ -26,7 +26,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, join, posix, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -385,6 +385,306 @@ test('docs/library.md: every link to a heading (#anchor) names one of its headin
   assert.deepEqual(links.filter((a) => !anchors.has(a)), [], 'links to headings docs/library.md does not have');
 });
 
+// ---- links into the repository: the owner's ruling (S358, A7) is that the docs a release's README links are that
+// release's, at its tag (the owner tags each release), not the branch's, which moves on ----
+
+/** The repository, from package.json's repository.url: its owner, its name and its web address. */
+function repository() {
+  const url = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).repository?.url;
+  const m = /^(?:git\+)?https:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(typeof url === 'string' ? url : '');
+  assert.ok(m, `package.json's repository.url is ${JSON.stringify(url)}, not a github.com repository's address: the link rules here read GitHub's addresses`);
+  return { owner: m[1], name: m[2], web: `https://github.com/${m[1]}/${m[2]}` };
+}
+
+/** Every link in a Markdown file to a file of the repository, whatever its form, in the order of the text:
+ *  { line, start, text, ref, path, at }, where `start` is the offset of the target in the text, `at(tag)` is the same
+ *  address at another ref, and `ref` is null for a relative link (`at` too).
+ *  - An address of a file at a ref: github.com/<owner>/<name>/blob|raw|tree|blame/<ref>/<path>, or
+ *    raw.githubusercontent.com/<owner>/<name>/<ref>/<path>, with or without a scheme or www., in any case. It is read
+ *    wherever it stands, code included (the text is read, not rendered): an inline link or image, a reference
+ *    definition, an autolink, a bare URL, an HTML attribute. It ends at white space, a bracket, a quote or a
+ *    backquote, without the trailing . , : ; ! ? * _ ~ that GitHub leaves out of a bare URL; its path ends at ? or #.
+ *  - An address of the repository's GitHub Pages site, <owner>.github.io/<name>/<path>, read the same way: Pages serves
+ *    docs/<path> of the branch it publishes, never of a tag, so its `ref` is 'GitHub Pages' and its path docs/<path>.
+ *  - A relative target (no scheme, not //, not an in-page #anchor) of an inline link or image (also written <...>; its
+ *    text may hold brackets in pairs, two deep, and a link inside another's text, a badge, is read as well as the
+ *    outer one), a reference definition (after block-quote or list markers too; a footnote is not one), or an href or
+ *    src attribute, outside fenced code and code spans: its path is resolved from `base`, the file's directory in the
+ *    repository (from the root when it opens with /). A fence opens at three or more backticks with no other backtick
+ *    on their line, or tildes, and closes at a line of as many of the same character or more and nothing else, or at
+ *    the end of the text.
+ *  Not read: an address written with escapes (percent-encoding, HTML entities), and the other kinds of GitHub address
+ *  (commits, releases, issues), which name no file at a ref. */
+function repoLinks(text, repo, base = '') {
+  const found = [];
+  const lineOf = (i) => text.slice(0, i).split('\n').length;
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  const who = `${esc(repo.owner)}\\/${esc(repo.name)}`;
+  const address = new RegExp(`(?<![\\w.-])(?:(?:https?:)?\\/\\/)?(?:www\\.)?(?:github\\.com\\/${who}\\/(?:blob|raw|tree|blame)|raw\\.githubusercontent\\.com\\/${who})\\/([^\\s<>()\\[\\]"'\`]+)`, 'gi');
+  for (const m of text.matchAll(address)) {
+    const rest = m[1].replace(/[.,:;!?*_~]+$/, ''), head = m[0].slice(0, m[0].length - m[1].length);
+    const slash = rest.indexOf('/'), ref = slash < 0 ? rest : rest.slice(0, slash);
+    found.push({ i: m.index, start: m.index, line: lineOf(m.index), text: head + rest, ref, path: slash < 0 ? '' : rest.slice(slash + 1).split(/[?#]/)[0], at: (tag) => head + tag + rest.slice(ref.length) });
+  }
+  const pagesAddress = new RegExp(`(?<![\\w.-])(?:(?:https?:)?\\/\\/)?${esc(repo.owner)}\\.github\\.io\\/${esc(repo.name)}(?![\\w-]|\\.[\\w-])(?:\\/([^\\s<>()\\[\\]"'\`]*))?`, 'gi');
+  for (const m of text.matchAll(pagesAddress)) {
+    const rest = (m[1] ?? '').replace(/[.,:;!?*_~]+$/, ''), head = m[0].slice(0, m[0].length - (m[1] ?? '').length);
+    found.push({ i: m.index, start: m.index, line: lineOf(m.index), text: head + rest, ref: 'GitHub Pages', path: posix.join('docs', rest.split(/[?#]/)[0]), at: (tag) => `${repo.web}/blob/${tag}/docs/${rest}` });
+  }
+  // relative targets, read outside code: fenced blocks and code spans (which end at a blank line, as a paragraph does)
+  // are blanked, each character but a new line made a space, so that offsets and lines stay
+  const blank = (s) => s.replace(/[^\n]/g, ' ');
+  const prose = text.replace(/^ {0,3}((`)\2{2,}(?![^\n]*`)|(~)\3{2,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1\2*\3*[ \t]*$|(?![\s\S]))/gm, blank)
+    .replace(/(`+)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\1(?!`)/g, blank);
+  // a link's text: any character but a bracket, an escaped one, or brackets in pairs (n deep)
+  const linkText = (n) => String.raw`(?:[^\[\]\\]|\\.` + (n > 0 ? String.raw`|\[` + linkText(n - 1) + String.raw`\]` : '') + ')*';
+  const targets = [
+    new RegExp(String.raw`(?=!?\[` + linkText(2) + String.raw`\]\(\s*(?:<([^>\n]*)>|([^\s)]+)))`, 'dg'), // [x](target), ![x](target), [x](<target>), tried at each place
+    /^(?:[ \t]*(?:>|[-+*][ \t]|\d{1,9}[.)][ \t]))*[ \t]*\[(?!\^)(?:[^\]\\]|\\.)+\]:[ \t]*(?:\n(?:[ \t]*>)*[ \t]*)?(?:<([^>\n]*)>|(\S+))/dgm, // [x]: target
+    /\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>`=]+))/dgi,       // href="target", src='target', href=target
+  ];
+  const seen = new Set();
+  for (const re of targets) for (const m of prose.matchAll(re)) {
+    const g = m.findIndex((s, k) => k > 0 && s !== undefined);
+    if (g < 0) continue;
+    const target = m[g], start = m.indices[g][0];
+    if (seen.has(start) || /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(target)) continue;
+    seen.add(start);
+    const file = target.split(/[?#]/)[0];
+    found.push({ i: m.index, start, line: lineOf(m.index), text: target, ref: null, path: posix.normalize(file.startsWith('/') ? file.slice(1) : posix.join(base, file)), at: null });
+  }
+  return found.sort((a, b) => a.i - b.i).map(({ i, ...link }) => link);
+}
+
+/** The files the README may link at main rather than at the release's tag, by name: none. test/fixtures/demo.jsonl
+ *  was linked at main until 0.1.1 (A7 named only the docs link); S359 moved it to the tag, since the README shows that
+ *  fixture's output as of the release. Never a file under docs/. An entry the README does not link at main fails, so
+ *  an exception does not outlive its use. */
+const AT_MAIN = [];
+
+/** The files the README may link through GitHub Pages rather than at the release's tag, by name. Pages publishes a
+ *  branch, never a tag, and it is the one address of the repository where an HTML page of docs/ renders: at the tag,
+ *  GitHub's view of docs/compaction.html shows its source and the raw view serves it as text/plain (curl, S359).
+ *  README:5 links it through Pages since eee77b7 (2026-10-18, "the compaction explainer as a page for GitHub Pages");
+ *  S359 kept it there, since Pages is the one address where the page renders. Never docs/library.md (A7). An entry the README does not link through Pages fails, so
+ *  an exception does not outlive its use. */
+const AT_PAGES = ['docs/compaction.html'];
+
+/** What is wrong with a file's links into the repository, one line each: a link not at the tag (at another tag, at a
+ *  branch, through GitHub Pages, or relative, at no ref), unless it is at main and names a file `atMain` excuses, or
+ *  through GitHub Pages (ref 'GitHub Pages', as repoLinks gives it) and names a file `atPages` excuses; an `atMain`
+ *  entry under docs/, and an `atPages` entry that is docs/library.md (A7); and an entry the file does not use. Each line
+ *  names the address to write, but a relative link's that leads out of the repository, which names no file of it. */
+function linkRule(file, links, repo, tag, atMain, atPages = []) {
+  const docs = (p) => p === 'docs' || p.startsWith('docs/');
+  const pages = (l) => l.ref === 'GitHub Pages';
+  const out = atMain.filter(docs).map((p) => `AT_MAIN names ${p}, a file under docs/, which is linked at the tag (the owner's ruling, S358 A7): delete it from AT_MAIN`);
+  if (atPages.includes('docs/library.md')) out.push('AT_PAGES names docs/library.md, which is linked at the tag (the owner\'s ruling, S358 A7): delete it from AT_PAGES');
+  for (const l of links) {
+    if (l.ref === tag || (l.ref === 'main' && atMain.includes(l.path) && !docs(l.path)) || (pages(l) && atPages.includes(l.path) && l.path !== 'docs/library.md')) continue;
+    if (l.ref === null && (l.path === '..' || l.path.startsWith('../'))) out.push(`${file}:${l.line}: ${l.text} is a relative link that leads out of the repository, to no file of it at the tag ${tag}`);
+    else out.push(`${file}:${l.line}: ${l.text} ${l.ref === null ? 'is a relative link, at no ref' : `is at ${l.ref}`}, not at the tag ${tag}: write ${l.ref === null ? `${repo.web}/blob/${tag}/${l.path}` : l.at(tag)}`);
+  }
+  for (const p of atMain) if (!docs(p) && !links.some((l) => l.ref === 'main' && l.path === p)) out.push(`AT_MAIN lets ${file} link ${p} at main, and ${file} does not: delete it from AT_MAIN`);
+  for (const p of atPages) if (p !== 'docs/library.md' && !links.some((l) => pages(l) && l.path === p)) out.push(`AT_PAGES lets ${file} link ${p} through GitHub Pages, and ${file} does not: delete it from AT_PAGES`);
+  return out;
+}
+
+/** 0.1.0's reading of the links to docs/library.md, kept as a floor under repoLinks: each target after "](" that holds
+ *  library.md, in the plain text, code included, { start, line, text }. It is tried at every "](", allows blanks and a
+ *  < before the target and asks for no ) after it, so it reads every place 0.1.0's test read
+ *  (/\]\(([^)\s]*library\.md[^)\s]*)\)/g) and more. repoLinks reads more forms, more precisely; this keeps it from
+ *  reading fewer of these (the S359 verifier found forms 0.1.0's test caught that repoLinks missed). */
+function libraryTargets(text) {
+  return [...text.matchAll(/(?=\]\(\s*<?([^)\s]*library\.md[^)\s>]*))/dg)].map((m) => {
+    const start = m.indices[1][0];
+    return { start, line: text.slice(0, start).split('\n').length, text: m[1] };
+  });
+}
+
+/** One line for each of `targets` (libraryTargets) at which no link of `links` (repoLinks) starts, with the address
+ *  0.1.0's test wanted there: in code, where repoLinks reads no relative target, one fires as 0.1.0's test did
+ *  (fail-closed), and the address at the tag, which repoLinks reads in code too, clears it. */
+function notFound(file, targets, links, url) {
+  const starts = new Set(links.map((l) => l.start));
+  return targets.filter((t) => !starts.has(t.start)).map((t) => `${file}:${t.line}: ${t.text}, after "](", is a link to docs/library.md as 0.1.0's test read the text (code included), and repoLinks finds no link there: write ${url}`);
+}
+
+test('repoLinks finds a link to a file of the repository in each form: inline, image, reference, autolink, bare URL, href and src, GitHub Pages, at a ref or relative, in any case; inside another link\'s text (a badge), a link whose text holds brackets in pairs, a definition in a block quote or a list; not in code (a relative one), an in-page anchor, a footnote, or another site (crafted text)', () => {
+  // known answers, by construction: every line below names what it holds
+  const repo = { owner: 'o', name: 'r', web: 'https://github.com/o/r' };
+  const text = [
+    '# Links, in every form (an invented text)',
+    'An inline link [the doc](https://github.com/o/r/blob/main/docs/library.md "its title"), an image ![a picture](https://raw.githubusercontent.com/o/r/v1.2.3/docs/pic.png).',
+    '[the ref]: https://github.com/o/r/blob/v1.2.3/docs/library.md',
+    'An autolink <https://github.com/o/r/tree/main/docs>, and a bare URL that ends a sentence: https://github.com/o/r/blob/v0.0.5/test/fixtures/demo.jsonl.',
+    '<a href="https://github.com/o/r/raw/main/docs/library.md">raw</a> <img src=\'docs/pic.png\'> <a href=docs/a.md>a</a>',
+    'Relative: [a](docs/library.md), [b](./LICENSE "t"), [c](</docs/x y.md>), [d](../up.md#k); not: [in page](#install), [elsewhere](https://example.com/o/r/blob/main/x.md), [mail](mailto:x@example.com); and [proto](//github.com/o/r/blob/main/p.md).',
+    '[rel]:',
+    '  docs/library.md',
+    '[^1]: a footnote, not a link',
+    '`[a code span](docs/library.md)`, and www.GitHub.com/O/R/blame/main/README.md?plain=1#L3 in another case.',
+    '```md',
+    '[in a fence](docs/library.md) https://github.com/o/r/blob/main/in-a-fence.md',
+    '```',
+    '~~~',
+    '[in a fence of tildes](docs/library.md), which no code span covers',
+    '',
+    'and [after a blank line](docs/library.md), still in it',
+    '~~~',
+    'Not this repository: https://github.com/o/r2/blob/main/x.md, https://github.com/o/r/issues/1, https://notgithub.com/o/r/blob/main/x.md',
+    // the forms the S359 verifier found missed (F1, F2), each rendered so by pandoc -f gfm (notes-t/closure/gfm):
+    // badges, the outer link and a repository image inside; brackets in pairs in the text, two deep; empty text
+    '[![badge](https://img.shields.io/badge/docs-blue)](docs/library.md) and [![b](docs/badge.svg)](https://github.com/o/r/blob/main/README.md)',
+    '[the [beta] doc](docs/library.md), [a [b [c]] d](LICENSE), [](docs/a.md)',
+    // a line that opens with three backticks and holds another backtick is no fence: a code span, and the next line prose
+    '```not a fence``` but a code span',
+    '[after it](docs/library.md)',
+    '> [quoted]: docs/library.md',
+    '> [quoted over two lines]:',
+    '> LICENSE',
+    '- [listed]: docs/a.md',
+    // a fence line with text after it closes nothing: the fence ends at the line after its link
+    '~~~',
+    '~~~ not a closer, with text after it',
+    '[in the fence](docs/library.md)',
+    '~~~',
+    '[after the fence](docs/a.md); GitHub Pages: https://o.github.io/r/library.md, [p](HTTPS://O.GITHUB.IO/R/compaction.html#top); not: https://o.github.io/r2/x.md, https://o2.github.io/r/x.md, https://xo.github.io/r/x.md',
+    // a fence of four backticks: a line of three inside it is its content, and a line of five closes it
+    '````',
+    '```',
+    '[in a fence of four backticks, which three do not close](docs/library.md)',
+    '`````',
+    '[after a closer of five](LICENSE)',
+  ].join('\n');
+  assert.deepEqual(repoLinks(text, repo).map((l) => [l.line, l.ref, l.path, l.text]), [
+    [2, 'main', 'docs/library.md', 'https://github.com/o/r/blob/main/docs/library.md'],
+    [2, 'v1.2.3', 'docs/pic.png', 'https://raw.githubusercontent.com/o/r/v1.2.3/docs/pic.png'],
+    [3, 'v1.2.3', 'docs/library.md', 'https://github.com/o/r/blob/v1.2.3/docs/library.md'],
+    [4, 'main', 'docs', 'https://github.com/o/r/tree/main/docs'],
+    [4, 'v0.0.5', 'test/fixtures/demo.jsonl', 'https://github.com/o/r/blob/v0.0.5/test/fixtures/demo.jsonl'],
+    [5, 'main', 'docs/library.md', 'https://github.com/o/r/raw/main/docs/library.md'],
+    [5, null, 'docs/pic.png', 'docs/pic.png'],
+    [5, null, 'docs/a.md', 'docs/a.md'],
+    [6, null, 'docs/library.md', 'docs/library.md'],
+    [6, null, 'LICENSE', './LICENSE'],
+    [6, null, 'docs/x y.md', '/docs/x y.md'],
+    [6, null, '../up.md', '../up.md#k'],
+    [6, 'main', 'p.md', '//github.com/o/r/blob/main/p.md'],
+    [7, null, 'docs/library.md', 'docs/library.md'],
+    [10, 'main', 'README.md', 'www.GitHub.com/O/R/blame/main/README.md?plain=1#L3'],
+    [12, 'main', 'in-a-fence.md', 'https://github.com/o/r/blob/main/in-a-fence.md'],
+    [20, null, 'docs/library.md', 'docs/library.md'],
+    [20, null, 'docs/badge.svg', 'docs/badge.svg'],
+    [20, 'main', 'README.md', 'https://github.com/o/r/blob/main/README.md'],
+    [21, null, 'docs/library.md', 'docs/library.md'],
+    [21, null, 'LICENSE', 'LICENSE'],
+    [21, null, 'docs/a.md', 'docs/a.md'],
+    [23, null, 'docs/library.md', 'docs/library.md'],
+    [24, null, 'docs/library.md', 'docs/library.md'],
+    [25, null, 'LICENSE', 'LICENSE'],
+    [27, null, 'docs/a.md', 'docs/a.md'],
+    [32, null, 'docs/a.md', 'docs/a.md'],
+    [32, 'GitHub Pages', 'docs/library.md', 'https://o.github.io/r/library.md'],
+    [32, 'GitHub Pages', 'docs/compaction.html', 'HTTPS://O.GITHUB.IO/R/compaction.html#top'],
+    [37, null, 'LICENSE', 'LICENSE'],
+  ]);
+  // a relative path is resolved from the file's directory; an address, from nowhere
+  assert.deepEqual(repoLinks('[x](library.md), [y](../README.md), [z](https://github.com/o/r/blob/main/docs/library.md)', repo, 'docs').map((l) => [l.ref, l.path]),
+    [[null, 'docs/library.md'], [null, 'README.md'], ['main', 'docs/library.md']]);
+});
+
+test('linkRule: a link at the tag passes, and at main only a file AT_MAIN names, never one under docs/; every other link is one line with the address to write, and so is an AT_MAIN entry under docs/ or not used (crafted links)', () => {
+  const repo = { owner: 'o', name: 'r', web: 'https://github.com/o/r' };
+  const links = repoLinks([
+    '[a](https://github.com/o/r/blob/v1.2.3/docs/library.md)',
+    '[b](https://github.com/o/r/blob/main/docs/library.md#x)',
+    '[c](https://github.com/o/r/blob/main/test/fixtures/demo.jsonl)',
+    '[d](https://github.com/o/r/blob/v1.0.0/test/fixtures/demo.jsonl)',
+    '[e](https://github.com/o/r/tree/main/src)',
+    '[f](LICENSE)',
+    '[g](../up.md)',
+  ].join('\n'), repo);
+  assert.deepEqual(linkRule('X.md', links, repo, 'v1.2.3', ['test/fixtures/demo.jsonl', 'docs/library.md', 'test/fixtures/unused.jsonl']), [
+    'AT_MAIN names docs/library.md, a file under docs/, which is linked at the tag (the owner\'s ruling, S358 A7): delete it from AT_MAIN',
+    'X.md:2: https://github.com/o/r/blob/main/docs/library.md#x is at main, not at the tag v1.2.3: write https://github.com/o/r/blob/v1.2.3/docs/library.md#x',
+    'X.md:4: https://github.com/o/r/blob/v1.0.0/test/fixtures/demo.jsonl is at v1.0.0, not at the tag v1.2.3: write https://github.com/o/r/blob/v1.2.3/test/fixtures/demo.jsonl',
+    'X.md:5: https://github.com/o/r/tree/main/src is at main, not at the tag v1.2.3: write https://github.com/o/r/tree/v1.2.3/src',
+    'X.md:6: LICENSE is a relative link, at no ref, not at the tag v1.2.3: write https://github.com/o/r/blob/v1.2.3/LICENSE',
+    'X.md:7: ../up.md is a relative link that leads out of the repository, to no file of it at the tag v1.2.3',
+    'AT_MAIN lets X.md link test/fixtures/unused.jsonl at main, and X.md does not: delete it from AT_MAIN',
+  ]);
+  // with nothing excused, the fixture at main is a line of its own too
+  assert.deepEqual(linkRule('X.md', links.slice(2, 3), repo, 'v1.2.3', []), ['X.md:3: https://github.com/o/r/blob/main/test/fixtures/demo.jsonl is at main, not at the tag v1.2.3: write https://github.com/o/r/blob/v1.2.3/test/fixtures/demo.jsonl']);
+  // GitHub Pages, which publishes a branch, never a tag: a link through it passes only to a file atPages names, never
+  // docs/library.md (A7); atPages excuses a Pages link only, not one at main
+  const pages = repoLinks([
+    '[h](https://o.github.io/r/compaction.html)',
+    '[i](https://o.github.io/r/library.md#x)',
+    '[j](https://o.github.io/r/other.html)',
+    '[k](https://github.com/o/r/blob/main/docs/compaction.html)',
+  ].join('\n'), repo);
+  assert.deepEqual(linkRule('X.md', pages, repo, 'v1.2.3', [], ['docs/compaction.html', 'docs/library.md', 'docs/unused.html']), [
+    'AT_PAGES names docs/library.md, which is linked at the tag (the owner\'s ruling, S358 A7): delete it from AT_PAGES',
+    'X.md:2: https://o.github.io/r/library.md#x is at GitHub Pages, not at the tag v1.2.3: write https://github.com/o/r/blob/v1.2.3/docs/library.md#x',
+    'X.md:3: https://o.github.io/r/other.html is at GitHub Pages, not at the tag v1.2.3: write https://github.com/o/r/blob/v1.2.3/docs/other.html',
+    'X.md:4: https://github.com/o/r/blob/main/docs/compaction.html is at main, not at the tag v1.2.3: write https://github.com/o/r/blob/v1.2.3/docs/compaction.html',
+    'AT_PAGES lets X.md link docs/unused.html through GitHub Pages, and X.md does not: delete it from AT_PAGES',
+  ]);
+  // docs/library.md in AT_PAGES is one line, whether the file links it through Pages or not
+  assert.deepEqual(linkRule('X.md', [], repo, 'v1.2.3', [], ['docs/library.md']), ['AT_PAGES names docs/library.md, which is linked at the tag (the owner\'s ruling, S358 A7): delete it from AT_PAGES']);
+});
+
+test('libraryTargets and notFound, the floor under repoLinks: each target 0.1.0\'s test read as a link to docs/library.md (after "](", code included) is a link repoLinks finds, or one line with the address to write (crafted text)', () => {
+  // known answers, by construction: the targets are the ones written below, each line naming what it holds
+  const repo = { owner: 'o', name: 'r', web: 'https://github.com/o/r' };
+  const url = 'https://github.com/o/r/blob/v1.2.3/docs/library.md';
+  const text = [
+    '[d](docs/library.md), and an address at the tag in angle brackets, with blanks: [t]( <https://github.com/o/r/blob/v1.2.3/docs/library.md#x> "t")',
+    '`[in a code span](docs/library.md)`, and [another site\'s](https://example.com/library.md), and [none](docs/other.md)',
+    '[the text, over',
+    'two lines](docs/library.md)',
+    // a "](" inside the target after another (no link, by pandoc -f gfm): each is read (fail-closed), the inner one as
+    // 0.1.0's test read it
+    '[a]( b](docs/library.md)',
+    // another site's target on the line after its "](": the line given is the target's
+    '[elsewhere, on the next line](',
+    'https://example.com/library.md)',
+  ].join('\n');
+  const targets = libraryTargets(text);
+  assert.deepEqual(targets.map((t) => [t.line, t.text]), [
+    [1, 'docs/library.md'],
+    [1, 'https://github.com/o/r/blob/v1.2.3/docs/library.md#x'],
+    [2, 'docs/library.md'],
+    [2, 'https://example.com/library.md'],
+    [4, 'docs/library.md'],
+    [5, 'b](docs/library.md'],
+    [5, 'docs/library.md'],
+    [7, 'https://example.com/library.md'],
+  ]);
+  // 0.1.0's own reading of the same text, by place: each of its targets is one of these
+  const read010 = [...text.matchAll(/\]\(([^)\s]*library\.md[^)\s]*)\)/g)].map((m) => m.index + 2);
+  assert.deepEqual(read010.filter((i) => !targets.some((t) => t.start === i)), []);
+  // repoLinks finds the link on line 1, the address, the link whose text runs over two lines, and on line 5 the target
+  // after the first "]("; not the code span's, another site's (twice), or the target after the inner "](" on line 5:
+  // one line each, the code span's too (fail-closed, as 0.1.0's test was)
+  const line = (n, s) => `X.md:${n}: ${s}, after "](", is a link to docs/library.md as 0.1.0's test read the text (code included), and repoLinks finds no link there: write ${url}`;
+  assert.deepEqual(notFound('X.md', targets, repoLinks(text, repo), url), [line(2, 'docs/library.md'), line(2, 'https://example.com/library.md'), line(5, 'docs/library.md'), line(7, 'https://example.com/library.md')]);
+  // a finder that found nothing: every target is a line (the floor stands without the finder)
+  assert.deepEqual(notFound('X.md', targets, [], url).length, 8);
+});
+
+test('README: every link to a file of the repository, in any form, is at the release\'s tag, v<the version in package.json>, but a file AT_MAIN names, at main, and one AT_PAGES names, through GitHub Pages; and each target 0.1.0\'s test read as a link to docs/library.md is a link repoLinks finds', (t) => {
+  const repo = repository(), v = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+  const text = readFileSync(README, 'utf8'), links = repoLinks(text, repo);
+  t.diagnostic(`links to the repository's files in README.md: ${links.map((l) => `${l.line}: ${l.ref} ${l.path}`).join(', ')}`);
+  // 0.1.0's README links three (docs/compaction.html through GitHub Pages, test/fixtures/demo.jsonl at main,
+  // docs/library.md at the tag): fewer found would mean the finder no longer reads the README, and the rule below would
+  // pass over nothing
+  assert.ok(links.length >= 3, `repoLinks finds ${links.length} links to the repository's files in README.md, which links at least docs/compaction.html, test/fixtures/demo.jsonl and docs/library.md`);
+  assert.deepEqual([...linkRule('README.md', links, repo, `v${v}`, AT_MAIN, AT_PAGES), ...notFound('README.md', libraryTargets(text), links, `${repo.web}/blob/v${v}/docs/library.md`)], []);
+});
+
 test('README: the Library section links GitHub\'s rendered view of docs/library.md at the release\'s tag, v<the version in package.json>, as every link to it does, and names each entry point, and Privacy says what the library returns', () => {
   const readme = readFileSync(README, 'utf8');
   const start = readme.indexOf('\n## Library\n');
@@ -396,10 +696,17 @@ test('README: the Library section links GitHub\'s rendered view of docs/library.
   const v = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
   const url = `https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v${v}/docs/library.md`;
   assert.ok(section.includes(`(${url})`), `the Library section does not link ${url}`);
-  for (const f of ['README.md', 'CHANGELOG.md', 'docs/library.md']) {
-    const links = [...readFileSync(join(root, f), 'utf8').matchAll(/\]\(([^)\s]*library\.md[^)\s]*)\)/g)].map((m) => m[1]);
-    assert.deepEqual(links.filter((l) => l !== url), [], `links in ${f} to docs/library.md that are not ${url}`);
-  }
+  // every link to docs/library.md, in any form, at the tag: README.md's, as every link of the README to a file of the
+  // repository, in the test above; here CHANGELOG.md's and docs/library.md's own (0.1.0 read the form [x](url) only, in
+  // all three, and wanted that very URL: an anchor in the doc, or its raw view, at the tag, now passes). Judged: each
+  // link to docs/library.md, and each link at a target 0.1.0's test read; and each such target must be a link
+  const repo = repository();
+  assert.ok(repoLinks(readme, repo).some((l) => l.path === 'docs/library.md' && l.text === url), `repoLinks does not find the Library section's link, ${url}, in README.md`);
+  assert.deepEqual([['CHANGELOG.md', ''], ['docs/library.md', 'docs']].flatMap(([f, base]) => {
+    const text = readFileSync(join(root, f), 'utf8'), links = repoLinks(text, repo, base), targets = libraryTargets(text);
+    const judged = links.filter((l) => l.path === 'docs/library.md' || targets.some((t) => t.start === l.start));
+    return [...linkRule(f, judged, repo, `v${v}`, []), ...notFound(f, targets, links, url)];
+  }), []);
   assert.ok(existsSync(DOC), 'docs/library.md, which the README links, does not exist');
   const unnamed = entryPoints().map((e) => e.name).filter((n) => !section.includes(`\`${n}\``));
   assert.deepEqual(unnamed, [], 'entry points the Library section does not name');
@@ -497,6 +804,14 @@ const cliTurnsOf = () => {
   return call;
 };
 
+/** How a child process ended and what it wrote, for an assertion's message: its exit status, and the signal and the
+ *  error spawnSync reports (a spawn that failed, a timeout) when there is one; then its stdout and its stderr, each as
+ *  a JSON string (so an escape code, a blank or a new line shows) and cut to its first 300 characters, saying so. */
+const received = (r) => {
+  const text = (s) => (typeof s !== 'string' ? String(s) : s.length <= 300 ? JSON.stringify(s) : `${JSON.stringify(s.slice(0, 300))} (its first 300 of ${s.length} characters)`);
+  return `exit status ${r.status}${r.signal ? `, signal ${r.signal}` : ''}${r.error ? `, error ${r.error.code ?? r.error.name}` : ''}; stdout ${text(r.stdout)}; stderr ${text(r.stderr)}`;
+};
+
 test('the README\'s recipe, run as written, counts the turns ltms stats counts, on a file with a compaction (compacted.jsonl)', () => {
   // turnsOf(t) alone stops at the compaction: 1 turn; the repaired path gives the 2 ltms stats counts
   const code = jsBlock(readFileSync(README, 'utf8'), 'This is how `ltms` reads a transcript');
@@ -506,13 +821,42 @@ test('the README\'s recipe, run as written, counts the turns ltms stats counts, 
     // the package, as a consumer's import finds it: node_modules/<name>, a link to this tree (a junction on win32)
     mkdirSync(join(dir, 'node_modules'));
     symlinkSync(root, join(dir, 'node_modules', 'long-term-memory-structure'), 'junction');
-    writeFileSync(join(dir, 'recipe.mjs'), `const file = ${JSON.stringify(fixture)};\n${code}\nconsole.log(turns.length);\n`);
-    const r = spawnSync(process.execPath, [join(dir, 'recipe.mjs')], { cwd: dir, encoding: 'utf8' });
-    assert.equal(r.status, 0, `the README's recipe exited ${r.status}: ${r.stderr}`);
-    const s = spawnSync(process.execPath, [join(root, 'dist', 'cli.js'), 'stats', fixture], { encoding: 'utf8' });
-    assert.equal(s.status, 0, `ltms stats ${fixture} exited ${s.status}: ${s.stderr}`);
-    assert.deepEqual([Number(r.stdout.trim()), JSON.parse(s.stdout.split('\n')[0]).turns], [2, 2], 'turns by the README\'s recipe, and by ltms stats');
+    // The count is written with process.stdout.write, as a string, which nothing colors. In a color terminal, node --test
+    // gives each test file FORCE_COLOR=1, the file's children inherit it, and console.log(2) then prints
+    // "\u001b[33m2\u001b[39m", which Number() reads as NaN: the NaN against 2 of the owner's npm test (S359, measured on
+    // Node 20, 22 and 26). Every child here runs with FORCE_COLOR=1, so each run of the suite is that case, in a
+    // terminal or not, and the premise child shows that the condition holds.
+    writeFileSync(join(dir, 'recipe.mjs'), `const file = ${JSON.stringify(fixture)};\n${code}\nprocess.stdout.write(String(turns.length) + '\\n');\n`);
+    const node = (args) => spawnSync(process.execPath, args, { cwd: dir, encoding: 'utf8', env: { ...process.env, FORCE_COLOR: '1' } });
+    const premise = node(['-e', 'console.log(2)']);
+    assert.notEqual(premise.stdout, '2\n', `with FORCE_COLOR=1, console.log(2) wrote "2\\n" in node ${process.versions.node} (${received(premise)}): the premise of this test is gone, and it no longer stands for a color terminal`);
+    const r = node([join(dir, 'recipe.mjs')]);
+    const s = node([join(root, 'dist', 'cli.js'), 'stats', fixture]);
+    const said = `The README's recipe (its js block after "This is how \`ltms\` reads a transcript", with file = ${fixture}): ${received(r)}. ltms stats, on the same file (dist/cli.js, run by node): ${received(s)}`;
+    assert.deepEqual([r.status, s.status], [0, 0], `the exit statuses of the README's recipe and of ltms stats. ${said}`);
+    let statsTurns;
+    try { statsTurns = JSON.parse(s.stdout.split('\n')[0]).turns; } catch { statsTurns = 'its first line is not JSON'; }
+    assert.deepEqual([Number(r.stdout.trim()), statsTurns], [2, 2], `turns by the README's recipe, and by ltms stats. ${said}`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('received, the helper the recipe test reports a child with: its exit status, then its signal and error when it has one, then stdout and stderr as JSON strings, each cut to its first 300 characters with the cut said (crafted results)', () => {
+  // known answers, built here: the yellow 2 that console.log writes under FORCE_COLOR, a stdout of 300 characters (not
+  // cut) and a stderr of 301 that opens with an a (cut: its first 300 keep the a), a timeout as spawnSync reports one
+  // (signal and error), a spawn that failed
+  const ESC = String.fromCharCode(27), x = (n) => 'x'.repeat(n);
+  const err = (code) => Object.assign(new Error(`spawnSync node ${code}`), { code });
+  assert.deepEqual([
+    received({ status: 0, signal: null, stdout: `${ESC}[33m2${ESC}[39m\n`, stderr: '' }),
+    received({ status: 1, signal: null, stdout: x(300), stderr: `a${x(300)}` }),
+    received({ status: null, signal: 'SIGTERM', error: err('ETIMEDOUT'), stdout: '', stderr: '' }),
+    received({ status: null, signal: null, error: err('ENOENT'), stdout: null, stderr: null }),
+  ], [
+    'exit status 0; stdout "\\u001b[33m2\\u001b[39m\\n"; stderr ""',
+    `exit status 1; stdout "${x(300)}"; stderr "a${x(299)}" (its first 300 of 301 characters)`,
+    'exit status null, signal SIGTERM, error ETIMEDOUT; stdout ""; stderr ""',
+    'exit status null, error ENOENT; stdout null; stderr null',
+  ]);
 });
 
 test('docs/library.md\'s recipe calls turnsOf as skeletonOf in src/cli.ts does', () => {

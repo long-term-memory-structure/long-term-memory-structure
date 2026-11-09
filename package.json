@@ -1,6 +1,6 @@
 {
   "name": "long-term-memory-structure",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Index a Claude Code session transcript to find what compaction took out of the context: one line per turn and tool call, with its address in the file and no content.",
   "type": "module",
   "main": "./dist/index.js",

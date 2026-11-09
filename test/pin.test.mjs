@@ -24,7 +24,7 @@ import { hostname, tmpdir } from 'node:os';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PIN = process.env.LTMS_PIN || join(here, '..', 'dist', 'pin.js');
-const { pinPaths, checkPin, claudeConfigDir } = await import(pathToFileURL(PIN).href);
+const { pinPaths, checkPin, claudeConfigDir, projectPinReaches } = await import(pathToFileURL(PIN).href);
 const VERSION = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')).version;
 
 // Never the real config directory: a call that leaves configDir out resolves under a temp path that does not exist.
@@ -2967,7 +2967,9 @@ test('README, ltms pin --help and docs/library.md say what this fix changed: the
   const says = (where, text, phrases) => { for (const p of phrases) assert.ok(text.includes(p), `${where} does not say: ${p}`); };
   says('README', readme, [
     'has another name (a hard link, under which every line appended later could be read)',
-    'the closing line gives the `--rehash` command for the projects of those copies: it writes back into the current copies what their sources still hold, and `ltms pin --check`, run again, says what remains.',
+    // 0.1.1 (E2) puts the file itself, for one where a pin of its project does not go, between these two
+    'the closing line gives the `--rehash` command for the projects of those copies',
+    ': it writes back into the current copies what their sources still hold, and `ltms pin --check`, run again, says what remains.',
     'one whose copy is a byte prefix of it, longer only by an unfinished line, is counted apart, `unfinished`',
     "- Whoever can write into the pin directory can replace pin's files there with their own",
     'its closing line still gives the `--rehash` command, which writes back only what the source holds.',
@@ -2975,7 +2977,9 @@ test('README, ltms pin --help and docs/library.md say what this fix changed: the
   says('ltms pin --help', help, [
     'has another name (a hard link)',
     'one whose copy is a prefix of it, longer only by an unfinished line',
-    'its closing line gives the --rehash command for the projects of those copies: it writes back what the sources still hold, and --check, run again, says what remains.',
+    // 0.1.1 (E2) puts the file itself, for one where a pin of its project does not go, between these two
+    'its closing line gives the --rehash command for the projects of those copies',
+    ': it writes back what the sources still hold, and --check, run again, says what remains.',
   ]);
   says('docs/library.md', docs, [
     'has another name (a hard link, under which every line appended later could be read)',
@@ -3150,7 +3154,8 @@ test('ltms pin --check and ltms pin, a PINS.log that is a regular file they cann
 
 test('ltms pin --help, the --check paragraph: the closing line\'s --rehash command is for the projects of those copies, as the README says, and their sources are looked for under the root PINS.log records (S358 closure fix [5]; C11 adopted from the checker\'s f3-survivors)', () => {
   const help = spawnSync(process.execPath, [CLI, 'pin', '--help'], { encoding: 'utf8' }).stdout.replace(/\s+/g, ' ');
-  assert.ok(help.includes('its closing line gives the --rehash command for the projects of those copies: it writes back what the sources still hold, and --check, run again, says what remains.'), help);
+  // 0.1.1 (E2): the file itself, for one where a pin of its project does not go, comes between the two halves
+  assert.ok(help.includes('its closing line gives the --rehash command for the projects of those copies (for a file under .git, or under memory/ directly under a project directory, where a pin of its project does not go, the file itself): it writes back what the sources still hold, and --check, run again, says what remains.'), help);
   assert.ok(help.includes('After a mismatch in a current copy whose source is there (under the root PINS.log records'), help);
   assert.ok(!help.includes('for that project'), help);
 });
@@ -3244,10 +3249,12 @@ test('README, ltms pin --help and docs/library.md say what the closure fix chang
   const help = flat(spawnSync(process.execPath, [CLI, 'pin', '--help'], { encoding: 'utf8' }).stdout);
   const says = (where, text, phrases) => { for (const p of phrases) assert.ok(text.includes(p), `${where} does not say: ${p}`); };
   says('README', readme, [
-    // this fix
-    'under `--rehash`, a copy that no longer holds that version at its start, with no kept copy beside it, gets none when its source, pinned in that run, still holds the version at its start: the copy is written again from it.',
-    '- `--rehash` cannot clear damage in a kept copy, which is never written again, and `--check` reports the versions such a copy no longer holds at every check, with no command; a pin keeps a damaged copy that is no prefix of its source as it is, as the old copy of a rewrite, when the source has been rewritten since the version the copy\'s last line records, and a pin without `--rehash` also when the copy\'s size is not that version\'s.',
-    'While `PINS.log` has another name (a hard link), which makes every pin into the directory a refusal, a notice says so, with the `find` command that names the others, and no pin command is given.',
+    // this fix, in 0.1.1's words: the same rule, with E1's and E4's cases beside it, and the Limits' doors named
+    'Under `--rehash`, a copy with no kept copy beside it, whose source is pinned in that run, gets none when',
+    'when the copy no longer holds that version at its start, and its source still holds the version at its start (as whole lines, for a `.jsonl`);',
+    '- `--rehash` cannot clear damage in a kept copy, which is never written again, and `--check` reports the versions such a copy no longer holds at every check, with no command. A pin keeps a damaged copy that is no prefix of its source as it is, as the old copy of a rewrite, when the source has been rewritten since the version the copy\'s last line records;',
+    'which a pin without `--rehash` does for a copy whose size is not that version\'s,',
+    'While `PINS.log` has another name (a hard link), which makes every pin into the directory a refusal, a notice says so, with the `find` command that names the others; no pin command is given,',
     // T1-T3 and T6, as the checker wrote them; T4 and T5 with the cleanup's shape
     'and, when none was, its first bytes, as many as its copy holds, to see whether its copy is a prefix of it',
     'one rewritten under an unfinished line is longer)',
@@ -3257,13 +3264,15 @@ test('README, ltms pin --help and docs/library.md say what the closure fix chang
   ]);
   says('ltms pin --help', help, [
     'there (under the root PINS.log records, as a file pin copies), its closing line gives the --rehash command for the projects of those copies',
-    'While PINS.log has another name (a hard link), which a pin refuses, it says so and gives no pin command.',
+    'While PINS.log has another name (a hard link), which a pin refuses, it says so, gives no pin command,',   // 0.1.1 adds E3's clause after it
   ]);
   says('docs/library.md', docs, [
     '| `longer` | of those, the ones larger than their copy, by size, except those counted in `unfinished` |',
     '#### `isSweepShaped(root, rel)`',
     '| `logNames` |',
-    'With `rehash`, a copy that no longer holds that version at its start, beside which no kept copy waits, gets no `recovered` line when its source, among those this run pins, still holds the version at its start',
+    // in 0.1.1's words: the same rule, with E1's and E4's cases beside it
+    'With `rehash`, a copy that does not hold that version, beside which no kept copy waits, and whose source is among those this run pins, gets no `recovered` line',
+    'It no longer holds the version at its start, and its source still holds it at its start (as whole lines, for a `.jsonl`): the run writes it again from that source',
   ]);
 });
 
@@ -3323,15 +3332,623 @@ test('ltms pin --check after a file copied whole with no new line at its end was
   } finally { t.clean(); }
 });
 
-test('pin --rehash, a copy cut and changed at a byte while its source cannot be read: recovery records what the copy holds, as without --rehash, since that the source holds the version cannot be shown; the read of the source is a failure (S358 closure fix [0], the mutation gap P13)', { skip: NEEDS_PERMISSIONS }, async () => {
+// P13 changed in 0.1.1 (E1 of 0.1.0's known limits). 0.1.0 pinned the fail-closed choice here: recovery recorded the
+// damaged copy, since that its source holds the version could not be shown. Once the source could be read again, the
+// --rehash that --check gives found the source "rewritten" against those recorded bytes and kept them as the old copy,
+// and --check then reported the first version from that kept copy at every check, with no command. Now recovery records
+// nothing from a copy it cannot check against its source: the run fails on that file, and the next --rehash decides.
+test('pin --rehash, a copy cut and changed at a byte while its source cannot be read: recovery records nothing, since it cannot check the copy against that source; the read of the source is the run\'s failure, and the copy is left as it is; once the source can be read, the next --rehash writes the copy again from it, with a recovered line, keeps nothing, and the pin checks clean (S358 closure fix [0], the mutation gap P13; changed in 0.1.1, E1)', { skip: NEEDS_PERMISSIONS }, async () => {
   const t = tree();
   try {
     await pinPaths([t.root], t.opts());
-    const rel = `${Q}/${SB}.jsonl`;
+    const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel];
     const bad = damage(t.pin(rel), 5);
+    const log = logText(t.to);
     chmodSync(t.src(rel), 0o000);
     const r = await pinPaths([t.root], t.opts({ rehash: true }));
-    assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev]), [['recovered', rel, bad.length, sha(bad), versionOf(PINNED[rel])]]);
+    assert.deepEqual(r.lines, []);
     assert.deepEqual(r.failures, [{ path: t.src(rel), rel, op: 'read', code: 'EACCES' }]);
+    assert.deepEqual([r.coverage.files, r.coverage.failures, r.notices], [counts({ seen: RELS.length, unchanged: RELS.length - 1, failed: 1 }), 1, []]);
+    assert.deepEqual([logText(t.to), readFileSync(t.pin(rel))], [log, bad]);
+    chmodSync(t.src(rel), 0o600);
+    const again = await pinPaths([t.root], t.opts({ rehash: true }));
+    assert.deepEqual(again.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [['recovered', rel, len(good), sha(good), versionOf(good), undefined]]);
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to)], [good, []]);
+    checkClean(await checkPin(t.to));
   } finally { t.clean(); }
+});
+
+// ---- 0.1.1: the four known limits of 0.1.0's pin (S359, track P) --------------------------------------------------
+// E1 (P13 above, and two tests here), E2, E3 and E4 of 0.1.0's CHANGELOG, "Known limits (to be fixed in 0.1.1)". Each
+// test was run first against 0.1.0's build and seen red for the reason its title gives, except the guards, which say
+// so in their titles. Expected values come from how each tree is built, as above.
+
+/** A path as one word of a shell command, as ltms writes one: in single quotes, each single quote in it written '\''. */
+const shQuoted = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+/** The words /bin/sh makes of a command line's text, each printed on its own line by printf. */
+const wordsOf = (text) => spawnSync('/bin/sh', ['-c', `printf '%s\\n' ${text}`], { encoding: 'utf8' }).stdout.split('\n').slice(0, -1);
+/** A command line ltms printed, run as printed by /bin/sh, its program a shell function that prints the words given it. */
+const wordsRun = (program, line) => spawnSync('/bin/sh', ['-c', `${program}() { printf '%s\\n' "$@"; }; ${line}`], { encoding: 'utf8' }).stdout.split('\n').slice(0, -1);
+
+test('ltms pin --check, a copy cut and changed at a byte while its source cannot be read: the --rehash command it gives fails on that file (exit 1, a failure line naming the file and EACCES) and records nothing, each time it is run; once the source can be read, the same command writes the copy back, keeps nothing, and the check then exits 0 with nothing to say (0.1.1, E1; the closure check\'s V4-FP-resized-source-unreadable and its then-readable step)', { skip: (NEEDS_PERMISSIONS || process.platform === 'win32') && 'needs file permissions and /bin/sh' }, () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel];
+    const bad = damage(t.pin(rel), 5);
+    const log = logText(t.to);
+    chmodSync(t.src(rel), 0o000);
+    const command = `ltms pin '${t.src(Q)}' --to '${t.to}' --root '${t.root}' --rehash`;
+    for (let i = 0; i < 2; i++) {
+      assert.equal(rehashOf(ltms(t, ['pin', '--check', t.to]).err), command);
+      const fix = runPrinted(t, command);
+      assert.deepEqual([fix.code, rowsOf(fix.out).filter((o) => o.k === 'failure')], [1, [{ k: 'failure', path: t.src(rel), rel, op: 'read', code: 'EACCES' }]], fix.err);
+      assert.deepEqual([logText(t.to), readFileSync(t.pin(rel))], [log, bad]);
+    }
+    chmodSync(t.src(rel), 0o600);
+    assert.equal(rehashOf(ltms(t, ['pin', '--check', t.to]).err), command);
+    assert.equal(runPrinted(t, command).code, 0);
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to)], [good, []]);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('pin --rehash after a pin killed between the rename of a grown copy and its line, while the source cannot be read: recovery records nothing of that copy either, since it cannot check it against that source, and the run fails on that file; the copy is left as it is, and once the source can be read, the next --rehash records it as before (0.1.1, E1)', { skip: NEEDS_PERMISSIONS }, async () => {
+  const t = tree();
+  try {
+    await pinPaths([t.root], t.opts());
+    const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel];
+    appendFileSync(t.src(rel), L4);
+    assert.equal(childPin(t, [t.root], 'renamed', rel, KILL).signal, 'SIGKILL');
+    chmodSync(t.src(rel), 0o000);
+    const r = await pinPaths([t.src(Q)], t.opts({ rehash: true }));
+    assert.deepEqual([r.lines.filter((l) => l.rel !== undefined), r.failures], [[], [{ path: t.src(rel), rel, op: 'read', code: 'EACCES' }]]);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), good + L4);
+    chmodSync(t.src(rel), 0o600);
+    const again = await pinPaths([t.src(Q)], t.opts({ rehash: true }));
+    assert.deepEqual(again.lines.filter((l) => l.rel !== undefined).map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev]), [['recovered', rel, len(good + L4), sha(good + L4), versionOf(good)]]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('ltms pin --check, a changed copy of a file pinned by its own path where the walk of its project directory does not go (under a .git directory, or under memory/ directly under a project directory): the --rehash command names that file by its own path, quoted as the CLI quotes, beside the project of a changed copy the walk reaches; run as printed, it writes each back, and the check then exits 0 (0.1.1, E2; the closure check\'s item1 cases d and e)', { skip: process.platform === 'win32' && 'needs /bin/sh' }, () => {
+  const t = tree();
+  try {
+    const git = `${P}/${SA}/tool-results/.git/it's a "result".txt`, mem = `${P}/memory/subagents/agent-a0000000000000002.jsonl`, reached = `${P}/${SA}.jsonl`;
+    const reachedToo = `${P}/${SA}/subagents/agent-a0000000000000001.jsonl`;   // a second in that project: it is named once
+    const held = { [git]: 'an invented result under .git\n', [mem]: L2, [reached]: PINNED[reached], [reachedToo]: PINNED[reachedToo] };
+    t.put(git, held[git]);
+    t.put(`${P}/memory.jsonl`, L1);   // beside it, memory/ is a session directory: the files under its subagents/ are of the cleanup's shape
+    t.put(mem, held[mem]);
+    const whole = ltms(t, ['pin', t.root, '--to', t.to]);
+    assert.deepEqual([whole.code, rowsOf(whole.out)[0].skipped], [0, { ...BASE_SKIPPED, git: BASE_SKIPPED.git + 1 }]);   // the walk passes over both
+    for (const rel of [git, mem]) assert.equal(ltms(t, ['pin', t.src(rel), '--to', t.to]).code, 0);   // each pinned by its own path
+    for (const rel of [reached, reachedToo, git, mem]) { const b = readFileSync(t.pin(rel)); b[0] ^= 1; writeFileSync(t.pin(rel), b); }
+    const k = ltms(t, ['pin', '--check', t.to]);
+    assert.equal(k.code, 1);
+    const command = rehashOf(k.err);
+    assert.equal(command, `ltms pin ${[t.src(P), t.src(git), t.src(mem)].map(shQuoted).join(' ')} --to '${t.to}' --root '${t.root}' --rehash`, k.err);
+    assert.deepEqual(wordsOf(command.slice('ltms pin '.length)), [t.src(P), t.src(git), t.src(mem), '--to', t.to, '--root', t.root, '--rehash']);
+    const fix = runPrinted(t, command);
+    assert.equal(fix.code, 0, fix.err);
+    for (const rel of [reached, reachedToo, git, mem]) assert.equal(readFileSync(t.pin(rel), 'utf8'), held[rel], rel);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('projectPinReaches: true for exactly the files a pin of their project directory copies, as measured here by such a pin (files under .git and memory/ at several depths, project directories named .git and memory, and files the walk reaches), and as listed by hand from the walk\'s rule (0.1.1, E2)', async () => {
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'ltms-pin-')));
+  try {
+    const config = join(tmp, 'claude'), root = join(config, 'projects');
+    // rel -> whether the walk of its project directory reaches it; every one is of the cleanup's shape
+    const want = {
+      [`${P}/${SA}.jsonl`]: true,
+      [`${P}/${SA}/tool-results/x.txt`]: true,
+      [`${P}/${SA}/tool-results/.git/x.txt`]: false,
+      [`${P}/${SA}/tool-results/a/.git/b/x.txt`]: false,
+      [`${P}/${SO}/tool-results/.git`]: true,          // a file named .git: the walk passes over directories only
+      [`${P}/${SA}/subagents/memory/x.jsonl`]: true,   // a memory/ deeper than directly under the project directory
+      [`${P}/memory.jsonl`]: true,
+      [`${P}/memory/subagents/x.jsonl`]: false,       // memory/ directly under the project directory
+      [`${P}/.git.jsonl`]: true,
+      [`${P}/.git/subagents/x.jsonl`]: false,         // .git/ beside .git.jsonl: a session directory the walk does not enter
+      [`.git/${SA}.jsonl`]: false,                    // a project directory named .git
+      [`memory/${SA}.jsonl`]: true,                   // a project directory named memory
+      ['memory/memory.jsonl']: true,
+      ['memory/memory/subagents/x.jsonl']: false,
+    };
+    for (const rel of Object.keys(want)) { const p = join(root, ...rel.split('/')); mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, L1); }
+    const copied = new Set();
+    for (const project of [P, '.git', 'memory']) {
+      const r = await pinPaths([join(root, project)], { to: join(tmp, `pins${project}`), root, configDir: config });
+      assert.equal(r.k, 'pinned');
+      for (const l of r.lines) if (l.rel !== undefined) copied.add(l.rel);
+    }
+    const reached = Object.keys(want).filter((rel) => want[rel]).sort();
+    assert.deepEqual([...copied].sort(), reached);
+    assert.deepEqual(Object.fromEntries(Object.keys(want).map((rel) => [rel, projectPinReaches(rel)])), want);
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('pin, a file pinned by its own path under a source\'s .git directory: the pin\'s own scan sees its copy, so a pin of it again, unchanged, appends nothing, and one after its source is rewritten keeps the old copy first (0.1.0 read that copy as missing: it wrote it again with a recovered line at every pin, and lost the old version at a rewrite) (0.1.1, E2)', async () => {
+  const t = tree();
+  try {
+    const rel = `${P}/${SA}/tool-results/.git/x.txt`, OLD = 'an invented first version\n', NEW = 'an invented second version, written over the first\n';
+    t.put(rel, OLD);
+    const one = await pinPaths([t.src(rel)], t.opts());
+    assert.deepEqual(one.lines.filter((l) => l.rel !== undefined).map((l) => [l.how, l.rel]), [['new', rel]]);
+    const again = await pinPaths([t.src(rel)], t.opts());
+    assert.deepEqual([again.lines, again.notices, again.coverage.files], [[], [], counts({ seen: 1, unchanged: 1 })]);
+    writeFileSync(t.src(rel), NEW);
+    const kept = `${rel}.superseded-${sha12(OLD)}`;
+    const r = await pinPaths([t.src(rel)], t.opts());
+    assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.prev, l.kept]), [['rewritten', rel, len(NEW), versionOf(OLD), kept]]);
+    assert.deepEqual([r.notices, readFileSync(t.pin(kept), 'utf8'), readFileSync(t.pin(rel), 'utf8')], [[], OLD, NEW]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('ltms pin --check, a PINS.log with another name: nothing is said of what a next pin would do (an unlogged file, a temp file, a lock left by a pin that stopped, a line cut short); the notice says once that every pin into the directory is refused, with a find command that /bin/sh reads back as the pin\'s PINS.log, for a pin directory whose name holds a space, a quote or a double quote, and that finds the other name; with one name again, each line says what the next pin does (0.1.1, E3; the closure check\'s item2 "quoted")', { skip: process.platform === 'win32' && 'needs /bin/sh' }, () => {
+  for (const name of ['my pins', "it's pins", 'say "pins"']) {
+    const t = tree();
+    try {
+      const to = join(t.tmp, name), log = join(to, 'PINS.log'), lock = join(to, '.ltms-pin.lock'), other = join(t.tmp, 'other-name.log');
+      assert.equal(ltms(t, ['pin', t.root, '--to', to]).code, 0);
+      writeFileSync(join(to, Q, '66666666-6666-4666-8666-666666666666.jsonl'), L5);   // a file no line names
+      writeFileSync(join(to, Q, `.${SB}.jsonl.ltms-tmp-4242`), 'left over');         // a temp file
+      const holder = { pid: deadPid(), host: hostname(), started: '2026-11-08T10:00:00.000Z' };
+      writeFileSync(lock, JSON.stringify(holder));                                      // a lock left by a pin that stopped
+      appendFileSync(log, '{"t":"2026-11-0');                                           // a line cut short
+      linkSync(log, other);
+      const n = RELS.length + 2;   // the root line and a line per file come before it
+      const closing = `ltms pin: ${shQuoted(to)} does not hold what ${shQuoted(log)} records: 0 mismatches, 0 chain breaks and 1 line that is not a log line, each on stdout with its line in PINS.log. To read the first: sed -n '${n}p' ${shQuoted(log)}`;
+      const notice = `ltms pin: '${log}' has 2 names (hard links to one file): a pin refuses a log that has another name, so every pin into '${to}' is refused until only one name is left. Find its other names: find / -samefile ${shQuoted(log)} 2>/dev/null`;
+      const r = ltms(t, ['pin', '--check', to]);
+      assert.equal(r.code, 1, name);
+      assert.deepEqual(r.err.split('\n'), [
+        notice,
+        `ltms pin: '${log}' does not end in a new line: line ${n} is cut short.`,
+        closing,
+        `ltms pin: 1 file in ${shQuoted(to)} is named by no line in PINS.log (on stdout, "k":"unlogged").`,
+        `ltms pin: 1 temp file in ${shQuoted(to)} was left by a pin that stopped.`,
+        `ltms pin: ${shQuoted(lock)} names pid ${holder.pid} on ${hostname()}, since ${holder.started}: a pin is running, or one stopped without removing it.`,
+        '',
+      ], name);
+      // the find command, run as printed: /bin/sh hands find the pin's PINS.log; and the same predicate, searching this
+      // test's directory rather than the whole file system (/, which would take minutes), finds both names
+      const find = notice.slice(notice.indexOf('Find its other names: ') + 'Find its other names: '.length);
+      assert.deepEqual(wordsRun('find', find), ['/', '-samefile', log], name);
+      const found = spawnSync('/bin/sh', ['-c', find.replace(/^find \/ /, `find ${shQuoted(t.tmp)} `)], { encoding: 'utf8' });
+      assert.deepEqual(found.stdout.split('\n').slice(0, -1).sort(), [log, other].sort(), name);
+      rmSync(other);
+      const one = ltms(t, ['pin', '--check', to]);
+      assert.deepEqual(one.err.split('\n'), [
+        `ltms pin: '${log}' does not end in a new line: line ${n} is cut short; the next pin closes it with a recovered line.`,
+        closing,
+        `ltms pin: 1 file in ${shQuoted(to)} is named by no line in PINS.log (on stdout, "k":"unlogged"); the next pin records each with a recovered line.`,
+        `ltms pin: 1 temp file in ${shQuoted(to)} was left by a pin that stopped; the next pin removes it.`,
+        `ltms pin: ${shQuoted(lock)} names pid ${holder.pid} on ${hostname()}, since ${holder.started}: a pin is running, or one stopped without removing it (the next pin takes over a lock whose pid is no longer running on this host).`,
+        '',
+      ], name);
+    } finally { t.clean(); }
+  }
+});
+
+test('check, a PINS.log with another name and a lock that is not a regular file: the lock\'s notice says what it is, not that a pin fails at it, since every pin is refused before it reaches the lock; its ls -l command, like the find command, quotes the path as the CLI quotes one; with one name, the notice says that a pin fails at it (0.1.1, E3)', { skip: (NO_LINKS || process.platform === 'win32') && 'needs symbolic links and /bin/sh' }, async () => {
+  const t = tree();
+  try {
+    const to = join(t.tmp, "it's pins"), log = join(to, 'PINS.log'), lock = join(to, '.ltms-pin.lock'), other = join(t.tmp, 'other-name.log');
+    await pinPaths([t.root], { ...t.opts(), to });
+    symlinkSync(join(t.tmp, 'nowhere'), lock);
+    linkSync(log, other);
+    let k = await checkPin(to);
+    checkClean(k);
+    assert.deepEqual([k.logNames, k.notices], [2, [
+      `'${log}' has 2 names (hard links to one file): a pin refuses a log that has another name, so every pin into '${to}' is refused until only one name is left. Find its other names: find / -samefile ${shQuoted(log)} 2>/dev/null`,
+      `'${lock}' is a symbolic link, so it is not read as a pin's lock. See what it is: ls -l ${shQuoted(lock)}`,
+    ]]);
+    assert.deepEqual(wordsRun('ls', k.notices[1].slice(k.notices[1].indexOf('ls -l '))), ['-l', lock]);
+    rmSync(other);
+    k = await checkPin(to);
+    assert.deepEqual([k.logNames, k.notices], [1, [`'${lock}' is a symbolic link, so it is not read as a pin's lock; a pin fails at it (not-a-regular-file) until it is gone. See what it is: ls -l ${shQuoted(lock)}`]]);
+  } finally { t.clean(); }
+});
+
+test('pin --rehash, a .jsonl copy holding its version followed by bytes with no new line, which no pin wrote (a pin copies a .jsonl up to a new line): recovery records nothing, and the run pins the source against that version, keeping none of those bytes: unchanged, the copy is written again with a recovered line; grown, a grown line; rewritten, the copy is first cut back to that version, which the rewrite keeps; with no whole line left in the source, the copy is cut back and nothing is copied; each checks clean (0.1.1, E4; the closure check\'s appended-junk-source-unchanged)', async () => {
+  const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel], keptGood = `${Q}/${SB}.superseded-${sha12(good)}.jsonl`;
+  const repaired = (to) => `1 copy in '${to}' held other bytes than its last line in PINS.log records, and was written again from its source, which still holds that version (--rehash), with a recovered line each.`;
+  // the last column: the copy cut back to the version, which then has the mtime the version's source had (its line's)
+  for (const [name, change, lines, copy, kept, files, notices, cutBack] of [
+    ['source unchanged', () => {}, [['recovered', len(good), sha(good), versionOf(good), undefined]], good, [], counts({ seen: 1, unchanged: 1 }), (to) => [repaired(to)], null],
+    ['source grown', (p) => appendFileSync(p, L4), [['grown', len(good + L4), sha(good + L4), versionOf(good), undefined]], good + L4, [], counts({ seen: 1, grown: 1 }), () => [], null],
+    ['source rewritten', (p) => writeFileSync(p, L5), [['rewritten', len(L5), sha(L5), versionOf(good), keptGood]], L5, [keptGood], counts({ seen: 1, rewritten: 1 }), () => [], keptGood],
+    ['source left with no whole line', (p) => writeFileSync(p, 'an invented line still being written'), [], good, [], counts({ seen: 1, notCopied: 1 }), () => [], rel],
+  ]) {
+    const t = tree();
+    try {
+      await pinPaths([t.root], t.opts());
+      const pinnedNs = statSync(t.src(rel), { bigint: true }).mtimeNs;   // the source's mtime when that version was pinned
+      appendFileSync(t.pin(rel), 'zz');
+      change(t.src(rel));
+      const r = await pinPaths([t.src(Q)], t.opts({ rehash: true }));
+      assert.deepEqual(r.lines.map((l) => [l.how, l.bytes, l.sha256, l.prev, l.kept]), lines, name);
+      assert.deepEqual([r.coverage.files, r.notices, r.failures], [files, notices(t.to), []], name);
+      assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to)], [copy, kept], name);
+      if (kept.length) assert.equal(readFileSync(t.pin(keptGood), 'utf8'), good, name);
+      if (cutBack !== null) {
+        const off = statSync(t.pin(cutBack), { bigint: true }).mtimeNs - pinnedNs;
+        assert.ok(off > -1000n && off < 1000n, `${name}: the cut-back copy's mtime is ${off} ns from its source's when that version was pinned`);
+        assert.equal(modeOf(t.pin(cutBack)), 0o600, `${name}: the cut-back copy's mode, under umask 022`);
+      }
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('pin --rehash, that copy (its version, then bytes with no new line) whose source was rewritten, the pin killed just after it kept the old copy: the copy was cut back to its version first, so the next pin finds it as its line says, gives the kept copy its own recovered line (as after any crash between the link and the rename), finds that version kept already, and completes the rewrite; no line records those bytes (0.1.1, E4)', async () => {
+  const t = tree();
+  try {
+    await pinPaths([t.root], t.opts());
+    const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel], keptGood = `${Q}/${SB}.superseded-${sha12(good)}.jsonl`;
+    appendFileSync(t.pin(rel), 'zz');
+    writeFileSync(t.src(rel), L5);
+    assert.equal(childPin(t, [t.src(Q)], 'linked', rel, KILL, { rehash: true }).signal, 'SIGKILL');
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), readFileSync(t.pin(keptGood), 'utf8')], [good, good]);
+    assert.equal(statSync(t.pin(keptGood)).ino, statSync(t.pin(rel)).ino);   // the kept copy is the cut-back copy, linked
+    const r = await pinPaths([t.src(Q)], t.opts());
+    assert.deepEqual(r.lines.filter((l) => l.rel !== undefined).map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [
+      ['recovered', keptGood, len(good), sha(good), null, undefined],   // the kept copy's own line, as after any crash between the link and the rename
+      ['rewritten', rel, len(L5), sha(L5), versionOf(good), keptGood],
+    ]);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), L5);
+    checkClean(await checkPin(t.to));
+    assert.ok(!logText(t.to).includes(sha(`${good}zz`)), 'a line records the bytes past the version');
+  } finally { t.clean(); }
+});
+
+test('ltms pin --check after bytes with no new line were appended to a .jsonl copy, its source unchanged: the --rehash command it gives, run as printed, writes the copy again from its source; PINS.log gains one recovered line, for that version, and no rewritten line; nothing is kept, and the check then exits 0 with nothing to say (0.1.1, E4; the closure check\'s appended-junk-source-unchanged)', { skip: process.platform === 'win32' && 'needs /bin/sh' }, () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel], before = logLines(t.to).length;
+    appendFileSync(t.pin(rel), 'zz');
+    const command = rehashOf(ltms(t, ['pin', '--check', t.to]).err);
+    assert.equal(command, `ltms pin '${t.src(Q)}' --to '${t.to}' --root '${t.root}' --rehash`);
+    assert.equal(runPrinted(t, command).code, 0);
+    assert.deepEqual(logLines(t.to).slice(before).map((l) => [l.how, l.rel, l.bytes, l.sha256]), [['recovered', rel, len(good), sha(good)]]);
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to)], [good, []]);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('pin --rehash, a copy holding its version followed by bytes a pin could have written (a whole line of a .jsonl, or any bytes of a file copied whole), its source holding only that version: recovery records them, and the run keeps them as the old copy of a rewrite, as 0.1.0 did, since they can be a version that only the pin holds (a pin stopped between the rename of a grown copy and its line; README Limits) (0.1.1, E4; a guard: 0.1.0 did the same)', async () => {
+  // a whole line; an empty line, the new line right after the version; and bytes after a file copied whole
+  for (const [rel, extra] of [[`${Q}/${SB}.jsonl`, 'an invented line appended to the copy\n'], [`${Q}/${SB}.jsonl`, '\n'], [`${P}/${SA}/tool-results/b000000001.txt`, 'zz']]) {
+    const t = tree();
+    try {
+      await pinPaths([t.root], t.opts());
+      const good = PINNED[rel], held = good + extra;
+      appendFileSync(t.pin(rel), extra);
+      const kept = rel.endsWith('.jsonl') ? `${rel.slice(0, -'.jsonl'.length)}.superseded-${sha12(held)}.jsonl` : `${rel}.superseded-${sha12(held)}`;
+      const r = await pinPaths([t.src(rel.split('/')[0])], t.opts({ rehash: true }));
+      assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [
+        ['recovered', rel, len(held), sha(held), versionOf(good), undefined],
+        ['rewritten', rel, len(good), sha(good), versionOf(held), kept],
+      ], rel);
+      assert.deepEqual([readFileSync(t.pin(kept), 'utf8'), readFileSync(t.pin(rel), 'utf8')], [held, good], rel);
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('README, ltms pin --help and docs/library.md say what 0.1.1 changed: recovery under --rehash leaves a copy whose source cannot be read (E1) and one whose bytes after its version no pin wrote (E4); the --rehash command names a file where a pin of its project does not go by its own path (E2), with projectPinReaches; nothing is said of a next pin while PINS.log has another name (E3); and the Limits name what 0.1.1 leaves (0.1.1)', () => {
+  const flat = (s) => s.replace(/\s+/g, ' ');
+  const readme = flat(readFileSync(join(here, '..', 'README.md'), 'utf8'));
+  const docs = flat(readFileSync(join(here, '..', 'docs', 'library.md'), 'utf8'));
+  const help = flat(spawnSync(process.execPath, [CLI, 'pin', '--help'], { encoding: 'utf8' }).stdout);
+  const says = (where, text, phrases) => { for (const p of phrases) assert.ok(text.includes(p), `${where} does not say: ${p}`); };
+  says('README', readme, [
+    'gets none when that source cannot be read (the run fails on the file, and the copy is left as it is until a `--rehash` can read the source);',
+    'and when the copy is a `.jsonl` that holds the version at its start followed by bytes with no new line, which no pin wrote, since a pin copies a `.jsonl` up to a new line.',
+    'In the last two, the run pins the source against that version:',
+    'a copy holding its version and such bytes is first cut back to the version (also when its source holds no whole line, and nothing is copied), so those bytes are never recorded or kept.',
+    'and for a file under `.git` or under `memory/` directly under a project directory, where a pin of its project does not go, the file itself (a file of the cleanup\'s shape given by its own path is pinned whatever directories it is under)',
+    'no pin command is given, and nothing is said of what a next pin would do.',
+    'and so does a pin with `--rehash` that does not pin that copy\'s source (one given other paths).',
+    '- Under `--rehash` too, a copy that holds its version followed by bytes that a pin could have written (whole lines of a `.jsonl`, or any bytes of a file copied whole) is recorded as it is,',
+  ]);
+  says('ltms pin --help', help, [
+    '(for a file under .git, or under memory/ directly under a project directory, where a pin of its project does not go, the file itself)',
+    'it says so, gives no pin command, and says nothing of what a next pin would do.',
+  ]);
+  says('docs/library.md', docs, [
+    'import { pinPaths, checkPin, claudeConfigDir, isSweepShaped, projectPinReaches } from',
+    '#### `projectPinReaches(rel)`',
+    'Its source cannot be read: the run fails on that file (`read`, with the error code), and the copy is left as it is',
+    'It is a `.jsonl` that holds the version at its start followed by bytes with no new line, which no pin wrote',
+    'then no other notice says what a next pin would do.',
+  ]);
+  // 0.1.0's sentences on what 0.1.1 changed are gone
+  assert.ok(!readme.includes('a pin without `--rehash` also when the copy\'s size is not that version\'s'), 'README still has the Limits sentence of 0.1.0');
+  assert.ok(!help.includes('it says so and gives no pin command.'), 'ltms pin --help still has the sentence of 0.1.0');
+});
+
+test('pin without --rehash, bytes with no new line appended to a .jsonl copy after recovery read it (at the copy\'s stat step): recorded and kept as the old copy of a rewrite when the source was rewritten, and left as they are when the source holds no whole line, as 0.1.0 did: only --rehash cuts such a copy back (0.1.1, E4; a guard: 0.1.0 did the same)', async () => {
+  const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel], held = `${good}zz`;
+  for (const [name, change, lines, copy] of [
+    ['source rewritten', (p) => writeFileSync(p, L5), [['recovered', len(held), versionOf(good)], ['rewritten', len(L5), versionOf(held)]], L5],
+    ['source with no whole line', (p) => writeFileSync(p, 'an invented line still being written'), [], held],
+  ]) {
+    const t = tree();
+    try {
+      await pinPaths([t.root], t.opts());
+      change(t.src(rel));
+      const r = await pinPaths([t.src(Q)], t.opts({ onStep(step, at) { if (step === 'stat' && at === rel) appendFileSync(t.pin(rel), 'zz'); } }));
+      assert.deepEqual(r.lines.map((l) => [l.how, l.bytes, l.prev]), lines, name);
+      assert.equal(readFileSync(t.pin(rel), 'utf8'), copy, name);
+    } finally { t.clean(); }
+  }
+});
+
+// ---- 0.1.1, the closure round of track P (S359): the verifier's F1 and F2 ------------------------------------------
+// F1: E1 by the directory door. Under --rehash, recovery recorded a damaged copy whose source the run could not reach
+// because its walk could not read a path at or above it (the copy's source is then not among the files the run pins),
+// and the next --rehash kept those bytes as the old copy of a rewrite: E1's 0.1.0 end state. The F1 tests were run
+// first against the track's build before this fix and seen red (recovery's line), except the guards, which say so.
+// F2: a test for each mutant of the verifier's that no test killed (V14, V15, V05, V06, V07, V01, V17). Each passes on
+// the track's build, which already behaves so, and was seen red on that mutant, built from the track's sources.
+
+/** A failure line of `ltms pin`, as stdout gives it. */
+const failureRow = (path, rel, op, code) => ({ k: 'failure', path, rel, op, code });
+const byRel = (a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+
+test('ltms pin --check, a copy cut and changed at a byte while its source\'s directory can be searched but not listed (mode 0300): the --rehash command it gives fails on that directory (exit 1, a walk failure line naming it and EACCES) and records nothing, each time it is run; once the directory can be listed, the same command writes the copy back with a recovered line, keeps nothing, and the check then exits 0 with nothing to say (0.1.1, E1; the closure\'s F1, the verifier\'s case dir-300)', { skip: (NEEDS_PERMISSIONS || process.platform === 'win32') && 'needs file permissions and /bin/sh' }, () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const dir = `${P}/${SA}/subagents`, rel = `${dir}/agent-a0000000000000001.jsonl`, good = PINNED[rel];
+    const bad = damage(t.pin(rel), 5);
+    const log = logText(t.to), before = logLines(t.to).length;
+    chmodSync(t.src(dir), 0o300);
+    const command = `ltms pin '${t.src(P)}' --to '${t.to}' --root '${t.root}' --rehash`;
+    for (let i = 0; i < 2; i++) {
+      assert.equal(rehashOf(ltms(t, ['pin', '--check', t.to]).err), command);
+      const fix = runPrinted(t, command);
+      assert.deepEqual([fix.code, rowsOf(fix.out).filter((o) => o.k === 'failure')], [1, [failureRow(t.src(dir), dir, 'walk', 'EACCES')]], fix.err);
+      assert.deepEqual([logText(t.to), readFileSync(t.pin(rel))], [log, bad]);
+    }
+    chmodSync(t.src(dir), 0o700);
+    assert.equal(rehashOf(ltms(t, ['pin', '--check', t.to]).err), command);
+    assert.equal(runPrinted(t, command).code, 0);
+    assert.deepEqual(logLines(t.to).slice(before).map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev]), [['recovered', rel, len(good), sha(good), versionOf(good)]]);
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to)], [good, []]);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('pin --rehash, a copy cut and changed at a byte whose source the run cannot reach, because its walk could not read a path at or above it (a directory it cannot list; the file given by its own path, in a directory it cannot search; a given <sid>.jsonl in a project directory it cannot search, its own copy and one under its <sid>/, which the walk then does not enter; the root, which it cannot list): recovery records nothing, the run fails on that path (walk, EACCES), and each copy is left as it is; once the path can be read, the next --rehash writes each copy again from its source with a recovered line, keeps nothing, and the pin checks clean (0.1.1, E1; the closure\'s F1)', { skip: NEEDS_PERMISSIONS }, async () => {
+  const sub = `${P}/${SA}/subagents`, rel = `${sub}/agent-a0000000000000001.jsonl`, sid = `${P}/${SA}.jsonl`;
+  // [case, the path closed ('' is the root), its mode then, the paths given, the rel of the walk's failure, the copies damaged]
+  for (const [name, closed, mode, given, failed, damaged] of [
+    ['a directory it cannot list', sub, 0o000, [P], sub, [rel]],
+    ['the file given by its own path, in a directory it cannot search', sub, 0o000, [rel], rel, [rel]],
+    ['a given <sid>.jsonl, in a project directory it cannot search', P, 0o600, [sid], sid, [sid, rel]],
+    ['the root, which it cannot list', '', 0o300, [''], '', [rel]],
+  ]) {
+    const t = tree();
+    try {
+      const abs = (r) => (r === '' ? t.root : t.src(r));
+      await pinPaths([t.root], t.opts());
+      const bad = damaged.map((d) => damage(t.pin(d), 5));
+      const log = logText(t.to);
+      chmodSync(abs(closed), mode);
+      const r = await pinPaths(given.map(abs), t.opts({ rehash: true }));
+      assert.deepEqual([r.lines, r.notices, r.failures], [[], [], [{ path: abs(failed), rel: failed, op: 'walk', code: 'EACCES' }]], name);
+      assert.deepEqual([logText(t.to), damaged.map((d) => readFileSync(t.pin(d)))], [log, bad], name);
+      chmodSync(abs(closed), 0o700);
+      const again = await pinPaths(given.map(abs), t.opts({ rehash: true }));
+      assert.deepEqual(again.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), damaged.map((d) => ['recovered', d, len(PINNED[d]), sha(PINNED[d]), versionOf(PINNED[d]), undefined]), name);
+      assert.deepEqual([again.failures, damaged.map((d) => readFileSync(t.pin(d), 'utf8')), keptIn(t.to)], [[], damaged.map((d) => PINNED[d]), []], name);
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('pin, a damaged copy beside a path the walk could not read, recorded as 0.1.0 did: by a pin without --rehash (the door README Limits names); with --rehash, when a kept copy waits beside it, recorded with that kept copy, as after any crash; and with --rehash, a damaged copy whose source is gone and whose rel is only spelled like that path (<name>.jsonl beside an unreadable <name>/) (0.1.1, E1; the closure\'s F1; guards: 0.1.0 and the track\'s build did the same)', { skip: NEEDS_PERMISSIONS }, async () => {
+  const sub = `${P}/${SA}/subagents`, rel = `${sub}/agent-a0000000000000001.jsonl`, good = PINNED[rel];
+  let t = tree();
+  try {   // a pin without --rehash records the damage, though the walk could not list the directory of its source
+    await pinPaths([t.root], t.opts());
+    const bad = damage(t.pin(rel), 5);
+    chmodSync(t.src(sub), 0o000);
+    const r = await pinPaths([t.src(P)], t.opts());
+    assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [['recovered', rel, bad.length, sha(bad), versionOf(good), undefined]]);
+    assert.deepEqual(r.failures, [{ path: t.src(sub), rel: sub, op: 'walk', code: 'EACCES' }]);
+  } finally { t.clean(); }
+  t = tree();
+  try {   // a rewrite killed after its rename, before its line: the kept copy of the old version waits beside the copy
+    await pinPaths([t.root], t.opts());
+    writeFileSync(t.src(rel), L5);
+    assert.equal(childPin(t, [t.root], 'renamed', rel, KILL).signal, 'SIGKILL');
+    const kept = `${sub}/agent-a0000000000000001.superseded-${sha12(good)}.jsonl`;
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), readFileSync(t.pin(kept), 'utf8')], [L5, good]);
+    chmodSync(t.src(sub), 0o000);
+    const r = await pinPaths([t.src(P)], t.opts({ rehash: true }));   // its takeover line first: the killed pin left its lock
+    assert.deepEqual(r.lines.filter((l) => l.rel !== undefined).map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [['recovered', rel, len(L5), sha(L5), versionOf(good), kept]]);
+    assert.deepEqual(r.failures, [{ path: t.src(sub), rel: sub, op: 'walk', code: 'EACCES' }]);
+    chmodSync(t.src(sub), 0o700);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+  t = tree();
+  try {   // P/sess-named.jsonl, its source gone, beside P/sess-named/, which the walk cannot list
+    await pinPaths([t.root], t.opts());
+    const gone = `${P}/sess-named.jsonl`, bad = damage(t.pin(gone), 5);
+    rmSync(t.src(gone));
+    chmodSync(t.src(`${P}/sess-named`), 0o000);
+    const r = await pinPaths([t.src(P)], t.opts({ rehash: true }));
+    assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev]), [['recovered', gone, bad.length, sha(bad), versionOf(PINNED[gone])]]);
+    assert.deepEqual(r.failures, [{ path: t.src(`${P}/sess-named`), rel: `${P}/sess-named`, op: 'walk', code: 'EACCES' }]);
+  } finally { t.clean(); }
+});
+
+test('ltms pin --rehash on a file system that gives no entry type (here a stubbed readdirSync), a copy cut and changed at a byte whose source the walk could not lstat (its directory can be listed, not searched: mode 0600): recovery records nothing, the run fails on each file of that directory (walk, EACCES), and the copy is left as it is; once the directory can be searched, the same command writes it back (0.1.1, E1; the closure\'s F1, the walk\'s third kind of failure)', { skip: (NEEDS_PERMISSIONS || process.platform === 'win32') && 'needs file permissions' }, () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const dir = `${P}/${SA}/subagents`, rel = `${dir}/agent-a0000000000000001.jsonl`, meta = `${dir}/agent-a0000000000000001.meta.json`;
+    const bad = damage(t.pin(rel), 5);
+    const log = logText(t.to);
+    const used = join(t.tmp, 'stub-used'), stub = join(t.tmp, 'no-entry-types.mjs');
+    writeFileSync(stub, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const readdir = fs.readdirSync, none = () => false;
+fs.readdirSync = function (p, o) {
+  const r = readdir.apply(this, arguments);
+  if (String(p) !== ${JSON.stringify(t.src(dir))} || !(o && o.withFileTypes)) return r;
+  fs.writeFileSync(${JSON.stringify(used)}, '');
+  return r.map((e) => ({ name: e.name, isFile: none, isDirectory: none, isSymbolicLink: none, isFIFO: none, isSocket: none, isBlockDevice: none, isCharacterDevice: none }));
+};
+syncBuiltinESMExports();
+`);
+    chmodSync(t.src(dir), 0o600);
+    const args = ['pin', t.src(P), '--to', t.to, '--root', t.root, '--rehash'];
+    const r = spawnSync(process.execPath, ['--import', pathToFileURL(stub).href, CLI, ...args], { encoding: 'utf8', timeout: 60000, cwd: t.tmp,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: t.config } });
+    assert.ok(existsSync(used), `the stub gave the entries their types: ${r.stderr}`);
+    assert.deepEqual([r.status, rowsOf(r.stdout).filter((o) => o.k === 'failure').sort(byRel)],
+      [1, [failureRow(t.src(rel), rel, 'walk', 'EACCES'), failureRow(t.src(meta), meta, 'walk', 'EACCES')]], r.stderr);
+    assert.deepEqual([logText(t.to), readFileSync(t.pin(rel))], [log, bad]);
+    chmodSync(t.src(dir), 0o700);
+    assert.equal(ltms(t, args).code, 0);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), PINNED[rel]);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('pin --rehash, a tool result (a file copied whole) cut and changed at a byte while its source cannot be read: recovery records nothing, the read of the source is the run\'s failure, and the copy is left as it is; once the source can be read, the next --rehash writes it again from its source with a recovered line, keeps nothing, and the pin checks clean (0.1.1, E1; the closure\'s F2, the verifier\'s V14)', { skip: NEEDS_PERMISSIONS }, async () => {
+  const t = tree();
+  try {
+    await pinPaths([t.root], t.opts());
+    const rel = `${P}/${SA}/tool-results/b000000001.txt`, good = PINNED[rel], inP = RELS.filter((r) => r.startsWith(`${P}/`)).length;
+    const bad = damage(t.pin(rel), 5);
+    const log = logText(t.to);
+    chmodSync(t.src(rel), 0o000);
+    const r = await pinPaths([t.src(P)], t.opts({ rehash: true }));
+    assert.deepEqual([r.lines, r.notices, r.failures], [[], [], [{ path: t.src(rel), rel, op: 'read', code: 'EACCES' }]]);
+    assert.deepEqual(r.coverage.files, counts({ seen: inP, unchanged: inP - 1, failed: 1 }));
+    assert.deepEqual([logText(t.to), readFileSync(t.pin(rel))], [log, bad]);
+    chmodSync(t.src(rel), 0o600);
+    const again = await pinPaths([t.src(P)], t.opts({ rehash: true }));
+    assert.deepEqual(again.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [['recovered', rel, len(good), sha(good), versionOf(good), undefined]]);
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to)], [good, []]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('pin --rehash, a single byte with no new line after a .jsonl copy\'s version (the fewest bytes no pin writes), its source unchanged: recovery records nothing, and the run writes the copy again from its source with a recovered line, keeping nothing (0.1.1, E4; the closure\'s F2, the verifier\'s V15)', async () => {
+  const t = tree();
+  try {
+    await pinPaths([t.root], t.opts());
+    const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel];
+    appendFileSync(t.pin(rel), 'z');
+    const r = await pinPaths([t.src(Q)], t.opts({ rehash: true }));
+    assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [['recovered', rel, len(good), sha(good), versionOf(good), undefined]]);
+    assert.deepEqual([r.coverage.files, r.failures], [counts({ seen: 1, unchanged: 1 }), []]);
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to)], [good, []]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('pin --rehash, the copy of a source of mode 0400 (a copy has its source\'s mode when that is stricter than 0600), holding its version followed by bytes with no new line: the copy cut back to its version keeps the copy\'s mode, 0400, as the old copy of a rewrite, and as the current copy when the source holds no whole line (0.1.1, E4; the closure\'s F2, the verifier\'s V05)', async () => {
+  const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel], keptGood = `${Q}/${SB}.superseded-${sha12(good)}.jsonl`;
+  for (const [name, content, cutBack] of [['source rewritten', L5, keptGood], ['source left with no whole line', 'an invented line still being written', rel]]) {
+    const t = tree();
+    try {
+      chmodSync(t.src(rel), 0o400);
+      await pinPaths([t.root], t.opts());
+      assert.equal(modeOf(t.pin(rel)), 0o400, name);
+      chmodSync(t.pin(rel), 0o600); appendFileSync(t.pin(rel), 'zz'); chmodSync(t.pin(rel), 0o400);
+      chmodSync(t.src(rel), 0o600); writeFileSync(t.src(rel), content); chmodSync(t.src(rel), 0o400);
+      const r = await pinPaths([t.src(Q)], t.opts({ rehash: true }));
+      assert.deepEqual(r.failures, [], name);
+      assert.deepEqual([readFileSync(t.pin(cutBack), 'utf8'), modeOf(t.pin(cutBack))], [good, 0o400], name);
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('pin --rehash, a copy holding its version followed by bytes with no new line, whose cut-back cannot be written (its directory in the pin is mode 0500): a failure of the run, write and EACCES, naming the copy, and no line, whether its source was rewritten or holds no whole line; the copy is left as it is, with no temp file, and once the directory can be written the next --rehash completes (0.1.1, E4; the closure\'s F2, the verifier\'s V06 and V07)', { skip: NEEDS_PERMISSIONS }, async () => {
+  const rel = `${Q}/${SB}.jsonl`, good = PINNED[rel];
+  for (const [name, content, how] of [['source rewritten', L5, 'rewritten'], ['source left with no whole line', 'an invented line still being written', 'notCopied']]) {
+    const t = tree();
+    try {
+      await pinPaths([t.root], t.opts());
+      appendFileSync(t.pin(rel), 'zz');
+      writeFileSync(t.src(rel), content);
+      const log = logText(t.to);
+      chmodSync(t.pin(Q), 0o500);
+      const r = await pinPaths([t.src(Q)], t.opts({ rehash: true }));
+      assert.deepEqual([r.lines, r.failures, r.coverage.files], [[], [{ path: t.pin(rel), rel, op: 'write', code: 'EACCES' }], counts({ seen: 1, failed: 1 })], name);
+      assert.deepEqual([logText(t.to), readFileSync(t.pin(rel), 'utf8'), readdirSync(t.pin(Q))], [log, `${good}zz`, [`${SB}.jsonl`]], name);
+      chmodSync(t.pin(Q), 0o700);
+      const again = await pinPaths([t.src(Q)], t.opts({ rehash: true }));
+      assert.deepEqual([again.failures, again.coverage.files], [[], counts({ seen: 1, [how]: 1 })], name);
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('pin --rehash, Claude Code\'s own set-aside copy (<name>.jsonl.superseded-<n>: a file copied whole, though its name holds .jsonl) holding its version followed by bytes with no new line: recorded as they are, and kept as the old copy of a rewrite, as for any file copied whole, since a pin could have written them (README Limits) (0.1.1, E4; the closure\'s F2, the verifier\'s V01; a guard: 0.1.0 did the same)', async () => {
+  const t = tree();
+  try {
+    await pinPaths([t.root], t.opts());
+    const rel = `${P}/22222222-2222-4222-8222-222222222222.jsonl.superseded-1731067200000`, good = PINNED[rel], held = `${good}zz`, kept = `${rel}.superseded-${sha12(held)}`;
+    appendFileSync(t.pin(rel), 'zz');
+    const r = await pinPaths([t.src(P)], t.opts({ rehash: true }));
+    assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [
+      ['recovered', rel, len(held), sha(held), versionOf(good), undefined],
+      ['rewritten', rel, len(good), sha(good), versionOf(held), kept],
+    ]);
+    assert.deepEqual([readFileSync(t.pin(kept), 'utf8'), readFileSync(t.pin(rel), 'utf8')], [held, good]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('ltms pin --check, a changed copy of a file pinned by its own path directly in a project directory named .git, which no walk enters (of the root, or of that directory): the --rehash command names the file itself, not its project directory; run as printed, it writes the copy back, and the check then exits 0 (0.1.1, E2; the closure\'s F2, the verifier\'s V17)', { skip: process.platform === 'win32' && 'needs /bin/sh' }, () => {
+  const t = tree();
+  try {
+    const rel = `.git/${SA}.jsonl`;
+    t.put(rel, L1);
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    assert.equal(ltms(t, ['pin', t.src(rel), '--to', t.to]).code, 0);
+    const b = readFileSync(t.pin(rel)); b[0] ^= 1; writeFileSync(t.pin(rel), b);
+    const k = ltms(t, ['pin', '--check', t.to]);
+    const command = rehashOf(k.err);
+    assert.equal(command, `ltms pin ${shQuoted(t.src(rel))} --to '${t.to}' --root '${t.root}' --rehash`, k.err);
+    assert.equal(runPrinted(t, command).code, 0);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), L1);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('README and docs/library.md say what the closure round of 0.1.1 changed: under --rehash, recovery also leaves a damaged copy whose source the run cannot reach, because its walk could not read a path on the way (F1); and the README says that a pin without --rehash records such a copy meanwhile (the verifier\'s F4), and that bytes after a .jsonl copy\'s version that hold a new line but do not end in one are recorded too (F3) (0.1.1, the closure)', () => {
+  const flat = (s) => s.replace(/\s+/g, ' ');
+  const readme = flat(readFileSync(join(here, '..', 'README.md'), 'utf8'));
+  const docs = flat(readFileSync(join(here, '..', 'docs', 'library.md'), 'utf8'));
+  const says = (where, text, phrases) => { for (const p of phrases) assert.ok(text.includes(p), `${where} does not say: ${p}`); };
+  says('README', readme, [
+    'Under `--rehash`, a copy with no kept copy beside it also gets none when the run cannot read the way to its source: a directory on that way that it cannot list, or a path on it that it cannot look at (each a `walk` failure of the run).',
+    'It is left as it is until a `--rehash` can read the source, as one whose source cannot be read is.',
+    'A pin without `--rehash` records either one\'s bytes meanwhile, and a `--rehash` that can read the source then keeps them as the old copy of a rewrite (see Limits).',
+    'Of a `.jsonl` copy, bytes after the version that hold a new line but do not end in one are recorded too, since what they hold up to their last new line can be such a version.',
+  ]);
+  says('docs/library.md', docs, [
+    'gets no `recovered` line either when its rel is at or under a path the walk could not read: a directory it could not list, or a path it could not `lstat` (a given path, with the `<sid>/` of a given `<sid>.jsonl`, which the walk then does not enter; or an entry, on a file system that gives no entry types).',
+  ]);
 });

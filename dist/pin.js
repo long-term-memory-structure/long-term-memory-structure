@@ -236,6 +236,9 @@ function inside(a, b, platform) {
 }
 /** A path as it was given, and its real path when that is not just the given one made absolute. */
 const shown = (given, real) => (resolve(given) === real ? `'${given}'` : `'${given}' (real path '${real}')`);
+/** A path as one word of a command a notice gives: in single quotes, each single quote in it written '\'', as cli.ts
+ *  quotes a path in the commands it gives (its `quoted`), so the command runs as printed whatever the path holds. */
+const quoted = (s) => `'${s.replace(/'/g, "'\\''")}'`;
 /** A rel read from PINS.log is used only when it cannot lead out of the pin. */
 function safeRel(r, platform) {
     return typeof r === 'string' && r.length > 0 && !r.includes('\0') && !isAbsolute(r)
@@ -280,14 +283,35 @@ function shapeOf(root) {
  *  rule is written once: pinPaths and checkPin select by it, and `ltms pin --check` asks it before it gives the
  *  `--rehash` command. */
 export function isSweepShaped(root, rel) { return shapeOf(root)(rel); }
+/** The directories the walk does not enter, by their name and their depth under the root (a project directory is at
+ *  depth 1): `.git`, at any depth, and `memory` directly under a project directory. The rule is written once: walk()
+ *  asks it of each directory it meets, and projectPinReaches of each directory on the way to a file. */
+function walkSkips(name, depth) {
+    return name === '.git' ? 'git' : depth === 2 && name === 'memory' ? 'memory' : null;
+}
+/** Whether a pin of the project directory of `rel` (a path under the root, '/'-separated, whose first segment is its
+ *  project directory) walks to the file at `rel`: the walk enters no `.git` directory, at any depth, and no `memory/`
+ *  directly under a project directory, so a file under one of those is pinned only when it is given by its own path.
+ *  Only the names on the way are read, nothing on disk: whether the file is there, of the sweep's shape
+ *  (isSweepShaped), or reached through a symbolic link (which the walk does not follow) is not looked at. The walk's
+ *  rule is written once: `ltms pin --check` asks it to name, in the `--rehash` command it gives, a copy's project
+ *  directory, or the file itself. */
+export function projectPinReaches(rel) {
+    return rel.split('/').slice(0, -1).every((name, i) => walkSkips(name, i + 1) === null);
+}
 /** The files of the sweep's shape under the given paths. Symbolic links met on the way, memory/ directly under a
  *  project, and .git are counted, never followed; every path is counted once, however many given paths reach it. */
 function walk(givens, root) {
-    const w = { files: new Map(), skipped: { notSessionShaped: 0, symlinks: 0, memory: 0, git: 0 }, failures: [], projects: new Set(), covered: [] };
+    const w = { files: new Map(), skipped: { notSessionShaped: 0, symlinks: 0, memory: 0, git: 0 }, failures: [], projects: new Set(), covered: [], unread: [] };
     const shaped = shapeOf(root);
     const seen = new Set();
     const relOf = (abs) => relative(root, abs).split(sep).join('/');
     const once = (abs) => (seen.has(abs) ? false : (seen.add(abs), true));
+    /** A path the walk could not read: a failure of the run, and the rels it did not see there (rel, or those given). */
+    const failed = (path, rel, err, unread = [rel]) => {
+        w.failures.push({ path, rel, op: 'walk', code: codeOf(err) });
+        w.unread.push(...unread);
+    };
     const file = (abs) => {
         if (!once(abs))
             return;
@@ -304,12 +328,9 @@ function walk(givens, root) {
             if (!once(d))
                 continue;
             const rel = relOf(d), depth = rel === '' ? 0 : rel.split('/').length;
-            if (basename(d) === '.git') {
-                w.skipped.git++;
-                continue;
-            }
-            if (depth === 2 && basename(d) === 'memory') {
-                w.skipped.memory++;
+            const skip = walkSkips(basename(d), depth);
+            if (skip !== null) {
+                w.skipped[skip]++;
                 continue;
             }
             if (depth === 1)
@@ -319,7 +340,7 @@ function walk(givens, root) {
                 entries = readdirSync(d, { withFileTypes: true });
             }
             catch (e) {
-                w.failures.push({ path: d, rel, op: 'walk', code: codeOf(e) });
+                failed(d, rel, e);
                 continue;
             }
             for (const e of entries) {
@@ -330,7 +351,7 @@ function walk(givens, root) {
                         kind = lstatSync(abs);
                     } // a file system that does not give the entry's type
                     catch (err) {
-                        w.failures.push({ path: abs, rel: relOf(abs), op: 'walk', code: codeOf(err) });
+                        failed(abs, relOf(abs), err);
                         continue;
                     }
                 }
@@ -358,7 +379,7 @@ function walk(givens, root) {
             st = lstatSync(g.real);
         }
         catch (e) {
-            w.failures.push({ path: g.resolved, rel, op: 'walk', code: codeOf(e) });
+            failed(g.resolved, rel, e, sessionOf === null ? [rel] : [rel, relOf(sessionOf)]);
             continue;
         }
         if (st.isDirectory()) {
@@ -401,9 +422,10 @@ function scanPin(to) {
         }
         for (const e of entries) {
             const abs = join(d, e.name);
+            // every directory, .git too: the copy of a file pinned by its own path under a source's .git/ is under one, and a
+            // copy the scan does not see reads as missing (written over at a rewrite, its old version not kept)
             if (e.isDirectory()) {
-                if (e.name !== '.git')
-                    stack.push(abs);
+                stack.push(abs);
                 continue;
             }
             if (!e.isFile())
@@ -883,8 +905,31 @@ function pinOne(rel, src, e) {
     const jsonl = rel.endsWith('.jsonl');
     const cut = jsonl ? buf.lastIndexOf(0x0a) + 1 : buf.length;
     const partial = jsonl && cut < buf.length;
-    if (jsonl && cut === 0)
+    if (jsonl && cut === 0) {
+        // nothing whole to copy. A copy that recovery left to this run (rehash: its version, then bytes no pin wrote) is cut
+        // back to that version, so that those bytes never stand as one
+        if (e.rehash && present && last !== undefined) {
+            let held = null;
+            try {
+                held = readRegular(dst);
+            }
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+            } // read by recovery a moment ago
+            if (held !== null && startsWith(held, last) && damageAfter(held, last, rel)) {
+                try {
+                    cutBack(dst, held, last, e.platform);
+                }
+                catch (err) {
+                    if (!isFsError(err))
+                        throw err;
+                    return fail('write', dst, err);
+                }
+            }
+        }
         return { how: 'notCopied', partial, bytes: 0, again: null, lost: false };
+    }
     // the sha256 of the prefix the old copy claims and of the bytes up to the cut, in one pass
     const h = createHash('sha256');
     let prefix = null;
@@ -929,7 +974,21 @@ function pinOne(rel, src, e) {
                 throw err;
             return fail('keep', dst, err);
         }
-        const oldSha = sha256(old);
+        let oldSha = sha256(old);
+        if (e.rehash && startsWith(old, last) && damageAfter(old, last, rel)) {
+            // its version, then bytes no pin wrote (recovery left it to this run): cut back to that version first, which the
+            // rewrite then keeps; the rules for a rewrite apply to the source's bytes, never to that damage
+            try {
+                cutBack(dst, old, last, e.platform);
+            }
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+                return fail('write', dst, err);
+            }
+            old = old.subarray(0, last.bytes);
+            oldSha = last.sha256;
+        }
         if (old.length !== last.bytes || oldSha !== last.sha256) {
             // the copy does not hold what its last line says: a recovered line records what it holds, and the decision is
             // made again against that
@@ -992,18 +1051,7 @@ function pinOne(rel, src, e) {
             closeSync(fd);
         }
         e.onStep?.('temp-written', rel);
-        for (let attempt = 0;; attempt++) {
-            try {
-                renameSync(tmp, dst);
-                break;
-            }
-            catch (err) {
-                if (e.platform !== 'win32' || !RENAME_RETRY.has(codeOf(err)) || attempt >= RENAME_TRIES)
-                    throw err;
-                e.onStep?.('rename-retry', rel);
-                sleepSync(RENAME_PAUSE_MS);
-            }
-        }
+        renameOver(tmp, dst, e.platform, () => e.onStep?.('rename-retry', rel));
         tmpMade = false;
         fsyncDir(dir, e.platform);
     }
@@ -1026,32 +1074,108 @@ function pinOne(rel, src, e) {
 }
 /** Whether bytes b start with version v: the sha256 of their first v.bytes bytes is v's. */
 const startsWith = (b, v) => b.length >= v.bytes && sha256(b.subarray(0, v.bytes)) === v.sha256;
+/** Whether a copy b of rel, which starts with version v (startsWith), holds after it only bytes that no pin wrote: rel
+ *  is a .jsonl, which a pin copies only up to a new line, and no new line follows v in b. Those bytes are damage, never
+ *  a version: a pin stopped between the rename of a grown copy and its line leaves whole lines after v. */
+const damageAfter = (b, v, rel) => rel.endsWith('.jsonl') && b.length > v.bytes && b.indexOf(0x0a, v.bytes) < 0;
+/** Renames tmp over dst. On win32, a rename that fails with EPERM, EACCES or EBUSY is retried RENAME_TRIES times,
+ *  RENAME_PAUSE_MS apart, onRetry called before each retry. */
+function renameOver(tmp, dst, platform, onRetry) {
+    for (let attempt = 0;; attempt++) {
+        try {
+            renameSync(tmp, dst);
+            return;
+        }
+        catch (err) {
+            if (platform !== 'win32' || !RENAME_RETRY.has(codeOf(err)) || attempt >= RENAME_TRIES)
+                throw err;
+            onRetry?.();
+            sleepSync(RENAME_PAUSE_MS);
+        }
+    }
+}
+/** Seconds since the epoch, as a double, of a time isoNs wrote (`2026-11-08T13:57:08.261123456Z`), within a µs; null
+ *  when it is not one. */
+function secondsOf(iso) {
+    const m = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3})(\d{6})Z$/.exec(iso);
+    const ms = m === null ? NaN : Date.parse(`${m[1]}Z`);
+    return Number.isNaN(ms) ? null : ms / 1000 + Number(m[2]) / 1e9;
+}
+/** Writes the copy at dst again holding only version v, from b, the copy's own bytes, which start with v (hashed: see
+ *  startsWith), as pinOne writes a copy: a temp file, fsynced, renamed over the copy, its directory fsynced; with the
+ *  copy's own mode (0600, or stricter), and the mtime v's line records (its source's, when v was pinned), or, when that
+ *  line has none that can be read, the copy's own. No line is written: the copy then holds what its last line records. */
+function cutBack(dst, b, v, platform) {
+    const st = lstatSync(dst, { bigint: true });
+    const dir = dirname(dst), tmp = join(dir, tempName(basename(dst)));
+    const mtime = (v.mtime === null ? null : secondsOf(v.mtime)) ?? Number(st.mtimeNs) / 1e9;
+    const fd = openSync(tmp, 'wx', FILE_MODE & Number(st.mode));
+    try {
+        try {
+            writeAll(fd, b.subarray(0, v.bytes));
+            futimesSync(fd, Number(st.atimeNs) / 1e9, mtime);
+            fsyncSync(fd);
+        }
+        finally {
+            closeSync(fd);
+        }
+        renameOver(tmp, dst, platform);
+    }
+    catch (err) {
+        try {
+            unlinkSync(tmp);
+        }
+        catch { /* the next pin removes it */ }
+        throw err;
+    }
+    fsyncDir(dir, platform);
+}
 /** Whether the source at path holds version v at its start as a pin copies it: the sha256 of its first v.bytes bytes is
  *  v's, and, for a .jsonl, those bytes end at or before its last new line (whole lines). pinOne then finds it unchanged
- *  against v, or grown from it. False when it cannot be read or is not a regular file (readRegular: never waited on). */
+ *  against v, or grown from it. `unreadable` when it cannot be read or is not a regular file (readRegular: never
+ *  waited on). */
 function sourceHolds(path, rel, v) {
     let b;
     try {
         b = readRegular(path);
     }
     catch {
-        return false;
+        return 'unreadable';
     }
     const cut = rel.endsWith('.jsonl') ? b.lastIndexOf(0x0a) + 1 : b.length;
     return v.bytes <= cut && startsWith(b, v);
 }
+/** With rehash: whether recovery leaves to this run, with no recovered line, a copy b that does not hold version v, the
+ *  one its last line records (no kept copy waits beside it, and src is its source, which this run pins). A recovered
+ *  line would make b's bytes a version, against which the source would read as rewritten, and the run would keep those
+ *  bytes, damage and all, as the old copy. Left to the run: a copy whose source cannot be read (the run fails on that
+ *  file, and the copy stays as it is until a run can read the source: recovery cannot check it against its source); a
+ *  copy that no longer holds v at its start, whose source still does (the run writes it again from the source); and a
+ *  copy whose bytes after v no pin wrote (damageAfter: the run pins the source against v, and keeps v, never those
+ *  bytes). Any other is recorded: what it holds after v can be a version that only the pin holds (a pin stopped between
+ *  the rename of a grown copy and its line leaves whole lines there), and one that holds v no more, beside a source that
+ *  holds v no more either, is the README's limit: a rewrite keeps it as it is. */
+function leftToTheRun(b, v, rel, src) {
+    const atStart = startsWith(b, v);
+    if (atStart && damageAfter(b, v, rel))
+        return true;
+    const holds = sourceHolds(src, rel, v);
+    return holds === 'unreadable' || (!atStart && holds);
+}
+/** Whether rel is one of rels, or under one ('' is the whole root). */
+const atOrUnder = (rel, rels) => rels.some((d) => d === '' || rel === d || rel.startsWith(`${d}/`));
 /** Recovery, under the lock, before pinning: a copy that does not hold what its last line records, and a file of the
  *  pin's shape that no line names, each get a recovered line saying what it holds. A copy is read when its size is not
  *  the one its last line records, or when a kept copy of that version waits beside it unnamed (a rewrite stopped after
  *  its link: the rename may have happened, with a new version of the same size); a copy that changed is then named
  *  with that kept copy, which holds the version its last line records.
- *  With rehash, a copy that no longer holds that version at its start, beside which no kept copy waits, gets no line
- *  when its source, one of `sources` (the files this run pins), still holds the version at its start, as whole lines:
- *  pinOne writes the copy again from that source. A recovered line would make the copy's bytes a version, against which
- *  the source reads as rewritten, and the run would keep those bytes, damage and all, as the old copy. A copy that
- *  still holds the version at its start (a pin that stopped between the rename of a grown copy and its line leaves one)
- *  is recorded as before: what it holds past the version can be a version that only the pin holds. */
-function recover(e, scan, sources) {
+ *  With rehash, a copy beside which no kept copy waits, whose source is one of `sources` (the files this run pins),
+ *  gets no line when leftToTheRun says so: its source cannot be read, or the run writes the copy again from it, or the
+ *  copy's bytes after its version are damage that no pin wrote. One whose source is not among them gets none when it
+ *  is at or under one of `unread`, where the walk could not see what is there: its source cannot be read either, so
+ *  nothing can check the copy against it, and the run fails on that path (its walk failure); the copy is left as it
+ *  is until a run can read it. */
+function recover(e, scan, sources, unread) {
     let n = 0;
     const st = e.log.st;
     const read = (rel) => {
@@ -1079,8 +1203,9 @@ function recover(e, scan, sources) {
         if (b.length === last.bytes && bSha === last.sha256)
             continue; // as its line says: the rename did not happen
         const src = sources.get(rel);
-        if (e.rehash && !keptWaits && src !== undefined && !startsWith(b, last) && sourceHolds(src, rel, last))
-            continue; // written again from src
+        // pinned from src by this run; or, its source out of the walk's sight, left as it is
+        if (e.rehash && !keptWaits && (src === undefined ? atOrUnder(rel, unread) : leftToTheRun(b, last, rel, src)))
+            continue;
         let kept;
         if (keptWaits) {
             const kb = read(k);
@@ -1234,10 +1359,10 @@ export async function pinPaths(paths, options) {
             const unread = state.unreadable.length;
             if (unread)
                 notices.push(`'${logPath}' has ${unread} ${plural(unread, 'line', 'lines')} that ${plural(unread, 'is not a log line', 'are not log lines')} (first: line ${state.unreadable[0]}); ${plural(unread, 'it is', 'they are')} passed over here, and a check of the pin reports ${plural(unread, 'it', 'them')}.`);
-            // the walk before recovery, which leaves to this run (with rehash) a damaged copy that it writes again; its
-            // failures still follow recovery's
+            // the walk before recovery, which leaves to this run (with rehash) a damaged copy that it writes again, and as it
+            // is one under a path the walk could not read; its failures still follow recovery's
             const w = walk(givens, root);
-            const recovered = recover(e, scan, w.files);
+            const recovered = recover(e, scan, w.files, w.unread);
             if (recovered)
                 notices.push(`${recovered} ${plural(recovered, 'file', 'files')} in '${to}' held other bytes than ${plural(recovered, 'its', 'their')} last line in PINS.log records, or ${plural(recovered, 'was', 'were')} named by no line: a recovered line now records what each one holds.`);
             failures.push(...w.failures);
@@ -1405,9 +1530,11 @@ export async function checkPin(dir, options = {}) {
     }
     const st = parseLog(join(d, LOG), log.bytes, platform);
     const notices = [];
-    // a pin refuses a log that has another name (prepare), so none runs here until it is the only one
-    if (log.names > 1)
-        notices.push(`'${join(d, LOG)}' has ${log.names} names (hard links to one file): a pin refuses a log that has another name, so every pin into '${d}' is refused until only one name is left. Find its other names: find / -samefile '${join(d, LOG)}' 2>/dev/null`);
+    // a pin refuses a log that has another name (prepare), so none runs here until it is the only one: this notice says so
+    // once, and no other says what a next pin would do
+    const pinRuns = log.names <= 1;
+    if (!pinRuns)
+        notices.push(`'${join(d, LOG)}' has ${log.names} names (hard links to one file): a pin refuses a log that has another name, so every pin into '${d}' is refused until only one name is left. Find its other names: find / -samefile ${quoted(join(d, LOG))} 2>/dev/null`);
     if (st.root === null)
         notices.push(`line 1 of '${join(d, LOG)}' is not the line that records the root, so which root the copies are measured from is not known${options?.root === undefined ? '; give the root to measure the staleness' : ''}.`);
     const chainBreaks = [];
@@ -1464,7 +1591,7 @@ export async function checkPin(dir, options = {}) {
     const unlogged = [...scan.files.keys()].filter((r) => !st.named.has(r) && scan.shaped(r)).sort();
     const unreadableLines = st.torn === null ? st.unreadable : [...st.unreadable, st.lines + 1];
     if (st.torn !== null)
-        notices.push(`'${join(d, LOG)}' does not end in a new line: line ${st.lines + 1} is cut short; the next pin closes it with a recovered line.`);
+        notices.push(`'${join(d, LOG)}' does not end in a new line: line ${st.lines + 1} is cut short${pinRuns ? '; the next pin closes it with a recovered line' : ''}.`);
     let lock = null;
     try {
         const raw = readRegular(join(d, LOCK)).toString('utf8');
@@ -1477,7 +1604,7 @@ export async function checkPin(dir, options = {}) {
     }
     catch (e) { // no lock; or one that is not a regular file, which every pin fails at
         if (e instanceof NotRegularFile)
-            notices.push(`'${join(d, LOCK)}' ${e.link ? 'is a symbolic link' : `is not a regular file (it is ${e.kind})`}, so it is not read as a pin's lock; a pin fails at it (not-a-regular-file) until it is gone. See what it is: ls -l '${join(d, LOCK)}'`);
+            notices.push(`'${join(d, LOCK)}' ${e.link ? 'is a symbolic link' : `is not a regular file (it is ${e.kind})`}, so it is not read as a pin's lock${pinRuns ? '; a pin fails at it (not-a-regular-file) until it is gone' : ''}. See what it is: ls -l ${quoted(join(d, LOCK))}`);
     }
     let staleness = null;
     const rootGiven = options?.root ?? st.root?.root;

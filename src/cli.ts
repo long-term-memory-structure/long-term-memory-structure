@@ -25,7 +25,7 @@ import { parseTranscript, repairedLivePath, turnsOf, inputChannel } from './pars
 import type { Transcript, TreeNode } from './parser.js';
 import { checkSearchSupport, parseSearchQuery, searchTranscript, SEARCH_DEFAULT_KINDS, SEARCH_GAP_SCRIPTS, SEARCH_KINDS } from './search.js';
 import type { SearchCounts, SearchKind, SearchNotSearched, SearchQuery, SearchTurnHit } from './search.js';
-import { checkPin, claudeConfigDir, isSweepShaped, pinPaths } from './pin.js';
+import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
 import type { PinCheckDone, PinCoverage, PinDone, PinLogLine, PinRefusal } from './pin.js';
 
 /** A turn: where its prompt is, which channel it came through, and the prompt's length. */
@@ -1367,10 +1367,12 @@ by an unfinished line, which a pin does not copy, is counted apart:
 unfinished). It writes nothing, and first waits for a pin that is running,
 as pin does: up to 30 s. After a mismatch in a current copy whose source is
 there (under the root PINS.log records, as a file pin copies), its closing
-line gives the --rehash command for the projects of those copies: it writes
-back what the sources still hold, and --check, run again, says what
-remains. While PINS.log has another name (a hard link), which a pin
-refuses, it says so and gives no pin command.
+line gives the --rehash command for the projects of those copies (for a
+file under .git, or under memory/ directly under a project directory,
+where a pin of its project does not go, the file itself): it writes back
+what the sources still hold, and --check, run again, says what remains.
+While PINS.log has another name (a hard link), which a pin refuses, it says
+so, gives no pin command, and says nothing of what a next pin would do.
 stdout: one line, then one line per finding.
   {"k":"check","dir","root","lines","versions","files","mismatches",
   "chainBreaks","unreadableLines","unlogged","temps","lock","lastLog",
@@ -1609,22 +1611,27 @@ function printChecked(r: PinCheckDone): number {
     const first = r.mismatches[0]?.line ?? r.chainBreaks[0]?.line ?? r.unreadableLines[0];
     const parts = [`ltms pin: ${q(r.dir)} does not hold what ${log} records: ${plural(r.mismatches.length, 'mismatch', 'mismatches')}, ${plural(r.chainBreaks.length, 'chain break', 'chain breaks')} and ${plural(r.unreadableLines.length, 'line that is not a log line', 'lines that are not log lines')}, each on stdout with its line in PINS.log`,
       `To read the first: sed -n '${first}p' ${log}`];
-    // The --rehash command, for the projects of the current copies with a mismatch whose source is there, of the sweep's
-    // shape (one a pin copies): it writes back what the sources still hold, and a check run again says what remains.
-    // Nothing here predicts which mismatches that clears (a kept copy is never written again; a source may no longer
-    // hold a version). Only when PINS.log records its root, which the rels are measured from and a pin into this
-    // directory needs. The command names projects, not the whole root
+    // The --rehash command, for the current copies with a mismatch whose source is there, of the sweep's shape (one a
+    // pin copies): it writes back what the sources still hold, and a check run again says what remains. Nothing here
+    // predicts which mismatches that clears (a kept copy is never written again; a source may no longer hold a
+    // version). Only when PINS.log records its root, which the rels are measured from and a pin into this directory
+    // needs. The command names projects, not the whole root; and a file the walk of its project directory does not
+    // reach (under .git, or memory/ directly under a project directory) by its own path: a file given by itself is
+    // pinned whatever directories it is under
     const root = r.root;
     if (root !== null && pinRuns) {
-      const projects = [...new Set(r.mismatches.filter((m) => m.copy === m.rel && isSweepShaped(root, m.rel) && sourceThere(root, m.rel)).map((m) => m.rel.split('/')[0]))];
-      if (projects.length) parts.push(`To write back into the current copies what their sources still hold (ltms pin --check, run again, then says what remains): ltms pin ${projects.map((p) => q(join(root, p))).join(' ')} --to ${q(r.dir)} --root ${q(root)} --rehash`);
+      const sources = r.mismatches.filter((m) => m.copy === m.rel && isSweepShaped(root, m.rel) && sourceThere(root, m.rel));
+      const paths = [...new Set(sources.map((m) => join(root, ...(projectPinReaches(m.rel) ? [m.rel.split('/')[0]] : m.rel.split('/')))))];
+      if (paths.length) parts.push(`To write back into the current copies what their sources still hold (ltms pin --check, run again, then says what remains): ltms pin ${paths.map(q).join(' ')} --to ${q(r.dir)} --root ${q(root)} --rehash`);
     }
     // every part after the first ends in a command, so the line has no closing period
     err(parts.join('. '));
   }
-  if (r.unlogged.length) err(`ltms pin: ${plural(r.unlogged.length, 'file', 'files')} in ${q(r.dir)} ${r.unlogged.length === 1 ? 'is' : 'are'} named by no line in PINS.log (on stdout, "k":"unlogged"); the next pin records each with a recovered line.`);
-  if (r.temps) err(`ltms pin: ${plural(r.temps, 'temp file', 'temp files')} in ${q(r.dir)} ${r.temps === 1 ? 'was' : 'were'} left by a pin that stopped; the next pin removes ${r.temps === 1 ? 'it' : 'them'}.`);
-  if (r.lock) err(`ltms pin: ${q(join(r.dir, '.ltms-pin.lock'))} names pid ${r.lock.pid} on ${r.lock.host}, since ${r.lock.started}: a pin is running, or one stopped without removing it (the next pin takes over a lock whose pid is no longer running on this host).`);
+  // while PINS.log has another name, the notice above says once that every pin is refused: no line says what a next pin
+  // would do
+  if (r.unlogged.length) err(`ltms pin: ${plural(r.unlogged.length, 'file', 'files')} in ${q(r.dir)} ${r.unlogged.length === 1 ? 'is' : 'are'} named by no line in PINS.log (on stdout, "k":"unlogged")${pinRuns ? '; the next pin records each with a recovered line' : ''}.`);
+  if (r.temps) err(`ltms pin: ${plural(r.temps, 'temp file', 'temp files')} in ${q(r.dir)} ${r.temps === 1 ? 'was' : 'were'} left by a pin that stopped${pinRuns ? `; the next pin removes ${r.temps === 1 ? 'it' : 'them'}` : ''}.`);
+  if (r.lock) err(`ltms pin: ${q(join(r.dir, '.ltms-pin.lock'))} names pid ${r.lock.pid} on ${r.lock.host}, since ${r.lock.started}: a pin is running, or one stopped without removing it${pinRuns ? ' (the next pin takes over a lock whose pid is no longer running on this host)' : ''}.`);
   const s = r.staleness;
   if (s !== null && s.failed) {
     let rootCode: string | null = null;   // the root itself, read again here to name its code: it fails the whole count

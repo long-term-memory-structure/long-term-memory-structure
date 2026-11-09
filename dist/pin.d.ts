@@ -280,6 +280,14 @@ export declare function claudeConfigDir(): {
  *  rule is written once: pinPaths and checkPin select by it, and `ltms pin --check` asks it before it gives the
  *  `--rehash` command. */
 export declare function isSweepShaped(root: string, rel: string): boolean;
+/** Whether a pin of the project directory of `rel` (a path under the root, '/'-separated, whose first segment is its
+ *  project directory) walks to the file at `rel`: the walk enters no `.git` directory, at any depth, and no `memory/`
+ *  directly under a project directory, so a file under one of those is pinned only when it is given by its own path.
+ *  Only the names on the way are read, nothing on disk: whether the file is there, of the sweep's shape
+ *  (isSweepShaped), or reached through a symbolic link (which the walk does not follow) is not looked at. The walk's
+ *  rule is written once: `ltms pin --check` asks it to name, in the `--rehash` command it gives, a copy's project
+ *  directory, or the file itself. */
+export declare function projectPinReaches(rel: string): boolean;
 /** Copies the files of the sweep's shape under the given paths into options.to, and appends what changed to
  *  <to>/PINS.log. Resolves to a refusal (nothing written), `busy` (the lock stayed held for the whole wait), or the
  *  run's coverage. Errors of one file are failures in the result; an error thrown by onStep, or a bug, is thrown on,
