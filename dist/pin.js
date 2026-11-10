@@ -624,7 +624,7 @@ function busy(path, holder, otherHost, waitedMs) {
             ? `is held by pid ${holder.pid} on another host, ${holder.host}, since ${holder.started}; whether that process still runs cannot be seen from this host, so it counts as running, and it still held the lock after ${waited}`
             : `is held by pid ${holder.pid} on this host, since ${holder.started}; a process with that pid is running, and it still held the lock after ${waited}`;
     return { k: 'busy', lock: path, holder, otherHost, waitedMs,
-        message: `the lock '${path}' ${who}. If no pin is running, remove the lock: rm '${path}'` };
+        message: `the lock '${path}' ${who}. If no pin is running, remove the lock: rm ${quoted(path)}` };
 }
 /** Takes <to>/.ltms-pin.lock: its content (pid, host, started) is written and fsynced in a temp file first, and the
  *  temp file is then linked to the lock's name, which fails when the lock exists, so a lock is never seen empty. A
@@ -1286,7 +1286,7 @@ export async function pinPaths(paths, options) {
         // what others can do there depends on the mode: it is said as such, never that pin's files are safe from them (whoever
         // can write into the directory can put a file of their own at PINS.log's name)
         if (mode & 0o077)
-            notices.push(`the pin directory '${to}' is open to other users (mode ${mode.toString(8).padStart(4, '0')}): those its mode lets read it can list the names in it, and those it lets write into it can replace pin's files with their own. To close it: chmod 700 '${to}'`);
+            notices.push(`the pin directory '${to}' is open to other users (mode ${mode.toString(8).padStart(4, '0')}): those its mode lets read it can list the names in it, and those it lets write into it can replace pin's files with their own. To close it: chmod 700 ${quoted(to)}`);
     }
     const lockWait = typeof options.lockWaitMs === 'number' && options.lockWaitMs >= 0 ? options.lockWaitMs : LOCK_WAIT_MS;
     // the signal listeners come before the lock and go after it: a signal that finds no listener ends the process at

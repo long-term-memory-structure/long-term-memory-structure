@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, closeSync, ftruncateSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { chmodSync, closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -697,12 +697,12 @@ test('a file that cannot be read: exit 1, the file named, the other files still 
   assert.deepEqual(parsed(r.out).map((o) => o.session), ['demo.jso']);
 });
 
-test('a directory is named as one, with the command to run instead', () => {
+test('a directory is named as one, with the command to run instead: its path quoted, the glob outside the quotes (0.1.2)', () => {
   const dir = join(here, 'fixtures');
   const r = run('skeleton', dir);
   assert.equal(r.code, 1);
   assert.equal(r.out, '');
-  assert.match(r.err, new RegExp(`'${escapeRe(dir)}' is a directory.*ltms skeleton ${escapeRe(dir)}/\\*\\.jsonl`));
+  assert.match(r.err, new RegExp(`'${escapeRe(dir)}' is a directory.*ltms skeleton '${escapeRe(dir)}'/\\*\\.jsonl`));
 });
 
 test('a file without read permission: exit 1, the command that shows its permissions, the other files processed', (t) => {
@@ -1458,4 +1458,131 @@ test('NUL padding: ltms skips every line holding NUL bytes and counts them on st
   assert.deepEqual(on.records[4], between);
   assert.deepEqual([on.stats.lines, on.stats.parsed, on.stats.unparseable], [9, 6, 3]);
   assert.deepEqual(turnLines(on), [[1, [[2, 4], [6, 7]]]]);
+});
+
+// 0.1.2: a path in the commands the messages give is quoted by the one rule, so each runs as printed whatever the path
+// holds. Each test was run red on 0.1.1's build first.
+
+/** A path as one word of a command ltms prints: in single quotes, each single quote in it written '\''. */
+const shQ = (s) => `'${s.replace(/'/g, "'\\''")}'`;
+
+test("a file without read permission, its name holding a single quote: the ls -l command the message gives runs as printed (0.1.2: 0.1.1 put the path between bare quotes)", (t) => {
+  if (process.getuid?.() === 0) { t.skip('running as root, which can read any file'); return; }
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  const file = join(dir, "it's locked.jsonl");
+  writeFileSync(file, readFileSync(DEMO));
+  chmodSync(file, 0o000);
+  try {
+    const r = run('stats', file);
+    assert.equal(r.code, 1);
+    const command = r.err.split('Check its permissions with: ')[1]?.split('\n')[0];
+    assert.equal(command, `ls -l ${shQ(file)}`);
+    const sh = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+    assert.equal(sh.status, 0, sh.stderr);
+    assert.ok(sh.stdout.includes("it's locked.jsonl"), sh.stdout);
+  } finally { chmodSync(file, 0o600); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a directory search cannot read, its name holding a single quote: the ls -ld command the message gives runs as printed (0.1.2: 0.1.1 put the path between bare quotes)", (t) => {
+  if (process.getuid?.() === 0) { t.skip('running as root, which can read any directory'); return; }
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  const locked = join(dir, "it's locked");
+  mkdirSync(locked);
+  chmodSync(locked, 0o000);
+  try {
+    const r = run('search', 'word', dir);
+    const command = r.err.split('Check its permissions with: ')[1]?.split('\n')[0];
+    assert.equal(command, `ls -ld ${shQ(locked)}`);
+    const sh = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+    assert.equal(sh.status, 0, sh.stderr);
+  } finally { chmodSync(locked, 0o700); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a directory named as a file, its name holding a single quote: the command the message gives, its path quoted and the glob outside the quotes, runs as printed (0.1.2: 0.1.1 printed the path bare)", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  const inner = join(dir, "it's dir");
+  mkdirSync(inner);
+  writeFileSync(join(inner, 'demo.jsonl'), readFileSync(DEMO));
+  try {
+    const r = run('skeleton', inner);
+    assert.equal(r.code, 1);
+    const command = r.err.split('e.g. ').pop().split('\n')[0];
+    assert.equal(command, `ltms skeleton ${shQ(inner)}/*.jsonl`);
+    const sh = spawnSync('/bin/sh', ['-c', `ltms() { ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} "$@"; }; ${command}`], { encoding: 'utf8' });
+    assert.equal(sh.status, 0, sh.stderr);
+    assert.ok(parsed(sh.stdout).some((o) => o.k === 'turn'), sh.stdout);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// 0.1.2 (S360 V-A B1, B2): a relative path that starts with '-', as every Claude Code project directory's name does,
+// gets -- before it in the commands these messages give; and search's ls -b is quoted by the rule.
+
+/** ltms run from a directory of the test's own, as a user runs it with relative paths. */
+function runIn(cwd, ...args) {
+  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', timeout: 20000, cwd });
+  if (r.error) throw r.error;
+  return { code: r.status, out: r.stdout, err: r.stderr };
+}
+/** A command line a message gave, run by /bin/sh from cwd, with ltms a function that runs this build. */
+const shIn = (cwd, line) => spawnSync('/bin/sh', ['-c', `ltms() { ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} "$@"; }; ${line}`], { encoding: 'utf8', cwd });
+
+test("a project directory's name starts with '-', named in place of its files by a relative path: the command the message gives puts -- before it, and runs as printed (0.1.2; S360 V-A B1)", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  mkdirSync(join(dir, '-home-me-app'));
+  writeFileSync(join(dir, '-home-me-app', 'demo.jsonl'), readFileSync(DEMO));
+  try {
+    const r = runIn(dir, 'skeleton', '--', '-home-me-app');
+    assert.equal(r.code, 1);
+    const command = r.err.split('e.g. ').pop().split('\n')[0];
+    assert.equal(command, `ltms skeleton -- '-home-me-app'/*.jsonl`);
+    const sh = shIn(dir, command);
+    assert.equal(sh.status, 0, sh.stderr);
+    assert.ok(parsed(sh.stdout).some((o) => o.k === 'turn'), sh.stdout);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a file without read permission named by a relative path that starts with '-': the ls -l command puts -- before it, and runs as printed (0.1.2; S360 V-A B1)", (t) => {
+  if (process.getuid?.() === 0) { t.skip('running as root, which can read any file'); return; }
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  const file = join(dir, '-locked.jsonl');
+  writeFileSync(file, readFileSync(DEMO));
+  chmodSync(file, 0o000);
+  try {
+    const r = runIn(dir, 'stats', '--', '-locked.jsonl');
+    assert.equal(r.code, 1);
+    const command = r.err.split('Check its permissions with: ')[1]?.split('\n')[0];
+    assert.equal(command, `ls -l -- '-locked.jsonl'`);
+    const sh = shIn(dir, command);
+    assert.equal(sh.status, 0, sh.stderr);
+  } finally { chmodSync(file, 0o600); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("search, a directory it cannot read under a relative path that starts with '-': the ls -ld command puts -- before it, and runs as printed (0.1.2; S360 V-A B1)", (t) => {
+  if (process.getuid?.() === 0) { t.skip('running as root, which can read any directory'); return; }
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  const locked = join(dir, '-top', 'locked');
+  mkdirSync(locked, { recursive: true });
+  chmodSync(locked, 0o000);
+  try {
+    const r = runIn(dir, 'search', 'word', '--', '-top');
+    const command = r.err.split('Check its permissions with: ')[1]?.split('\n')[0];
+    assert.equal(command, `ls -ld -- '-top/locked'`);
+    const sh = shIn(dir, command);
+    assert.equal(sh.status, 0, sh.stderr);
+  } finally { chmodSync(locked, 0o700); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("search, a file whose name is not UTF-8 in a directory named by a relative path holding a single quote and starting with '-': the ls -b command is quoted by the rule, with -- before it, and runs as printed (0.1.2: 0.1.1 and v2 put the path between bare quotes; S360 V-A B2)", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  const inner = join(dir, "-it's here");
+  mkdirSync(inner);
+  writeFileSync(Buffer.concat([Buffer.from(inner + '/'), Buffer.from([0x78, 0xff, 0x2e, 0x6a, 0x73, 0x6f, 0x6e, 0x6c])]), '{"type":"user"}\n');
+  try {
+    const r = runIn(dir, 'search', 'word', '--', "-it's here");
+    const command = /; (ls -b .*) shows the name\./.exec(r.err)?.[1];
+    assert.equal(command, `ls -b -- '-it'\\''s here'`);
+    const sh = shIn(dir, command);
+    assert.equal(sh.status, 0, sh.stderr);
+    assert.match(sh.stdout, /x\\377\.jsonl/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

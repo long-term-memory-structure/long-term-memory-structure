@@ -1,5 +1,29 @@
 # Changes
 
+## 0.1.2 (2026-11-10)
+
+- `ltms pin --check`: beside the `--rehash` command, the line on the files missing from the pin or longer than their copies gives no pin command, and says to run the `--rehash` first. 0.1.1 gave `ltms pin <root> --to <dir>` there. For a copy that is no longer a prefix of its source (cut short and changed at a byte), that plain pin, run first, records the damage as a version and keeps it as an old copy, which `--check` then reports at every check with no command (README, Limits); the `--rehash`, run first, writes the copy back from its source. A copy that is only cut short comes to no harm either way; the pin command is withheld beside the `--rehash` all the same. Where no `--rehash` command can be given, the pin command still is (Known limits, below).
+- `ltms pin --check`: that line's pin command names, with `--root`, the root `PINS.log` records, and is given only when that is the root the check walked. 0.1.1 left `--root` out, so for a pin made under another root the command, run as printed, was refused (exit 2); and it gave one for a root given to `--check` that a pin into the directory refuses.
+- Six commands that messages give now quote their path by one rule (in single quotes, each single quote written `'\''`), and put `--` before a relative path that starts with `-`, as every Claude Code project directory's name does, so each runs as printed in a POSIX shell (sh, bash, zsh) whatever the path holds: pin's `rm` of a lock and its `chmod 700` of the pin directory, the `ls -l` given for a file that cannot be read, the `ls -ld` given for a directory search cannot read, search's `ls -b` for a name that is not UTF-8, and the command given for a directory named in place of its files (the path quoted, the glob after it). 0.1.1's entry says its `find` and `ls -l` commands quote "as the CLI's commands do": these six did not (five put the path between bare quotes; the directory's command printed it bare). Other commands that name a relative path starting with `-` still give it without `--` (Known limits, below).
+- `ltms pin --from-hook`: the usage message's command for trying it by hand prints the JSON with `printf '%s\n'`, its `transcript_path` escaped as JSON and the whole quoted by that rule. 0.1.1 gave `echo` with the root unescaped between bare quotes: a root holding a quote broke the command, and some shells' `echo` reads backslashes.
+- package.json: the description names search and pin; the keywords add agent-memory, long-term-memory, memory, ai-agent, compaction, context-window, search and pin, and drop skeleton. Both were unchanged since the package's first versions (as memobrain 0.0.1 and 0.0.2) and described only the index.
+- README: a paragraph on search, stats and pin after the index's; the Socket badge under the title; the `--check` paragraph names the pin command and when it is withheld, as `ltms pin --help` does.
+- Tests: 526 → 543 (541 passing, 0 failing, 2 skipped; 17 new, 6 changed for the new texts). Each new test was run red first on 0.1.1's build, but one guard, green on both, that pins why the pin command is withheld (the plain pin run first keeps the damage).
+
+### Known limits (to be fixed in 0.1.3)
+
+Found by this release's checkers; each was so in 0.1.1 too.
+
+- Other commands a message gives that name a relative path starting with `-` (pin's, and search's where a path or `CLAUDE_CONFIG_DIR` is relative) give it without `--`, and fail as printed.
+- Where a damaged current copy's source is out of sight (unreadable, moved, reached through a link, or deleted), no `--rehash` command can be given, and the pin command still is: run, it records the damaged bytes as a version, which a `--rehash` run once the source is back keeps as an old copy. `--check` cannot tell a moved source from a deleted one, and withholding the command for good after the 30-day cleanup would be worse.
+- The README's `SessionEnd` hook and cron line run a plain pin: one that runs before the `--rehash` records a damaged copy as a version all the same.
+- Where the `--rehash` cannot succeed (its source unreadable, or a directory at the copy's path), the pin command stays withheld, also for files the damage does not touch.
+- `--check`'s closing line ends its `sed -n` command with the sentence's period: copied with it, the command fails.
+- "N are longer than their copies" counts a damaged copy that is shorter than its source.
+- A pin refused because `PINS.log` records another root does not always give a command that runs: from the default root it suggests a new pin directory, and where the recorded root has moved behind a link, the command it gives is refused too. The `--from-hook` usage message's command leaves out a `--root` given to it.
+- The pin command is printed while `.ltms-pin.lock` is a symbolic link or a directory, where a pin fails; and when the checking shell's `CLAUDE_CONFIG_DIR` holds the pin directory, where it is refused.
+- In fish, a printed command breaks when its path holds `\\` or ends in `\`, and so does the `--from-hook` example's JSON line: fish reads `\\` and `\'` inside single quotes.
+
 ## 0.1.1 (2026-11-09)
 
 - 0.1.0's four known limits, all of `ltms pin`: three are fixed, and the fourth is narrowed to the bytes that can only be damage; what remains of it is stated in the README's Limits.

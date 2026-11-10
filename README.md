@@ -1,10 +1,13 @@
 # Long-Term Memory Structure
+[![Socket](https://socket.dev/api/badge/npm/package/long-term-memory-structure)](https://socket.dev/npm/package/long-term-memory-structure)
 
 When a Claude Code session fills its context window, or on `/compact`, Claude Code compacts it: the conversation in the model's context is replaced by a summary, and the model carries on from the summary. The details, such as which commands ran, which of them failed and which files were read or changed, are no longer in front of the model. They are still on disk. Claude Code appends to a session's transcript, the `.jsonl` file under `~/.claude/projects/`; it can rewrite one only in rare cases, and `ltms pin` keeps both versions. A compaction adds a boundary record and the summary, and every record before them stays where it was. The summary itself gives the transcript's path, so the details can be read back from it. (Claude Code deletes old transcripts after 30 days by default; its `cleanupPeriodDays` setting changes that.)
 
 What compaction writes, and what each model keeps through it, measured: [Claude Code's compaction doesn't delete your history. It re-roots it.](https://long-term-memory-structure.github.io/long-term-memory-structure/compaction.html)
 
 Long-Term Memory Structure reads that transcript, across its compactions, and prints an index of it without its content: one JSON line per turn and per tool call. A turn's line gives the address of its prompt, the line of the file where it is written. A tool call's line gives the addresses of the call and of its result, and hashes of what went in and what came out. On the 2,539 transcripts it was tested on (3.35 GB), the index came to 0.7 % of their size, so it fits in a context window where the transcript does not, and every address leads back to the line to read.
+
+Three more commands. `ltms search` finds the turns that hold every word of a query, and prints their addresses. `ltms stats` counts each transcript's turns, calls and failures. `ltms pin` keeps copies of the transcripts outside Claude Code's config directory, where its cleanup does not delete them, so the addresses still lead somewhere after it; its log is only appended to, and each line after the first holds the sha256 of the line before it. ltms reads local files only, makes no network connections and has no runtime dependencies.
 
 Long-Term Memory Structure is an independent project. It is not affiliated with or endorsed by Anthropic.
 
@@ -70,7 +73,7 @@ sed -n 22p "$f"    # the line an address names, here <prefix>:L22
 
 ### `ltms skeleton <file.jsonl>...`
 
-One JSON line per turn and per tool call. A turn starts at a prompt; its tool calls follow it in order. This is one turn of the synthetic test transcript [`test/fixtures/demo.jsonl`](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.1.1/test/fixtures/demo.jsonl): a hook blocks a command, the tests fail twice, a fix is made, the tests pass.
+One JSON line per turn and per tool call. A turn starts at a prompt; its tool calls follow it in order. This is one turn of the synthetic test transcript [`test/fixtures/demo.jsonl`](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.1.2/test/fixtures/demo.jsonl): a hook blocks a command, the tests fail twice, a fix is made, the tests pass.
 
 ```
 {"k":"turn","a":"demo.jso:L20","ta":"demo.jso:T003","ch":"typed","n":47}
@@ -400,7 +403,7 @@ A failure line is `{"k":"failure","path","rel","op","code"}`: `op` is the step (
   {"k":"check","dir":"/home/me/claude-pins","root":"/home/me/.claude/projects","lines":40,"versions":39,"files":39,"mismatches":0,"chainBreaks":0,"unreadableLines":0,"unlogged":0,"temps":0,"lock":null,"lastLog":"2026-11-08T15:47:06.529Z","staleness":{"root":"/home/me/.claude/projects","fromLog":true,"sources":39,"missing":0,"longer":0,"unfinished":0,"projectsNotPinned":0,"failed":0},"ms":36}
 ```
 
-`lines` counts PINS.log's lines, `versions` the versions they record, and `files` the copies read; `staleness` counts the `sources` under the root, those `missing` from the pin, those `longer` than their copy, those whose copy is a prefix of them, longer only by an unfinished line (`unfinished`), the project directories of which the pin holds nothing, and the directories that could not be read (`failed`). The findings: `{"k":"mismatch","rel","copy","line","want","got"}` (a version the copy does not hold: `copy` is the copy read, `rel` itself or a kept copy, `line` its line in PINS.log, `got` what the copy holds, or `null` when it is missing, cannot be read, or is not a regular file), `{"k":"chain","line","want","got"}`, `{"k":"unreadable","line"}` (a line that is not a log line) and `{"k":"unlogged","rel"}` (a file in the pin that no line names; the next pin records it). After a mismatch in a current copy (not a kept one) whose source is there, under the root PINS.log records, as itself (a regular file of the cleanup's shape, reached through no symbolic link), the closing line gives the `--rehash` command for the projects of those copies, and for a file under `.git` or under `memory/` directly under a project directory, where a pin of its project does not go, the file itself (a file of the cleanup's shape given by its own path is pinned whatever directories it is under): it writes back into the current copies what their sources still hold, and `ltms pin --check`, run again, says what remains. While `PINS.log` has another name (a hard link), which makes every pin into the directory a refusal, a notice says so, with the `find` command that names the others; no pin command is given, and nothing is said of what a next pin would do.
+`lines` counts PINS.log's lines, `versions` the versions they record, and `files` the copies read; `staleness` counts the `sources` under the root, those `missing` from the pin, those `longer` than their copy, those whose copy is a prefix of them, longer only by an unfinished line (`unfinished`), the project directories of which the pin holds nothing, and the directories that could not be read (`failed`). The findings: `{"k":"mismatch","rel","copy","line","want","got"}` (a version the copy does not hold: `copy` is the copy read, `rel` itself or a kept copy, `line` its line in PINS.log, `got` what the copy holds, or `null` when it is missing, cannot be read, or is not a regular file), `{"k":"chain","line","want","got"}`, `{"k":"unreadable","line"}` (a line that is not a log line) and `{"k":"unlogged","rel"}` (a file in the pin that no line names; the next pin records it). After a mismatch in a current copy (not a kept one) whose source is there, under the root PINS.log records, as itself (a regular file of the cleanup's shape, reached through no symbolic link), the closing line gives the `--rehash` command for the projects of those copies, and for a file under `.git` or under `memory/` directly under a project directory, where a pin of its project does not go, the file itself (a file of the cleanup's shape given by its own path is pinned whatever directories it is under): it writes back into the current copies what their sources still hold, and `ltms pin --check`, run again, says what remains. The files missing from the pin or longer than their copies get the command that pins them, `ltms pin <root> --to <dir> --root <root>` from the root `PINS.log` records, when that is the root the check walked. Beside the `--rehash` command it gives none, and says to run the `--rehash` first, since a pin run before it may record a damaged copy as a version (see Limits). While `PINS.log` has another name (a hard link), which makes every pin into the directory a refusal, a notice says so, with the `find` command that names the others; no pin command is given, and nothing is said of what a next pin would do.
 
 **At the end of every session.** A `SessionEnd` hook, with ltms installed globally (`npm install -g long-term-memory-structure`; npx may download it at the end of a session). In `~/.claude/settings.json`:
 
@@ -478,11 +481,11 @@ const t = parseTranscript(readFileSync(file, 'utf8'));
 const turns = turnsOf(t, repairedLivePath(t).path);   // each turn: its prompt, its records, its tool calls
 ```
 
-`turnsOf(t)` without the repaired path stops at the last compaction: on a demo project's 35 transcripts it gives 201 turns, where `ltms` counts 218. Every exported function, type and field is described in [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.1.1/docs/library.md), with its meaning, its unit, and when it is absent.
+`turnsOf(t)` without the repaired path stops at the last compaction: on a demo project's 35 transcripts it gives 201 turns, where `ltms` counts 218. Every exported function, type and field is described in [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.1.2/docs/library.md), with its meaning, its unit, and when it is absent.
 
 ## Status
 
-Version 0.1.1. Early: the output format may change between versions.
+Version 0.1.2. Early: the output format may change between versions.
 
 ## Development
 

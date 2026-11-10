@@ -595,8 +595,8 @@ function fileWarnings(cmd: string, file: string, t: Transcript, noTurn: boolean,
 function cannotRead(cmd: string, file: string, e: unknown): string {
   const code = (e as NodeJS.ErrnoException)?.code;
   if (code === 'ENOENT') return `ltms ${cmd}: cannot read '${file}': no such file or directory. Check the path. ${TRANSCRIPTS_HINT}`;
-  if (code === 'EISDIR') return `ltms ${cmd}: '${file}' is a directory. Pass the .jsonl files inside it, e.g. ltms ${cmd} ${file.replace(/\/+$/, '')}/*.jsonl`;
-  if (code === 'EACCES' || code === 'EPERM') return `ltms ${cmd}: cannot read '${file}': permission denied. Check its permissions with: ls -l '${file}'`;
+  if (code === 'EISDIR') return `ltms ${cmd}: '${file}' is a directory. Pass the .jsonl files inside it, e.g. ltms ${cmd}${dashFor([file])} ${q(file.replace(/\/+$/, ''))}/*.jsonl`;
+  if (code === 'EACCES' || code === 'EPERM') return `ltms ${cmd}: cannot read '${file}': permission denied. Check its permissions with: ls -l${dashFor([file])} ${q(file)}`;
   if (code === 'ERR_STRING_TOO_LONG') return `ltms ${cmd}: cannot read '${file}': the file is too large to load as one string (the limit is about 512 MB).`;
   return `ltms ${cmd}: cannot read '${file}': ${(e as Error)?.message ?? String(e)}`;
 }
@@ -1050,7 +1050,7 @@ function walkSearchPaths(paths: string[]): SearchWalk {
       catch (e) {
         const code = (e as NodeJS.ErrnoException)?.code;
         err(code === 'EACCES' || code === 'EPERM'
-          ? `ltms search: cannot read the directory '${d}': permission denied, so the files under it are not searched. Check its permissions with: ls -ld '${d}'`
+          ? `ltms search: cannot read the directory '${d}': permission denied, so the files under it are not searched. Check its permissions with: ls -ld${dashFor([d])} ${q(d)}`
           : `ltms search: cannot read the directory '${d}': ${(e as Error)?.message ?? String(e)}; the files under it are not searched.`);
         failed++; reported++;
         continue;
@@ -1065,7 +1065,7 @@ function walkSearchPaths(paths: string[]): SearchWalk {
       }
       for (const b of bad?.report ?? []) {
         const what = b.dir ? `the directory '${join(d, escapedName(b.name))}'` : `'${join(d, escapedName(b.name))}'`;
-        err(`ltms search: cannot read ${what} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${b.dir ? 'the files under it are' : 'it is'} not searched. Give it a UTF-8 name to search it; ls -b '${d}' shows the name.`);
+        err(`ltms search: cannot read ${what} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${b.dir ? 'the files under it are' : 'it is'} not searched. Give it a UTF-8 name to search it; ls -b${dashFor([d])} ${q(d)} shows the name.`);
         failed++; reported++;
       }
     }
@@ -1371,6 +1371,10 @@ line gives the --rehash command for the projects of those copies (for a
 file under .git, or under memory/ directly under a project directory,
 where a pin of its project does not go, the file itself): it writes back
 what the sources still hold, and --check, run again, says what remains.
+The files missing from the pin or longer than their copies get the command
+that pins them, from the root PINS.log records (with --root), when that is
+the root walked. Beside the --rehash command it gives none, and says to run
+the --rehash first: a pin run before it may record a damaged copy.
 While PINS.log has another name (a hard link), which a pin refuses, it says
 so, gives no pin command, and says nothing of what a next pin would do.
 stdout: one line, then one line per finding.
@@ -1442,7 +1446,7 @@ function readPinArgs(argv: string[]): PinArgsRead {
  *  is echoed but its keys (label-checked) and transcript_path: a hook's JSON can hold a prompt. */
 type HookRead = { k: 'hook'; transcript: string; project: string } | { k: 'usage'; message: string };
 async function readHook(to: string, root: string): Promise<HookRead> {
-  const byHand = `In a hook, Claude Code writes that JSON; to try it by hand: echo '{"transcript_path":"${root}/<project>/<session>.jsonl"}' | ltms pin --from-hook --to ${q(to)}`;
+  const byHand = `In a hook, Claude Code writes that JSON; to try it by hand: printf '%s\\n' ${q(JSON.stringify({ transcript_path: `${root}/<project>/<session>.jsonl` }))} | ltms pin --from-hook --to ${q(to)}`;
   const usage = (what: string): HookRead => ({ k: 'usage', message: `--from-hook reads a Claude Code hook's JSON from standard input, and ${what}. ${byHand}` });
   if (process.stdin.isTTY) return usage('standard input is a terminal');
   let raw: Buffer;
@@ -1607,6 +1611,9 @@ function printChecked(r: PinCheckDone): number {
   // command is given until it has one name again
   const pinRuns = r.logNames <= 1;
   const damage = r.mismatches.length + r.chainBreaks.length + r.unreadableLines.length;
+  // whether the closing line gives the --rehash command: a pin run before it could record a damaged copy as a version
+  // and keep it as an old copy (README, Limits), so the line on the files behind the pin then gives no pin command
+  let rehashGiven = false;
   if (damage) {
     const first = r.mismatches[0]?.line ?? r.chainBreaks[0]?.line ?? r.unreadableLines[0];
     const parts = [`ltms pin: ${q(r.dir)} does not hold what ${log} records: ${plural(r.mismatches.length, 'mismatch', 'mismatches')}, ${plural(r.chainBreaks.length, 'chain break', 'chain breaks')} and ${plural(r.unreadableLines.length, 'line that is not a log line', 'lines that are not log lines')}, each on stdout with its line in PINS.log`,
@@ -1622,7 +1629,10 @@ function printChecked(r: PinCheckDone): number {
     if (root !== null && pinRuns) {
       const sources = r.mismatches.filter((m) => m.copy === m.rel && isSweepShaped(root, m.rel) && sourceThere(root, m.rel));
       const paths = [...new Set(sources.map((m) => join(root, ...(projectPinReaches(m.rel) ? [m.rel.split('/')[0]] : m.rel.split('/')))))];
-      if (paths.length) parts.push(`To write back into the current copies what their sources still hold (ltms pin --check, run again, then says what remains): ltms pin ${paths.map(q).join(' ')} --to ${q(r.dir)} --root ${q(root)} --rehash`);
+      if (paths.length) {
+        parts.push(`To write back into the current copies what their sources still hold (ltms pin --check, run again, then says what remains): ltms pin ${paths.map(q).join(' ')} --to ${q(r.dir)} --root ${q(root)} --rehash`);
+        rehashGiven = true;
+      }
     }
     // every part after the first ends in a command, so the line has no closing period
     err(parts.join('. '));
@@ -1642,7 +1652,13 @@ function printChecked(r: PinCheckDone): number {
   }
   if (s !== null && (s.missing || s.longer)) {
     const when = r.lastLog === null ? '' : ` (PINS.log's last line: ${r.lastLog}${ago(r.lastLog) ? `, ${ago(r.lastLog)}` : ''})`;
-    err(`ltms pin: ${plural(s.missing, 'file', 'files')} under the root ${q(s.root)} ${s.missing === 1 ? 'is' : 'are'} missing from the pin, and ${s.longer} ${s.longer === 1 ? 'is' : 'are'} longer than ${s.longer === 1 ? 'its copy' : 'their copies'}${when}.${pinRuns ? ` To pin them: ltms pin ${q(s.root)} --to ${q(r.dir)}` : ''}`);
+    // the pin command runs as printed: into this directory, with --root naming the root PINS.log records (a pin into it is
+    // refused under any other, and the default root may be another), so only when that is the root walked here
+    const command = !pinRuns ? ''
+      : rehashGiven ? ' To pin them, first run the --rehash command above: a pin run before it may record a damaged copy as a version. ltms pin --check, run again, then says what remains.'
+      : r.root !== null && s.root === r.root ? ` To pin them: ltms pin ${q(s.root)} --to ${q(r.dir)} --root ${q(r.root)}`
+      : '';
+    err(`ltms pin: ${plural(s.missing, 'file', 'files')} under the root ${q(s.root)} ${s.missing === 1 ? 'is' : 'are'} missing from the pin, and ${s.longer} ${s.longer === 1 ? 'is' : 'are'} longer than ${s.longer === 1 ? 'its copy' : 'their copies'}${when}.${command}`);
   }
   // longer only by a line not yet finished: a pin would copy nothing of it, so no command is given
   if (s !== null && s.unfinished) {

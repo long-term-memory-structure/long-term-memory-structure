@@ -1464,6 +1464,8 @@ function ltms(t, args, { input, cwd = t.tmp, env = {}, stdio } = {}) {
 const rowsOf = (out) => out.split('\n').filter((l) => l !== '').map((l) => JSON.parse(l));
 /** The sentence before the --rehash command in --check's closing line (S358, notes-F3: in place of PinMismatch.restorable). */
 const REHASH = 'To write back into the current copies what their sources still hold (ltms pin --check, run again, then says what remains):';
+/** --check's words on the files behind the pin when its closing line gives the --rehash command (0.1.2). */
+const REHASH_FIRST = 'To pin them, first run the --rehash command above: a pin run before it may record a damaged copy as a version. ltms pin --check, run again, then says what remains.';
 /** The --rehash command at the end of --check's closing line, as printed, or null when the line gives none. */
 const rehashOf = (err) => err.split('\n').find((l) => l.includes(REHASH))?.split(`${REHASH} `)[1] ?? null;
 /** A command line ltms printed, run by /bin/sh as a user pastes it, with ltms a function that runs this build. */
@@ -1731,7 +1733,7 @@ test("ltms pin --from-hook, each bad input on standard input: exit 2, nothing wr
       [{ input: JSON.stringify({ transcript_path: true }) }, 'its transcript_path is not a path (a boolean)'],
       [{ input: 'true' }, 'standard input holds JSON that is not an object (a boolean)'],
     ];
-    const byHand = ` In a hook, Claude Code writes that JSON; to try it by hand: echo '{"transcript_path":"${t.root}/<project>/<session>.jsonl"}' | ltms pin --from-hook --to '${t.to}'\n`;
+    const byHand = ` In a hook, Claude Code writes that JSON; to try it by hand: printf '%s\\n' '{"transcript_path":"${t.root}/<project>/<session>.jsonl"}' | ltms pin --from-hook --to '${t.to}'\n`;
     for (const [opts, why] of cases) {
       const r = ltms(t, ['pin', '--from-hook', '--to', t.to], opts);
       assert.deepEqual([r.code, r.out], [2, ''], why);
@@ -1922,7 +1924,7 @@ test('ltms pin --check: an unlogged file, a temp file, a lock, and sources missi
     assert.equal(lines[0], `ltms pin: 1 file in '${t.to}' is named by no line in PINS.log (on stdout, "k":"unlogged"); the next pin records each with a recovered line.`);
     assert.equal(lines[1], `ltms pin: 1 temp file in '${t.to}' was left by a pin that stopped; the next pin removes it.`);
     assert.equal(lines[2], `ltms pin: '${lockOf(t)}' names pid ${holder.pid} on ${hostname()}, since 2026-11-08T10:00:00.000Z: a pin is running, or one stopped without removing it (the next pin takes over a lock whose pid is no longer running on this host).`);
-    assert.match(lines[3], new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is missing from the pin, and 1 is longer than its copy \\(PINS\\.log's last line: ${escapeRe(rows[0].lastLog)}, \\d+ min ago\\)\\. To pin them: ltms pin '${escapeRe(t.root)}' --to '${escapeRe(t.to)}'$`));
+    assert.match(lines[3], new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is missing from the pin, and 1 is longer than its copy \\(PINS\\.log's last line: ${escapeRe(rows[0].lastLog)}, \\d+ min ago\\)\\. To pin them: ltms pin '${escapeRe(t.root)}' --to '${escapeRe(t.to)}' --root '${escapeRe(t.root)}'$`));
     const none = join(t.tmp, 'no-such-root');
     const f = ltms(t, ['pin', '--check', t.to, '--root', none]);
     assert.equal(f.code, 1);
@@ -2060,7 +2062,7 @@ test("ltms pin --check: the time of the last log line in hours, past 2 h (C09); 
     appendFileSync(t.src(`${Q}/${SB}.jsonl`), L4);   // longer than its copy, and nothing missing
     const r = ltms(t, ['pin', '--check', t.to]);
     assert.equal(r.code, 0, r.err);
-    assert.equal(r.err, `ltms pin: 0 files under the root '${t.root}' are missing from the pin, and 1 is longer than its copy (PINS.log's last line: ${last.t}, 3 h ago). To pin them: ltms pin '${t.root}' --to '${t.to}'\n`);
+    assert.equal(r.err, `ltms pin: 0 files under the root '${t.root}' are missing from the pin, and 1 is longer than its copy (PINS.log's last line: ${last.t}, 3 h ago). To pin them: ltms pin '${t.root}' --to '${t.to}' --root '${t.root}'\n`);
   } finally { t.clean(); }
 });
 
@@ -2504,7 +2506,7 @@ test('ltms pin --check: files longer than their copies only by an unfinished lin
     r = ltms(t, ['pin', '--check', t.to]);
     const last = rowsOf(r.out)[0].lastLog;
     assert.equal(r.code, 0, r.err);
-    assert.match(r.err, new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is missing from the pin, and 0 are longer than their copies \\(PINS\\.log's last line: ${escapeRe(last)}, \\d+ min ago\\)\\. To pin them: ltms pin '${escapeRe(t.root)}' --to '${escapeRe(t.to)}'\\nltms pin: 2 files under the root '${escapeRe(t.root)}' end in an unfinished line, which a pin does not copy: they are longer than their copies only by that line, and are not counted as longer\\.\\n$`));
+    assert.match(r.err, new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is missing from the pin, and 0 are longer than their copies \\(PINS\\.log's last line: ${escapeRe(last)}, \\d+ min ago\\)\\. To pin them: ltms pin '${escapeRe(t.root)}' --to '${escapeRe(t.to)}' --root '${escapeRe(t.root)}'\\nltms pin: 2 files under the root '${escapeRe(t.root)}' end in an unfinished line, which a pin does not copy: they are longer than their copies only by that line, and are not counted as longer\\.\\n$`));
   } finally { t.clean(); }
 });
 
@@ -3109,7 +3111,7 @@ test('ltms pin --check, a changed copy whose source is a regular file no longer 
   } finally { t.clean(); }
 });
 
-test('ltms pin --check, a PINS.log with another name (a hard link): a notice says that every pin into the directory is refused until only one name is left, with the find command; no pin command is given, neither the --rehash command nor "To pin them"; once the other name is gone, both come back, and checkPin\'s logNames counts the names (S358 closure fix [2], the checker\'s F3)', async () => {
+test('ltms pin --check, a PINS.log with another name (a hard link): a notice says that every pin into the directory is refused until only one name is left, with the find command; no pin command is given, neither the --rehash command nor "To pin them"; once the other name is gone, the --rehash command comes back, and the line on the files behind the pin says to run it first and gives no pin command beside it (0.1.2), and checkPin\'s logNames counts the names (S358 closure fix [2], the checker\'s F3)', async () => {
   const t = tree();
   try {
     assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
@@ -3128,7 +3130,7 @@ test('ltms pin --check, a PINS.log with another name (a hard link): a notice say
     assert.deepEqual([k.logNames, k.notices], [2, [notice.slice('ltms pin: '.length)]]);
     rmSync(other);
     r = ltms(t, ['pin', '--check', t.to]);
-    assert.match(r.err, new RegExp(`^${escapeRe(closing)}\\. ${escapeRe(REHASH)} ltms pin '${escapeRe(t.src(Q))}' --to '${escapeRe(t.to)}' --root '${escapeRe(t.root)}' --rehash\\n${stale(rowsOf(r.out)[0].lastLog)}\\. To pin them: ltms pin '${escapeRe(t.root)}' --to '${escapeRe(t.to)}'\\n$`));
+    assert.match(r.err, new RegExp(`^${escapeRe(closing)}\\. ${escapeRe(REHASH)} ltms pin '${escapeRe(t.src(Q))}' --to '${escapeRe(t.to)}' --root '${escapeRe(t.root)}' --rehash\\n${stale(rowsOf(r.out)[0].lastLog)}\\. ${escapeRe(REHASH_FIRST)}\\n$`));
     k = await checkPin(t.to);
     assert.deepEqual([k.logNames, k.notices], [1, []]);
   } finally { t.clean(); }
@@ -3951,4 +3953,199 @@ test('README and docs/library.md say what the closure round of 0.1.1 changed: un
   says('docs/library.md', docs, [
     'gets no `recovered` line either when its rel is at or under a path the walk could not read: a directory it could not list, or a path it could not `lstat` (a given path, with the `<sid>/` of a given `<sid>.jsonl`, which the walk then does not enter; or an entry, on a file system that gives no entry types).',
   ]);
+});
+
+// 0.1.2: the line on the files behind the pin (no plain pin beside the --rehash; --root named), and the paths in the
+// commands pin prints (one quoting rule). Each test but the GUARD was run red on 0.1.1's build first.
+
+/** The command after "To pin them: " on --check's line on the files behind the pin, or null when it gives none. */
+const pinCommandOf = (err) => err.split('\n').find((l) => l.includes('To pin them: '))?.split('To pin them: ')[1] ?? null;
+
+test('ltms pin --check, a current copy cut and changed at a byte, its source unchanged: the line on the files behind the pin gives no pin command beside the --rehash and says to run that first; the --rehash, run as printed, writes the copy back, nothing is kept as an old copy, and a check run again is clean (0.1.2: 0.1.1 gave the plain pin there)', () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const rel = `${Q}/${SB}.jsonl`;
+    damage(t.pin(rel), 5);
+    const k = ltms(t, ['pin', '--check', t.to]);
+    assert.equal(k.code, 1, k.err);
+    const behind = k.err.split('\n').find((l) => l.includes(' is longer than its copy'));
+    assert.ok(behind, k.err);
+    assert.ok(behind.endsWith(`. ${REHASH_FIRST}`), behind);
+    assert.equal(pinCommandOf(k.err), null, k.err);
+    const fix = runPrinted(t, rehashOf(k.err));
+    assert.equal(fix.code, 0, fix.err);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), PINNED[rel]);
+    assert.deepEqual(keptIn(t.to), []);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('GUARD (green on 0.1.1 too): the plain pin, run before the --rehash after a copy was cut and changed at a byte, keeps the damaged copy as an old copy, and --check then stays at exit 1 with no command (README, Limits): the reason --check gives no pin command beside the --rehash (0.1.2). If this ever fails, the withholding can be narrowed.', () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    damage(t.pin(`${Q}/${SB}.jsonl`), 5);
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    assert.equal(keptIn(t.to).length, 1, filesUnder(t.to).join('\n'));
+    for (let i = 0; i < 2; i++) {
+      const k = ltms(t, ['pin', '--check', t.to]);
+      assert.equal(k.code, 1, k.err);
+      assert.equal(rehashOf(k.err), null, k.err);
+    }
+  } finally { t.clean(); }
+});
+
+test('ltms pin --check, a pin made under a root other than the default: the pin command on the files behind the pin names that root with --root, and runs as printed (0.1.2: 0.1.1 left --root out, and its command was refused, exit 2)', () => {
+  const t = tree();
+  try {
+    const other = join(t.tmp, 'other root');
+    const src = join(other, '-home-u-gamma', `${SB}.jsonl`);
+    mkdirSync(dirname(src), { recursive: true });
+    writeFileSync(src, L1);
+    assert.equal(ltms(t, ['pin', other, '--to', t.to, '--root', other]).code, 0);
+    appendFileSync(src, '{"type":"user","text":"an invented second prompt"}\n');
+    const k = ltms(t, ['pin', '--check', t.to]);
+    assert.equal(k.code, 0, k.err);
+    const command = pinCommandOf(k.err);
+    assert.equal(command, `ltms pin ${shQuoted(other)} --to ${shQuoted(t.to)} --root ${shQuoted(other)}`);
+    const fix = runPrinted(t, command);
+    assert.equal(fix.code, 0, fix.err);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('ltms pin --check --root <a root PINS.log does not record>: the files behind the pin are counted from that root, and no pin command is given, since a pin into the directory from that root is refused (0.1.2: 0.1.1 gave one)', () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const other = join(t.tmp, 'other');
+    const src = join(other, '-home-u-gamma', `${SB}.jsonl`);
+    mkdirSync(dirname(src), { recursive: true });
+    writeFileSync(src, L1);
+    const k = ltms(t, ['pin', '--check', t.to, '--root', other]);
+    const behind = k.err.split('\n').find((l) => l.includes(' missing from the pin'));
+    assert.ok(behind, k.err);
+    assert.match(behind, /\)\.$/);
+    assert.equal(pinCommandOf(k.err), null, k.err);
+    const refused = ltms(t, ['pin', other, '--to', t.to, '--root', other]);
+    assert.equal(refused.code, 2, refused.err);
+  } finally { t.clean(); }
+});
+
+test("pin into a directory whose name holds a single quote, open to other users: the notice's chmod command runs as printed and closes it (0.1.2: 0.1.1 put the path between bare quotes, which /bin/sh cannot read)", { skip: process.platform === 'win32' && 'modes do not apply on win32' }, async () => {
+  const t = tree();
+  try {
+    const to = join(t.tmp, "it's pins");
+    mkdirSync(to);
+    chmodSync(to, 0o755);
+    const r = await pinPaths([t.root], t.opts({ to }));
+    const notice = r.notices.find((n) => n.includes('To close it: '));
+    assert.ok(notice, JSON.stringify(r.notices));
+    const command = notice.split('To close it: ')[1];
+    assert.equal(command, `chmod 700 ${shQuoted(to)}`);
+    const run = runPrinted(t, command);
+    assert.equal(run.code, 0, run.err);
+    assert.equal(statSync(to).mode & 0o777, 0o700);
+  } finally { t.clean(); }
+});
+
+test("checkPin while a pin holds the lock, in a directory whose name holds a single quote: the rm command in its message gives /bin/sh the lock's path as one word (0.1.2: 0.1.1 put it between bare quotes)", async () => {
+  const t = tree();
+  try {
+    const to = join(t.tmp, "it's pins"), t2 = { ...t, to };
+    assert.equal((await pinPaths([t.root], t.opts({ to }))).k, 'pinned');
+    plantLock(t2, { pid: process.ppid, host: hostname(), started: '2026-11-08T10:00:00.000Z' });
+    const b = await checkPin(to, { lockWaitMs: 200 });
+    assert.equal(b.k, 'busy');
+    const line = b.message.split('remove the lock: ')[1];
+    assert.ok(line, b.message);
+    assert.deepEqual(wordsRun('rm', line), [lockOf(t2)]);
+  } finally { t.clean(); }
+});
+
+test("ltms pin --from-hook with nothing on standard input, its root holding a single quote, a double quote and a backslash: the usage message's command prints JSON whose transcript_path is under that root, in /bin/sh and in dash where there is one (0.1.2: 0.1.1 put the root unescaped between bare quotes, and gave echo, which dash reads backslashes in)", () => {
+  const t = tree();
+  try {
+    const weird = join(t.tmp, `a'b"c\\d`);
+    mkdirSync(weird);
+    const r = ltms(t, ['pin', '--from-hook', '--to', t.to, '--root', weird], { input: '' });
+    assert.equal(r.code, 2, r.err);
+    const m = /to try it by hand: (.*) \| ltms pin --from-hook --to /.exec(r.err);
+    assert.ok(m, r.err);
+    const shells = ['/bin/sh', ...['/usr/bin/dash', '/bin/dash'].filter((p) => existsSync(p)).slice(0, 1)];
+    for (const shell of shells) {
+      const sh = spawnSync(shell, ['-c', m[1]], { encoding: 'utf8' });
+      assert.equal(sh.status, 0, `${shell}: ${sh.stderr}`);
+      assert.equal(JSON.parse(sh.stdout).transcript_path, `${weird}/<project>/<session>.jsonl`, shell);
+    }
+  } finally { t.clean(); }
+});
+
+test('ltms pin --check, a mismatch only in a kept copy (which no --rehash writes) and a source missing from the pin: the closing line gives no --rehash, so the line on the files behind the pin gives the pin command, with --root, and it runs as printed (0.1.2: the pin command is withheld only beside a --rehash, not beside any damage)', () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const rel = `${Q}/${SB}.jsonl`;
+    writeFileSync(t.src(rel), '{"type":"user","text":"an invented rewrite"}\n');
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const [kept] = keptIn(t.to);
+    assert.ok(kept, filesUnder(t.to).join('\n'));
+    const b = readFileSync(join(t.to, kept)); b[3] ^= 1; writeFileSync(join(t.to, kept), b);
+    t.put(`${Q}/77777777-7777-4777-8777-777777777777.jsonl`, L1);
+    const k = ltms(t, ['pin', '--check', t.to]);
+    assert.equal(k.code, 1, k.err);
+    assert.equal(rehashOf(k.err), null, k.err);
+    const command = pinCommandOf(k.err);
+    assert.equal(command, `ltms pin ${shQuoted(t.root)} --to ${shQuoted(t.to)} --root ${shQuoted(t.root)}`);
+    const fix = runPrinted(t, command);
+    assert.equal(fix.code, 0, fix.err);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.equal(again.code, 1, again.err);
+    assert.equal(pinCommandOf(again.err), null, again.err);
+    assert.doesNotMatch(again.err, / missing from the pin/);
+  } finally { t.clean(); }
+});
+
+test('ltms pin --check, a current copy deleted while its source is moved out of the root: a missing copy holds no bytes a pin could record, so the pin command is still given, and run as printed it pins the other files and keeps nothing; with the source back, the --rehash restores the copy and the check is clean (0.1.2; S360: the mutant that withholds here too survived every other test)', () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const rel = `${Q}/${SB}.jsonl`, away = join(t.tmp, 'moved-away.jsonl');
+    unlinkSync(t.pin(rel));
+    renameSync(t.src(rel), away);
+    t.put(`${P}/77777777-7777-4777-8777-777777777777.jsonl`, L1);
+    const k = ltms(t, ['pin', '--check', t.to]);
+    assert.equal(k.code, 1, k.err);
+    assert.equal(rehashOf(k.err), null, k.err);
+    const command = pinCommandOf(k.err);
+    assert.equal(command, `ltms pin ${shQuoted(t.root)} --to ${shQuoted(t.to)} --root ${shQuoted(t.root)}`, k.err);
+    const run = runPrinted(t, command);
+    assert.equal(run.code, 0, run.err);
+    assert.deepEqual(keptIn(t.to), []);
+    assert.ok(existsSync(t.pin(`${P}/77777777-7777-4777-8777-777777777777.jsonl`)));
+    renameSync(away, t.src(rel));
+    const k2 = ltms(t, ['pin', '--check', t.to]);
+    const fix = runPrinted(t, rehashOf(k2.err));
+    assert.equal(fix.code, 0, fix.err);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), PINNED[rel]);
+    const again = ltms(t, ['pin', '--check', t.to]);
+    assert.deepEqual([again.code, again.err], [0, '']);
+  } finally { t.clean(); }
+});
+
+test('README and ltms pin --help say when --check gives the pin command and when it withholds it, and what to do then (0.1.2; S360 V-A: its mutants M27 and M28, the help lines removed or "gives none" turned, survived every test)', () => {
+  const flat = (s) => s.replace(/\s+/g, ' ');
+  const readme = flat(readFileSync(join(here, '..', 'README.md'), 'utf8'));
+  const help = flat(spawnSync(process.execPath, [CLI, 'pin', '--help'], { encoding: 'utf8' }).stdout);
+  for (const p of ['get the command that pins them, `ltms pin <root> --to <dir> --root <root>` from the root `PINS.log` records, when that is the root the check walked.',
+    'Beside the `--rehash` command it gives none, and says to run the `--rehash` first, since a pin run before it may record a damaged copy as a version']) {
+    assert.ok(readme.includes(p), `README does not say: ${p}`);
+  }
+  for (const p of ['get the command that pins them, from the root PINS.log records (with --root), when that is the root walked.',
+    'Beside the --rehash command it gives none, and says to run the --rehash first: a pin run before it may record a damaged copy.']) {
+    assert.ok(help.includes(p), `ltms pin --help does not say: ${p}`);
+  }
 });
