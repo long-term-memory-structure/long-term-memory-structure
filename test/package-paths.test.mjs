@@ -193,7 +193,11 @@ test('the package: the installed bin runs: ltms and long-term-memory-structure -
   // (search's three line shapes are checked against search's own output in test/search.test.mjs)
   const examples = readFileSync(join(root, 'README.md'), 'utf8').split('\n').filter((l) => l.startsWith('{"k":') && !/^\{"k":"(?:coverage","query"|file"|hit")/.test(l));
   assert.ok(examples.length >= 6, `only ${examples.length} example lines were read from the README`);
-  const printed = new Set(s.stdout.split('\n'));
+  // 0.2.0: index's example, run by the installed copy as the README shows it, its coverage line's time made the README's
+  const ix = spawnSync(join(consumer, 'node_modules', '.bin', WIN ? 'ltms.cmd' : 'ltms'), ['index', 'test/fixtures/compacted.jsonl', 'test/fixtures/demo.jsonl'], { encoding: 'utf8', env, shell: WIN, timeout: 20000, cwd: root });
+  assert.equal(ix.status, 0, ix.stderr);
+  const readmeMs = /^\{"k":"coverage","files".*"ms":(\d+)\}$/m.exec(readFileSync(join(root, 'README.md'), 'utf8'))?.[1];
+  const printed = new Set([...s.stdout.split('\n'), ...ix.stdout.replace(/"ms":\d+\}/, `"ms":${readmeMs}}`).split('\n')]);
   assert.deepEqual(examples.filter((l) => !printed.has(l)), [], 'README example lines the installed ltms does not print');
   // and the installed copy prints what this tree's own build prints
   const inTree = spawnSync(process.execPath, [join(root, 'dist', 'cli.js'), 'skeleton', DEMO], { encoding: 'utf8', timeout: 20000 });
@@ -316,9 +320,10 @@ test('the package: scripts.test names every test file in test/, without a glob, 
   assert.deepEqual(present.filter((f) => !named.includes(f)), [], 'test files that scripts.test does not run');
 });
 
-test('the package: "files" is 0.0.5\'s: dist, README.md, CHANGELOG.md and LICENSE (docs/ and test/ are not shipped)', () => {
+test('the package: "files" is 0.0.5\'s and skills (0.2.0, the SKILL.md ltms skill prints): dist, skills, README.md, CHANGELOG.md and LICENSE (docs/ and test/ are not shipped)', () => {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  assert.deepEqual(pkg.files, ['dist', 'README.md', 'CHANGELOG.md', 'LICENSE']);
+  assert.deepEqual(pkg.files, ['dist', 'skills', 'README.md', 'CHANGELOG.md', 'LICENSE']);
+  assert.deepEqual(readdirSync(join(root, 'skills'), { recursive: true }).sort(), ['ltms', 'ltms/SKILL.md'], 'skills/ holds the one SKILL.md');
 });
 
 test('the package: the entry point "." imports nothing from Node: dist/index.js and every module it reaches import only each other', () => {

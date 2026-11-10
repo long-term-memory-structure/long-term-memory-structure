@@ -777,10 +777,12 @@ export function parseTranscript(text: string, opts: ParseOptions = {}): Transcri
     if ((r as any).sessionId) sids.add((r as any).sessionId);
     if ((r as any).agentId) aids.add((r as any).agentId);
     if (typeof (r as any).isSidechain === 'boolean') sc.add((r as any).isSidechain);
+    // an empty timestamp is read as absent, as a missing one is: read as a value, the first one would replace any
+    // set before it and be replaced by the next, so the result would depend on the order the records were written in
     const ts = (r as any).timestamp;
-    if (typeof ts === 'string') {
-      if (!stats.firstTimestamp || ts < stats.firstTimestamp) stats.firstTimestamp = ts;
-      if (!stats.lastTimestamp || ts > stats.lastTimestamp) stats.lastTimestamp = ts;
+    if (typeof ts === 'string' && ts !== '') {
+      if (stats.firstTimestamp === null || ts < stats.firstTimestamp) stats.firstTimestamp = ts;
+      if (stats.lastTimestamp === null || ts > stats.lastTimestamp) stats.lastTimestamp = ts;
     }
     if (r.type === 'assistant' || r.type === 'user') {
       for (const b of blocksOf((r as any).message)) {

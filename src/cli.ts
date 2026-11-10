@@ -12,8 +12,9 @@
 // matters.
 //
 // skeleton and stats read only the files named on the command line; search reads the files named and the .jsonl files
-// under the directories named; pin reads the files under the paths it is given, and its pin directory. Writes only to
-// stdout and stderr, except pin, which writes only into its --to directory.
+// under the directories named; index the same, but those in a session's own directory, set-aside copies and pin
+// directories, which it counts; pin reads the files under the paths it is given, and its pin directory; skill reads its
+// own SKILL.md. Writes only to stdout and stderr, except pin, which writes only into its --to directory.
 // No network, no telemetry.
 
 import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -25,6 +26,7 @@ import { parseTranscript, repairedLivePath, turnsOf, inputChannel } from './pars
 import type { Transcript, TreeNode } from './parser.js';
 import { checkSearchSupport, parseSearchQuery, searchTranscript, SEARCH_DEFAULT_KINDS, SEARCH_GAP_SCRIPTS, SEARCH_KINDS } from './search.js';
 import type { SearchCounts, SearchKind, SearchNotSearched, SearchQuery, SearchTurnHit } from './search.js';
+import { indexTranscript } from './session.js';
 import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
 import type { PinCheckDone, PinCoverage, PinDone, PinLogLine, PinRefusal } from './pin.js';
 
@@ -45,10 +47,12 @@ interface StatsLine {
 }
 
 const USAGE = `Usage:
+  ltms index <path>...            one JSON line per session, newest first
   ltms skeleton <file.jsonl>...   one JSON line per turn and per tool call
   ltms stats <file.jsonl>...      one JSON line of counts per file
   ltms search <query> <path>...   the turns that hold every word of the query
   ltms pin <path>... --to <dir>   copies the cleanup does not delete, and a log
+  ltms skill                      the skill that teaches an agent to use ltms
   ltms --help                     show the help, with every output field
   ltms --version                  show the version
 `;
@@ -60,16 +64,18 @@ ${USAGE}
 When Claude Code compacts a session, the conversation in the model's context
 is replaced by a summary, but the transcript on disk keeps every record:
 Claude Code appends to it (it can rewrite one only in rare cases, and pin
-keeps both versions). ltms prints an index of the transcript,
-one line per turn and per tool call, each with the line of the file where it
-is written, so what compaction took out of the context can be found and read
-again (for line 22: sed -n 22p <file>).
+keeps both versions). ltms index lists the sessions, one line each, and
+ltms skeleton prints one line per turn and per tool call of a session, each
+with the line of the file where it is written, so what compaction took out of
+the context can be found and read again (for line 22: sed -n 22p <file>).
 
 Claude Code keeps transcripts in ~/.claude/projects/<project>/<session>.jsonl.
-ltms reads only the files it is given (search: also every .jsonl file under
-the directories it is given; pin: the files under the paths it is given),
-writes only to stdout and stderr, except pin, which writes only into its --to
-directory, and uses no network.
+ltms reads only the files it is given (search and index: also the .jsonl
+files under the directories they are given, index not those in a session's
+own directory, set-aside copies or pin directories; pin: the files under the
+paths it is given; skill: its own SKILL.md and package.json), writes only to
+stdout and stderr, except pin, which writes only into its --to directory, and
+uses no network.
 
 It follows each session's live path: the branch the session ended on, as the
 transcript's own last-prompt record names it (without one, the branch of the
@@ -80,8 +86,8 @@ gives the address of its prompt; a call line gives the addresses of the call
 and its result, and hashes of what went in and what came out. An address is
 <prefix>:L<line number>: the prefix is the file name's first 8 characters,
 or, for a subagent's agent-<id>.jsonl, agent- and the id's first 8. Files
-that get the same prefix cannot be told apart in one run (a warning names
-them): give them to separate runs.
+that get the same prefix cannot be told apart in one run of skeleton or stats
+(a warning names them): give them to separate runs.
 
 skeleton, one line per turn:
   k             "turn"
@@ -195,10 +201,18 @@ first, as one quoted argument: ltms search 'compaction summary' <path>...
 ltms search --help gives its whole part: the query, the paths, the coverage
 line, how to read a hit, the options, and every field.
 
+index lists the sessions in the transcripts named and under the directories
+named, one line each, newest first: when each ran, its turns, calls and
+failures, and the addresses of its prompts, its compaction summaries and its
+last reply. ltms index --help gives its whole part.
+
 pin keeps copies of the transcripts that Claude Code's cleanup deletes (after
 30 days by default), in a directory of your own, with a log to check them
 against: ltms pin <path>... --to <dir>. ltms pin --help has its forms and
 output.
+
+skill prints SKILL.md, which teaches an agent the loop: index, skeleton,
+search, then read one address. ltms skill --help says how to install it.
 
 Warnings go to stderr: lines that are not JSON objects (or are nested more
 than 1,000 levels deep), files with nothing to show (empty, a workflow journal,
@@ -618,7 +632,7 @@ function internalError(e: unknown): string {
   const kind = LABEL.test(e.name) ? e.name : 'Error';
   const head = e.message ? `${e.name}: ${e.message}` : e.name;
   const stack = typeof e.stack === 'string' && e.stack.startsWith(head) ? e.stack.slice(head.length) : '';
-  const frame = stack.split('\n').map((l) => /^\s+at .*?([^()\s/\\]+\.js):(\d+):\d+\)?$/.exec(l)).find((m) => m !== null && /^(?:cli|parser|pin|search)\.js$/.test(m[1]));
+  const frame = stack.split('\n').map((l) => /^\s+at .*?([^()\s/\\]+\.js):(\d+):\d+\)?$/.exec(l)).find((m) => m !== null && /^(?:cli|parser|pin|search|session)\.js$/.test(m[1]));
   return frame ? `${kind} at ${frame[1]}:${frame[2]}` : kind;
 }
 
@@ -671,6 +685,10 @@ const SEARCH_WINDOW = `node -e 'const [p,l,f,a]=process.argv.slice(1),F=JSON.par
 /** A file's latest timestamp is printed only when it looks like one (ISO 8601, as Claude Code writes it): the
  *  parser takes any string from a record's timestamp, and anything else could carry text. It prints (withheld). */
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+/** A timestamp as a time, or NaN: ISO 8601 in shape AND a real time (month 13 is not). One rule for printing and
+ *  sorting, so that a line never shows a date and sorts with the undated. */
+const timeOf = (v: string | null): number => (v !== null && ISO_TIME.test(v) ? Date.parse(v) : NaN);
+const isoOrWithheld = (v: string | null): string | null => (v === null ? null : Number.isNaN(timeOf(v)) ? WITHHELD : v);
 const KINDS_TEXT = `${SEARCH_KINDS.join(', ')}, or all`;
 const SEARCH_OPTIONS = '--kind <list>, --substring, --max <n>, --skip <n>, --count and --oldest';
 /** For the scripts whose words take attached letters: a word, and a longer word holding it that words mode does not
@@ -836,9 +854,14 @@ interface SearchSetup {
   queryIsPath: boolean;
 }
 
-/** A word the shell reads as itself, else the word in single quotes. */
-const shellWord = (s: string): string => (/^[A-Za-z0-9_.\/:,+%@=-]+$/.test(s) && !s.startsWith('-') ? s : `'${s.replace(/'/g, `'${BS}''`)}'`);
-const quoted = (s: string): string => `'${s.replace(/'/g, `'${BS}''`)}'`;
+/** A word of a printed command, read the same by sh, bash, zsh and fish: its text in single quotes, with every ' and
+ *  every backslash written outside them, as backslash-quote and backslash-backslash. (0.1.2 left a backslash inside the
+ *  quotes, where fish reads backslash-backslash and backslash-quote as escapes.) The one copy of this rule, but pin.ts's
+ *  own for the notices its library builds. */
+const quoted = (s: string): string => `'${s.replace(/['\\]/g, (c) => `'${BS}${c}'`)}'`;
+/** A word the shell reads as itself, else the word quoted. It never starts with '-' (an option), '=' (zsh looks the rest
+ *  up as a command) or '%' (fish reads %self as its process id). */
+const shellWord = (s: string): string => (/^[A-Za-z0-9_.\/:,+@][A-Za-z0-9_.\/:,+%@=-]*$/.test(s) ? s : quoted(s));
 /** ' --' when one of the words a command line ends with (the query, the paths) starts with '-': after --, it is not
  *  read as an option. */
 const dashFor = (words: string[]): string => (words.some((w) => w.startsWith('-')) ? ' --' : '');
@@ -872,13 +895,20 @@ function projectFolder(): { base: string; folder: string; real: string; long: bo
 
 const isDirectory = (path: string): boolean => { try { return statSync(path).isDirectory(); } catch { return false; } };
 
-/** The message for a search given no path: the next command, with this directory's project folder when it exists. */
-function noPathMessage(query: string): string {
-  const p = projectFolder(), q = quoted(query), { base } = projectsDir(), cmd = `ltms search${dashFor([query])} ${q}`;
-  if (!p) return `ltms search: no path given. Give the transcripts' folder or files after the query. The current directory no longer exists, so its project folder cannot be named; ls ${base} lists the project folders: ${cmd} ${base}/<folder>`;
-  if (p.long) return `ltms search: no path given. Give the transcripts' folder or files after the query. This directory's path is longer than 200 characters, so Claude Code cuts its folder's name and adds a hash: find the folder with ls ${base}, then run ${cmd} ${base}/<folder>`;
-  if (isDirectory(p.real)) return `ltms search: no path given. Give the transcripts' folder or files after the query; this directory's project folder is ${p.folder}: ${cmd} ${p.folder}`;
-  return `ltms search: no path given. Give the transcripts' folder or files after the query. This directory's project folder would be ${p.folder}, which does not exist; ls ${base} lists the project folders: ${cmd} ${base}/<folder>`;
+/** ' --' when the projects directory, as a command line writes it, would be read as an option: a relative
+ *  $CLAUDE_CONFIG_DIR that starts with '-'. */
+const projectsDash = (): string => (projectsDir().raw.startsWith('-') ? ' --' : '');
+/** The message for a command given no path (search, after its query; index): the next command, with this directory's
+ *  project folder when it exists. */
+function noPathMessage(cmd: 'search' | 'index', query?: string): string {
+  const p = projectFolder(), { base } = projectsDir(), lead = projectsDash();
+  const words = query === undefined ? [] : [query];
+  const run = `ltms ${cmd}${dashFor(words) || lead}${words.map((w) => ` ${quoted(w)}`).join('')}`, ls = `ls${lead} ${base}`;
+  const head = `ltms ${cmd}: no path given. Give the transcripts' folder or files${query === undefined ? '' : ' after the query'}`;
+  if (!p) return `${head}. The current directory no longer exists, so its project folder cannot be named; ${ls} lists the project folders: ${run} ${base}/<folder>`;
+  if (p.long) return `${head}. This directory's path is longer than 200 characters, so Claude Code cuts its folder's name and adds a hash: find the folder with ${ls}, then run ${run} ${base}/<folder>`;
+  if (isDirectory(p.real)) return `${head}; this directory's project folder is ${p.folder}: ${run} ${p.folder}`;
+  return `${head}. This directory's project folder would be ${p.folder}, which does not exist; ${ls} lists the project folders: ${run} ${base}/<folder>`;
 }
 
 /** A path argument that names nothing (statSync: ENOENT or ENOTDIR). */
@@ -952,12 +982,12 @@ function readSearchArgs(args: string[]): SearchSetup | number {
   }
   if (!positional.length) {
     const p = projectFolder(), folder = p && !p.long && isDirectory(p.real) ? p.folder : `${projectsDir().base}/<project>`;
-    return usage(`no query given. The query comes first, as one quoted argument, then the transcripts' folder or files: ltms search 'compaction summary' ${folder}`);
+    return usage(`no query given. The query comes first, as one quoted argument, then the transcripts' folder or files: ltms search${projectsDash()} 'compaction summary' ${folder}`);
   }
   const [query, ...paths] = positional;
   const wrong = misorder(query, paths);
   if (wrong) { err(wrong); return 2; }
-  if (!paths.length) { err(noPathMessage(query)); return 2; }
+  if (!paths.length) { err(noPathMessage('search', query)); return 2; }
   return { query, paths, kinds: kindsGiven ? kinds : new Set(SEARCH_DEFAULT_KINDS), kindsGiven, substring, max, skip, count, oldest, queryIsPath: queryNamesPath(query) };
 }
 
@@ -1006,80 +1036,164 @@ const escapedName = (b: Buffer): string => [...b].map((x) => (x >= 0x20 && x < 0
 /** A directory's entries whose names are not valid UTF-8, read again as bytes: `lossy` holds them as the text listing
  *  gives them (which opens nothing), `report` the directories and the files named .jsonl among them (in the listing's
  *  order: on Unix, libuv sorts the names by their bytes). */
-function notUtf8Names(d: string): { lossy: Set<string>; report: { name: Buffer; dir: boolean }[] } {
-  const lossy = new Set<string>(), report: { name: Buffer; dir: boolean }[] = [];
+function notUtf8Names(d: string): { lossy: Set<string>; report: { name: Buffer; dir: boolean }[]; links: Buffer[] } {
+  const lossy = new Set<string>(), report: { name: Buffer; dir: boolean }[] = [], links: Buffer[] = [];
   let names: Buffer[];
-  try { names = readdirSync(d, { encoding: 'buffer' }); } catch { return { lossy, report }; }
+  try { names = readdirSync(d, { encoding: 'buffer' }); } catch { return { lossy, report, links }; }
   for (const b of names) {
     const s = b.toString('utf8');
     if (Buffer.from(s, 'utf8').equals(b)) continue;
     lossy.add(s);
     let st;
     try { st = lstatSync(Buffer.concat([Buffer.from(d + '/'), b])); } catch { continue; }
-    if (st.isDirectory()) report.push({ name: b, dir: true });
-    else if (!st.isSymbolicLink() && s.endsWith('.jsonl')) report.push({ name: b, dir: false });
+    if (st.isSymbolicLink()) links.push(b);
+    else if (st.isDirectory()) report.push({ name: b, dir: true });
+    else if (s.endsWith('.jsonl')) report.push({ name: b, dir: false });
   }
-  return { lossy, report };
+  return { lossy, report, links };
 }
 
-/** What the walk found: the files to read; the paths that failed (reported); the symbolic links met; the entries
- *  named .jsonl that are not regular files, beyond those a no-.jsonl warning already named; and the directories met
- *  again (the same device and inode as one already read). */
-interface SearchWalk { files: { path: string; named: boolean }[]; failed: number; symlinks: number; special: number; again: number }
+/** A command that walks the paths it is given (search, index): its name, the word for what it does with a file, what a
+ *  stop would lose, and its own command line run again on other paths (for the messages that give one). */
+interface Walker { cmd: 'search' | 'index'; done: string; whole: string; lost: string; again: (paths: string[]) => string }
+/** What the walk found: the files to read (a file found under a directory named with that directory, `under`); the
+ *  paths that failed (reported); the symbolic links met; the entries named .jsonl that are not regular files, beyond
+ *  those a no-.jsonl warning already named; and the directories met again (the same device and inode as one already
+ *  read). For index (`classify`), also what it does not read: the .jsonl files in a session's own directory, the
+ *  set-aside copies of a session, the pin directories, and, for each session directory, its agent transcripts. Every
+ *  count is of distinct paths: a directory given twice, or under another one given, is walked for each, as 0.1.2
+ *  walked it, and counted once. */
+interface SearchWalk {
+  files: { path: string; named: boolean; under?: string }[]; failed: number; symlinks: number; special: number; again: number;
+  /** .jsonl files under a session's own directory: counted, not read (index). */
+  parts: number;
+  /** Set-aside copies of a session: counted, not read (index). */
+  setAside: number;
+  /** Directories holding PINS.log below a directory given: not entered (index). */
+  pinStores: string[];
+  /** For each session directory met (by its resolved path): the agent-*.jsonl files under it, or null when a directory
+   *  under it could not be listed, or it was a symbolic link (index). */
+  agents: Map<string, number | null>;
+  /** The directories listed whole (resolved): a session file whose directory is not among them gets agents null. */
+  listed: Set<string>;
+}
+/** A session's own directory, by pin's rule (pin.ts, the sweep's shape): its name is a UUID, or its name plus .jsonl
+ *  names a regular file beside it. Claude Code keeps a session's subagents/, tool-results/, mcp-tasks/ and workflows
+ *  there. */
+const UUID_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A set-aside copy of a session: Claude Code's <session>.orphaned-<timestamp>-<suffix>.jsonl, and the copy pin keeps
+ *  of a rewritten version, <stem>.superseded-<12 hex digits>.jsonl (pin.ts, keptRel). */
+const SET_ASIDE_NAME = /\.(?:orphaned-[^/]*|superseded-[0-9a-f]{12})\.jsonl$/;
+/** An agent transcript's name, as Claude Code writes it under subagents/. */
+const AGENT_NAME = /^agent-.*\.jsonl$/;
 /** The files to read: each path given, and the *.jsonl files under each directory given (sorted by UTF-16 code
- *  units), each file once by its real path. Under a directory given, each directory is entered once, by its device
- *  and inode. Paths that cannot be read, directories that cannot be listed, and names that are not UTF-8 are reported
- *  here and counted as failed. */
-function walkSearchPaths(paths: string[]): SearchWalk {
-  const all: { path: string; named: boolean }[] = [];
-  let failed = 0, symlinks = 0, special = 0, again = 0;
+ *  units), each file once by its real path. Each directory is entered once per path given, by its device and inode;
+ *  the counts are of distinct entries across the paths given. Paths that cannot be read, directories that cannot be listed, and names that are not UTF-8 are reported
+ *  here and counted as failed. With `classify` (index), below a directory given: a .jsonl file in a session's own
+ *  directory, and a set-aside copy, is counted and not read; a directory holding PINS.log is not entered. */
+function walkPaths(wk: Walker, paths: string[], classify = false): SearchWalk {
+  const all: { path: string; named: boolean; under?: string }[] = [];
+  let failed = 0, special = 0, again = 0;
+  // each counted entry is keyed by what it IS (lstat's device and inode), not by its name: two spellings of one file
+  // (an argument that is a link) count once, and two names that differ only in bytes that are not UTF-8 count twice
+  const idOf = (path: string | Buffer, follow = false): string => {
+    try { const st = (follow ? statSync : lstatSync)(path, { bigint: true }); return `${st.dev}:${st.ino}`; }
+    catch { return `path:${typeof path === 'string' ? resolve(path) : path.toString('hex')}`; }
+  };
+  const links = new Set<string>(), parts = new Set<string>(), setAside = new Set<string>(), pinStores = new Map<string, string>(), failedDirs = new Set<string>();
+  const agentFiles = new Map<string, Set<string> | null>(), listed = new Set<string>();
+  const isSessionDir = (name: string, siblings: Dirent[]): boolean => UUID_NAME.test(name) || siblings.some((x) => x.name === `${name}.jsonl` && x.isFile());
+  const part = (session: string, path: string | Buffer, name: string): void => {
+    const id = idOf(path);
+    parts.add(id);
+    const a = agentFiles.get(session);
+    if (a && AGENT_NAME.test(name)) a.add(id);
+  };
   for (const p of paths) {
     let dir: boolean;
     try { dir = statSync(p).isDirectory(); }
-    catch (e) { err(cannotRead('search', p, e)); failed++; continue; }
+    catch (e) { err(cannotRead(wk.cmd, p, e)); failed++; continue; }
     if (!dir) { all.push({ path: p, named: true }); continue; }
-    const found: string[] = [], stack = [p], entered = new Set<string>();
-    let links = 0, reported = 0, pipes = 0;
+    // each directory with the session directory it is in (resolved), if any; a directory is entered once per argument,
+    // by its device and inode, as 0.1.2 did; the counts are of distinct entries across the arguments
+    const found: string[] = [], stack: { d: string; session: string | null }[] = [{ d: p, session: null }], entered = new Set<string>();
+    let met = 0, reported = 0, pipes = 0, counted = 0;
     while (stack.length) {
-      const d = stack.pop()!;
+      const { d, session } = stack.pop()!;
+      const top = d === p && session === null && entered.size === 0;
       let id: string | null = null;
       try { const st = statSync(d, { bigint: true }); id = `${st.dev}:${st.ino}`; } catch { /* the listing below reports it */ }
       if (id !== null) { if (entered.has(id)) { again++; continue; } entered.add(id); }
       let entries: Dirent[];
       try { entries = readdirSync(d, { withFileTypes: true }); }
       catch (e) {
+        if (session !== null) agentFiles.set(session, null);
+        reported++;
+        const key = id ?? `path:${resolve(d)}`;
+        if (failedDirs.has(key)) continue;   // reached again through another argument: reported and counted once
+        failedDirs.add(key);
         const code = (e as NodeJS.ErrnoException)?.code;
         err(code === 'EACCES' || code === 'EPERM'
-          ? `ltms search: cannot read the directory '${d}': permission denied, so the files under it are not searched. Check its permissions with: ls -ld${dashFor([d])} ${q(d)}`
-          : `ltms search: cannot read the directory '${d}': ${(e as Error)?.message ?? String(e)}; the files under it are not searched.`);
-        failed++; reported++;
+          ? `ltms ${wk.cmd}: cannot read the directory '${d}': permission denied, so the files under it are not ${wk.done}. Check its permissions with: ls -ld${dashFor([d])} ${q(d)}`
+          : `ltms ${wk.cmd}: cannot read the directory '${d}': ${(e as Error)?.message ?? String(e)}; the files under it are not ${wk.done}.`);
+        failed++;
         continue;
       }
+      if (classify && !top && entries.some((e) => e.name === 'PINS.log' && e.isFile())) {
+        const key = id ?? `path:${resolve(d)}`;
+        if (!pinStores.has(key)) pinStores.set(key, d);
+        counted++;   // it holds files, not entered: never "holds no .jsonl file"
+        continue;
+      }
+      if (classify) listed.add(resolve(d));
       const bad = entries.some((e) => e.name.includes(REPLACEMENT)) ? notUtf8Names(d) : null;
       for (const e of entries) {
-        if (bad?.lossy.has(e.name)) { if (e.isSymbolicLink()) links++; continue; }   // reported below, by its bytes
+        if (bad?.lossy.has(e.name)) continue;   // counted or reported below, by its bytes
         const full = join(d, e.name);
-        if (e.isSymbolicLink()) links++;
-        else if (e.isDirectory()) stack.push(full);
-        else if (e.name.endsWith('.jsonl')) { if (e.isFile()) found.push(full); else pipes++; }
+        if (e.isSymbolicLink()) {
+          met++; links.add(idOf(full));
+          // a link is not followed: in a session's own directory, or as a session's directory, its agents are not known
+          if (classify && session !== null) agentFiles.set(session, null);
+          else if (classify && isSessionDir(e.name, entries)) agentFiles.set(resolve(full), null);
+        } else if (e.isDirectory()) {
+          let inside = session;
+          if (classify && inside === null && isSessionDir(e.name, entries)) { inside = resolve(full); if (!agentFiles.has(inside)) agentFiles.set(inside, new Set()); }
+          stack.push({ d: full, session: inside });
+        } else if (e.name.endsWith('.jsonl')) {
+          if (!e.isFile()) pipes++;
+          else if (classify && session !== null) { part(session, full, e.name); counted++; }
+          else if (classify && SET_ASIDE_NAME.test(e.name)) { setAside.add(idOf(full)); counted++; }
+          else found.push(full);
+        }
+      }
+      for (const b of bad?.links ?? []) {
+        met++; links.add(idOf(Buffer.concat([Buffer.from(d + '/'), b])));
+        if (classify && session !== null) agentFiles.set(session, null);
       }
       for (const b of bad?.report ?? []) {
+        const bytes = Buffer.concat([Buffer.from(d + '/'), b.name]), name = b.name.toString('utf8');
+        if (classify && session !== null) {
+          // in a session's own directory nothing is read, so a name that is not UTF-8 is counted there, not failed
+          if (b.dir) agentFiles.set(session, null);
+          else { part(session, bytes, name); counted++; }
+          continue;
+        }
+        if (classify && !b.dir && SET_ASIDE_NAME.test(name)) { setAside.add(idOf(bytes)); counted++; continue; }   // never read: counted, not failed
         const what = b.dir ? `the directory '${join(d, escapedName(b.name))}'` : `'${join(d, escapedName(b.name))}'`;
-        err(`ltms search: cannot read ${what} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${b.dir ? 'the files under it are' : 'it is'} not searched. Give it a UTF-8 name to search it; ls -b${dashFor([d])} ${q(d)} shows the name.`);
+        err(`ltms ${wk.cmd}: cannot read ${what} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${b.dir ? 'the files under it are' : 'it is'} not ${wk.done}. Give it a UTF-8 name to ${wk.cmd} it; ls -b${dashFor([d])} ${q(d)} shows the name.`);
         failed++; reported++;
       }
     }
-    symlinks += links;
-    if (!found.length && !reported) {
+    if (!found.length && !reported && !counted) {
       const notes = [
-        links ? `${plural(links, 'symbolic link', 'symbolic links')} met there ${links === 1 ? 'was' : 'were'} not followed` : '',
+        met ? `${plural(met, 'symbolic link', 'symbolic links')} met there ${met === 1 ? 'was' : 'were'} not followed` : '',
         pipes ? `${plural(pipes, 'entry', 'entries')} named .jsonl there ${pipes === 1 ? 'is not a regular file, such as a pipe or a socket, and was' : 'are not regular files, such as pipes or sockets, and were'} not read` : '',
       ].filter((x) => x);
-      err(`ltms search: warning: '${p}' holds no .jsonl file at any depth${notes.length ? ` (${notes.join('; ')})` : ''}, so nothing in it is searched. ${TRANSCRIPTS_HINT}`);
+      err(`ltms ${wk.cmd}: warning: '${p}' holds no .jsonl file at any depth${notes.length ? ` (${notes.join('; ')})` : ''}, so nothing in it is ${wk.done}. ${TRANSCRIPTS_HINT}`);
     } else special += pipes;
-    for (const f of found.sort()) all.push({ path: f, named: false });
+    for (const f of found.sort()) all.push({ path: f, named: false, under: p });
   }
-  const seen = new Set<string>(), files: { path: string; named: boolean }[] = [];
+  const seen = new Set<string>(), files: { path: string; named: boolean; under?: string }[] = [];
   for (const f of all) {
     let real: string;
     try { real = realpathSync(f.path); } catch { real = resolve(f.path); }
@@ -1087,21 +1201,26 @@ function walkSearchPaths(paths: string[]): SearchWalk {
     seen.add(real);
     files.push(f);
   }
-  return { files, failed, symlinks, special, again };
+  // a file that is read (a directory under a session's own one given too, or a set-aside copy named) is not also
+  // counted as not read: found = the files read + failed + parts + set aside, with no file in two of them
+  for (const f of files) { const r = idOf(f.path, true); parts.delete(r); setAside.delete(r); }
+  const agents = new Map<string, number | null>();
+  for (const [k, v] of agentFiles) agents.set(k, v === null ? null : v.size);
+  return { files, failed, symlinks: links.size, special, again, parts: parts.size, setAside: setAside.size, pinStores: [...pinStores.values()], agents, listed };
 }
 
 /** A file too large to read within this Node's memory: skipped, with the command that gives Node enough. */
-function tooLargeToSearch(s: SearchSetup, file: string, size: number, limit: number): string {
+function tooLarge(wk: Walker, file: string, size: number, limit: number): string {
   const bytes = (n: number): string => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   const need = Math.ceil((size * SEARCH_HEAP_SHARE) / 2 ** 30) * 1024;
-  return `ltms search: '${file}' is ${bytes(size)} bytes, over the ${bytes(limit)} this Node can search in one file (a tenth of its memory limit: reading it could run out of memory, which would stop the whole search and lose every hit), so it is skipped. To search it, give Node more memory: NODE_OPTIONS=--max-old-space-size=${need} ${searchCommand(s, '', [file])}`;
+  return `ltms ${wk.cmd}: '${file}' is ${bytes(size)} bytes, over the ${bytes(limit)} this Node can ${wk.cmd} in one file (a tenth of its memory limit: reading it could run out of memory, which would stop ${wk.whole} and lose ${wk.lost}), so it is skipped. To ${wk.cmd} it, give Node more memory: NODE_OPTIONS=--max-old-space-size=${need} ${wk.again([file])}`;
 }
 
 /** A file read under the directories given, with the kinds of warning it has of its own. */
 interface WarnedFile { path: string; kinds: string[] }
 /** What the files read under the directories add up to, in the walk's one summary line; null when nothing is worth it.
  *  The files with warnings of their own come last: up to four are named, with the command that shows their warnings. */
-function walkSummary(s: SearchSetup, w: { read: number; journal: number; empty: number; unknown: number; noTurn: number; warned: WarnedFile[] }, walk: SearchWalk): string | null {
+function walkSummary(wk: Walker, w: { read: number; journal: number; empty: number; unknown: number; noTurn: number; warned: WarnedFile[] }, walk: SearchWalk): string | null {
   const parts: string[] = [];
   const kinds = [
     w.journal ? `${w.journal} ${w.journal === 1 ? 'is a workflow journal' : 'are workflow journals'}` : '',
@@ -1110,17 +1229,17 @@ function walkSummary(s: SearchSetup, w: { read: number; journal: number; empty: 
     w.noTurn ? `${w.noTurn} ${w.noTurn === 1 ? 'has' : 'have'} no turn on ${w.noTurn === 1 ? 'its' : 'their'} live path` : '',
   ].filter((x) => x);
   const none = w.journal + w.empty + w.unknown + w.noTurn;
-  if (none) parts.push(`of the ${plural(w.read, 'file', 'files')} read under the directories given, ${listed(kinds)}, so nothing in ${none === 1 ? 'it' : 'them'} is searched (files.notConversation)`);
+  if (none) parts.push(`of the ${plural(w.read, 'file', 'files')} read under the directories given, ${listed(kinds)}, so nothing in ${none === 1 ? 'it' : 'them'} is ${wk.done} (files.notConversation)`);
   if (walk.symlinks) parts.push(`${plural(walk.symlinks, 'symbolic link was', 'symbolic links were')} met under the directories given and not followed (files.symlinks)`);
   if (walk.special) parts.push(`${plural(walk.special, 'entry', 'entries')} named .jsonl under the directories given ${walk.special === 1 ? 'is not a regular file, such as a pipe or a socket, and was' : 'are not regular files, such as pipes or sockets, and were'} not read`);
   if (walk.again) parts.push(`${plural(walk.again, 'directory', 'directories')} met under the directories given ${walk.again === 1 ? 'has' : 'have'} the same device and inode as one already read (a bind mount can do that), so ${walk.again === 1 ? 'it was' : 'they were'} not read again`);
   const n = w.warned.length;
   if (n) {
     const named = w.warned.slice(0, 4).map((x) => `'${x.path}' (${listed(x.kinds)})`), more = n - named.length;
-    parts.push(`${plural(n, 'file', 'files')} read under the directories given ${n === 1 ? 'has' : 'have'} warnings of ${n === 1 ? 'its' : 'their'} own: ${more ? `${named.join(', ')} and ${more} more` : listed(named)}: name ${n === 1 ? 'it' : 'one'} on the command line to see its warnings: ${searchCommand(s, '', [w.warned[0].path])}`);
+    parts.push(`${plural(n, 'file', 'files')} read under the directories given ${n === 1 ? 'has' : 'have'} warnings of ${n === 1 ? 'its' : 'their'} own: ${more ? `${named.join(', ')} and ${more} more` : listed(named)}: name ${n === 1 ? 'it' : 'one'} on the command line to see its warnings: ${wk.again([w.warned[0].path])}`);
   }
   // a line that ends in a command ends without a period, which would be read as part of the last path
-  return parts.length ? `ltms search: warning: ${parts.join('; ')}${n ? '' : '.'}` : null;
+  return parts.length ? `ltms ${wk.cmd}: warning: ${parts.join('; ')}${n ? '' : '.'}` : null;
 }
 
 /** search, with an internal error outside any one file reported by its kind and its place, never its message. */
@@ -1133,7 +1252,7 @@ function searchRun(args: string[]): number {
   const s = readSearchArgs(args);
   if (typeof s === 'number') return s;
   const support = checkSearchSupport();
-  if (!support.ok) { err(`ltms search: this Node cannot run the search: it has no ${support.missing}. skeleton, stats and pin do not need it. Node 20 or newer, built with Intl (as the builds from nodejs.org are), has it.`); return 2; }
+  if (!support.ok) { err(`ltms search: this Node cannot run the search: it has no ${support.missing}. index, skeleton, stats, pin and skill do not need it. Node 20 or newer, built with Intl (as the builds from nodejs.org are), has it.`); return 2; }
   const q = parseSearchQuery(s.query, { mode: s.substring ? 'substring' : 'words', segmenter: support.segmenter ?? 'no-dictionary' });
   if (!q.terms.length) {
     const why = q.dropped.length === 0 ? 'it is empty' : q.dropped.length === 1 ? 'it has no letter or digit' : 'none of its terms has a letter or digit';
@@ -1142,7 +1261,8 @@ function searchRun(args: string[]): number {
   }
   for (const n of searchNotices(q, s)) err(n);
 
-  const walk = walkSearchPaths(s.paths);
+  const wk: Walker = { cmd: 'search', done: 'searched', whole: 'the whole search', lost: 'every hit', again: (paths) => searchCommand(s, '', paths) };
+  const walk = walkPaths(wk, s.paths);
   let failed = walk.failed;
   const limit = Math.floor(getHeapStatistics().heap_size_limit / SEARCH_HEAP_SHARE);
   const sum = { turns: 0, records: 0, notConversation: 0, hitFiles: 0, hitTurns: 0, hitRecords: 0 };
@@ -1163,7 +1283,7 @@ function searchRun(args: string[]): number {
   for (const f of walk.files) {
     let size: number;
     try { size = statSync(f.path).size; } catch (e) { err(cannotRead('search', f.path, e)); failed++; continue; }
-    if (size > limit) { err(tooLargeToSearch(s, f.path, size, limit)); failed++; continue; }
+    if (size > limit) { err(tooLarge(wk, f.path, size, limit)); failed++; continue; }
     let text: string;
     try { text = readFileSync(f.path, 'utf8'); } catch (e) { err(cannotRead('search', f.path, e)); failed++; continue; }
     try {
@@ -1189,11 +1309,11 @@ function searchRun(args: string[]): number {
       failed++;
     }
   }
-  const summary = walkSummary(s, walked, walk);
+  const summary = walkSummary(wk, walked, walk);
   if (summary) err(summary);
 
   // newest first (or oldest), by the latest timestamp; files without one last; ties in the order they were read
-  const time = (l: string | null): number => (l !== null && ISO_TIME.test(l) ? Date.parse(l) : NaN);
+  const time = timeOf;
   held.sort((a, b) => {
     const x = time(a.last), y = time(b.last);
     if (Number.isNaN(x) || Number.isNaN(y)) return Number.isNaN(x) && Number.isNaN(y) ? a.order - b.order : Number.isNaN(x) ? 1 : -1;
@@ -1211,7 +1331,7 @@ function searchRun(args: string[]): number {
       if (passed < skipped) { passed++; continue; }
       if (!fileLine) {
         fileNo++; fileLine = true;
-        lines.push(JSON.stringify({ k: 'file', f: fileNo, p: h.prefix, path: h.path, last: h.last === null ? null : ISO_TIME.test(h.last) ? h.last : WITHHELD }));
+        lines.push(JSON.stringify({ k: 'file', f: fileNo, p: h.prefix, path: h.path, last: isoOrWithheld(h.last) }));
       }
       lines.push(JSON.stringify({ k: 'hit', f: fileNo, ta: turn.ta, ch: turn.ch, at: turn.entries }));
       shown++;
@@ -1252,6 +1372,277 @@ function searchRun(args: string[]): number {
   }
   err(close);
   return failed ? 1 : 0;
+}
+
+// ---- index ------------------------------------------------------------------------------------
+// The paths, as search reads them; below a directory given, a session's own directory, set-aside copies and pin
+// directories are counted and not read (walkPaths, classify). Each file read is reduced to its line by the library's
+// indexTranscript and dropped; the lines are held until the walk ends, then sorted, newest first by the time the
+// session started, and paged as search pages its turns. No line holds a record's text.
+
+const INDEX_HELP = `ltms index <path>...
+
+Lists the sessions of Claude Code transcripts, one line each, newest first:
+when each ran, its turns, calls and failures, and the addresses of its
+prompts, its compaction summaries and its last reply, never their text.
+  ltms index ~/.claude/projects/-home-me-my-app
+A path is a transcript, or a directory: every .jsonl under it, at any depth.
+A project's transcripts are in ~/.claude/projects/, in a folder named after
+the project's directory: its path with every character other than A-Z, a-z
+and 0-9 written as - (/home/me/my.app: ~/.claude/projects/-home-me-my-app).
+A name longer than 200 characters is cut and given a hash: ls
+~/.claude/projects lists the folders. With no path, the message names this
+directory's project folder.
+
+Under a directory given, these are counted and not read:
+  - the .jsonl files in a session's own directory: one named by a UUID, or
+    named as a .jsonl file beside it. Claude Code keeps a session's
+    subagents/, tool-results/, mcp-tasks/ and workflows/ there. To list a
+    session's agent transcripts, give its subagents directory.
+  - set-aside copies of a session: Claude Code's
+    <session>.orphaned-<time>-<suffix>.jsonl, and the copies pin keeps of a
+    rewritten version, <session>.superseded-<12 hex digits>.jsonl.
+  - a directory holding PINS.log, a pin directory, is not entered: give it to
+    list the sessions pinned there.
+A file named is read whatever its name. Every other file read that holds a
+turn gets a line: sessions run with claude -p, the Agent SDK or /loop too,
+which Claude Code's session picker leaves out.
+
+The first line printed is the coverage. Then one line per session, newest
+first by the time it started: at most --max lines (20 unless set), after the
+first --skip. next is the command that prints the next ones. A session
+started between two runs moves the later pages down by one, so a line can
+print twice; one deleted between them moves them up by one, so one can be
+passed over. --max 0 prints every one at once. stderr holds the warnings and
+one closing line with the totals.
+
+--max <n>       the sessions printed (default 20; 0 prints every one)
+--skip <n>      the sessions passed over before printing (default 0): next
+                gives it, to print the ones after those printed
+--oldest        oldest sessions first
+
+Time: every file read is parsed whole, as search reads it, at about the same
+rate (search --help gives the times measured): index one project's folder,
+or give the command a longer timeout.
+
+The coverage line:
+  k             "coverage"
+  files         given: path arguments. found: the files named, the .jsonl
+                files under the directories named (each file once), each
+                path that does not exist, and each directory that could not
+                be read. read: found minus failed, sessionParts and
+                setAside. failed: what could not be read, as reported on
+                stderr. notConversation: files read that hold no turn
+                (empty, a workflow journal, no conversation records, or no
+                turn on the live path). sessionParts: .jsonl files in a
+                session's own directory, not read. setAside: set-aside
+                copies, not read. symlinks: links met under the
+                directories, not followed
+  pinStores     directories holding PINS.log below a directory given, not
+                entered
+  sessions      the files read that hold a turn: one line each
+  shown         skipped: the sessions passed over (--skip); sessions: the
+                lines printed; order: "newest" or "oldest"
+  left          the sessions after the ones printed
+  next          the command that prints the next ones: this one with --skip
+                past those printed, and the same --max; null when none is
+                left
+  ms            the time the run took, in milliseconds
+
+A session line:
+  k             "session"
+  p             the file's address prefix, as skeleton's
+  first, last   its earliest and its latest record timestamp, compared as
+                strings (Claude Code writes them in one format and one time
+                zone); null when it has none; (withheld) when not an ISO 8601
+                time. Undated sessions come last, in both orders
+  turns         its turns, as skeleton counts them
+  calls         its tool calls, as skeleton's call lines
+  failures      the calls that failed (ok false)
+  compactions   one entry per compaction on its live path: boundary, the
+                address of the compact_boundary record; summary, the address
+                of the summary the model carried on from, or null when none
+                follows the boundary before the next turn
+  agents        the agent transcripts (agent-*.jsonl) in its own directory;
+                null when that directory was not under a directory given (a
+                file named), or could not be listed whole
+  firstPrompt   the address of its first turn's prompt
+  lastPrompt    the address of its last turn's prompt
+  lastReply     the address of its last reply: the last assistant record on
+                its live path holding text (search's kind reply); null when
+                none
+  path          its path
+
+An address is <prefix>:L<line>, line 186 of the file is
+  sed -n 186p <path> | cut -c1-2000
+A line can be hundreds of KB: read a window of it.
+
+Exit status: 0 when every file was read, 1 when a file or a directory could
+not be read or was too large, 2 on a usage error.
+`;
+
+interface IndexSetup { paths: string[]; max: number; skip: number; oldest: boolean }
+/** The index command for these settings, with `extra` options and the paths given (or `paths`). */
+function indexCommand(s: IndexSetup, extra: string, paths: string[] = s.paths): string {
+  return `ltms index${s.oldest ? ' --oldest' : ''}${extra}${dashFor(paths)} ${paths.map(shellWord).join(' ')}`.trimEnd();
+}
+
+/** index's arguments, or the exit status of a usage error already reported (or of --help, --version). */
+function readIndexArgs(args: string[]): IndexSetup | number {
+  const usage = (m: string): number => { err(`ltms index: ${m}`); return 2; };
+  const paths: string[] = [];
+  let max = 20, skip = 0, oldest = false, ended = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (!ended && a === '--') { ended = true; continue; }
+    if (ended || !a.startsWith('-')) { paths.push(a); continue; }
+    if (a === '--help' || a === '-h') { out(INDEX_HELP); return 0; }
+    if (a === '--version' || a === '-v') return printVersion();
+    if (a === '-') return usage(`reading from standard input ('-') is not supported. Give the transcripts' folder or files, e.g. ltms index ~/.claude/projects/<project>`);
+    const eq = a.indexOf('='), name = eq < 0 ? a : a.slice(0, eq);
+    if (name === '--max' || name === '--skip') {
+      let v: string;
+      if (eq >= 0) v = a.slice(eq + 1);
+      else if (i + 1 < args.length) v = args[++i];
+      else return usage(name === '--max' ? '--max needs a number after it: the sessions to print (0 prints every one).' : '--skip needs a number after it: the sessions to pass over before printing.');
+      if (!/^\d+$/.test(v)) return usage(name === '--max' ? `--max takes a whole number of sessions to print (0 prints every one); '${v}' is not one.` : `--skip takes a whole number of sessions to pass over before printing; '${v}' is not one.`);
+      if (name === '--max') max = Number(v); else skip = Number(v);
+      continue;
+    }
+    if (a === '--oldest') { oldest = true; continue; }
+    if (name === '--oldest') return usage(`--oldest takes no value; '${a}' gives it one.`);
+    return usage(`unknown option '${a}'. The options are --max <n>, --skip <n> and --oldest; put -- before a path that starts with '-'.`);
+  }
+  if (!paths.length) { err(noPathMessage('index')); return 2; }
+  return { paths, max, skip, oldest };
+}
+
+/** index, with an internal error outside any one file reported by its kind and its place, never its message. */
+function indexMain(args: string[]): number {
+  try { return indexRun(args); }
+  catch (e) { err(`ltms index: stopped with an internal error (${internalError(e)}). This is a bug in ltms; anything printed before it is incomplete.`); return 1; }
+}
+function indexRun(args: string[]): number {
+  const started = Date.now();
+  const s = readIndexArgs(args);
+  if (typeof s === 'number') return s;
+  const wk: Walker = { cmd: 'index', done: 'indexed', whole: 'the whole run', lost: 'every line', again: (paths) => indexCommand(s, '', paths) };
+  const walk = walkPaths(wk, s.paths, true);
+  let failed = walk.failed, notConversation = 0;
+  const limit = Math.floor(getHeapStatistics().heap_size_limit / SEARCH_HEAP_SHARE);
+  const walked = { read: 0, journal: 0, empty: 0, unknown: 0, noTurn: 0, warned: [] as WarnedFile[] };
+  const held: { first: string | null; order: number; line: Record<string, unknown> }[] = [];
+  const iso = isoOrWithheld;
+  for (const f of walk.files) {
+    let size: number;
+    try { size = statSync(f.path).size; } catch (e) { err(cannotRead('index', f.path, e)); failed++; continue; }
+    if (size > limit) { err(tooLarge(wk, f.path, size, limit)); failed++; continue; }
+    let text: string;
+    try { text = readFileSync(f.path, 'utf8'); } catch (e) { err(cannotRead('index', f.path, e)); failed++; continue; }
+    try {
+      const t = parseTranscript(text), prefix = prefixOf(f.path);
+      const x = indexTranscript(t, { prefix });
+      const noTurn = x.turns === 0;
+      if (t.fileKind !== 'transcript' || noTurn) notConversation++;
+      if (f.named) for (const w of fileWarnings('index', f.path, t, noTurn, 0)) err(w);
+      else {
+        walked.read++;
+        if (t.fileKind === 'journal') walked.journal++;
+        else if (t.fileKind === 'empty') walked.empty++;
+        else if (t.fileKind === 'unknown') walked.unknown++;
+        else if (noTurn) walked.noTurn++;
+        const kinds = [t.problems.length ? 'lines that could not be read' : '', t.fileKind === 'transcript' && cycleRecords(t) ? 'records on a parentUuid cycle' : '',
+          t.stats.requestKeyGuessed ? 'responses read from parent links' : ''].filter((k) => k);
+        if (kinds.length) walked.warned.push({ path: f.path, kinds });
+      }
+      if (t.fileKind !== 'transcript' || noTurn) continue;
+      // its own directory: <name without .jsonl>/ beside it; listed by the walk, or known to be absent from a directory
+      // the walk listed; else (a file named) not known
+      const home = dirname(f.path), own = resolve(join(home, basename(f.path).replace(/\.jsonl$/, '')));
+      const agents = walk.agents.has(own) ? walk.agents.get(own)! : walk.listed.has(resolve(home)) ? 0 : null;
+      held.push({ first: x.first, order: held.length, line: {
+        k: 'session', p: prefix, first: iso(x.first), last: iso(x.last), turns: x.turns, calls: x.calls, failures: x.failures,
+        compactions: x.compactions, agents, firstPrompt: x.firstPrompt, lastPrompt: x.lastPrompt, lastReply: x.lastReply, path: f.path,
+      } });
+    } catch (e) {
+      err(`ltms index: '${f.path}': stopped with an internal error (${internalError(e)}), so it has no line. This is a bug in ltms; the other files are processed as usual.`);
+      failed++;
+    }
+  }
+  const summary = walkSummary(wk, walked, walk);
+  if (summary) err(summary);
+  for (const d of walk.pinStores) err(`ltms index: notice: '${d}' holds PINS.log, a pin directory, so it was not entered: the copies there would list sessions again. To list the sessions pinned there, give it: ${indexCommand(s, '', [d])}`);
+
+  // newest first (or oldest) by the time a session started; undated last in both orders; ties in the order read
+  const time = timeOf;
+  held.sort((a, b) => {
+    const x = time(a.first), y = time(b.first);
+    if (Number.isNaN(x) || Number.isNaN(y)) return Number.isNaN(x) && Number.isNaN(y) ? a.order - b.order : Number.isNaN(x) ? 1 : -1;
+    return x === y ? a.order - b.order : s.oldest ? x - y : y - x;
+  });
+  const skipped = Math.min(s.skip, held.length), shown = held.slice(skipped, s.max === 0 ? held.length : skipped + s.max);
+  const left = held.length - skipped - shown.length;
+  const found = walk.files.length + walk.failed + walk.parts + walk.setAside, read = found - failed - walk.parts - walk.setAside;
+  const coverage = {
+    k: 'coverage',
+    files: { given: s.paths.length, found, read, failed, notConversation, sessionParts: walk.parts, setAside: walk.setAside, symlinks: walk.symlinks },
+    pinStores: walk.pinStores.length, sessions: held.length,
+    shown: { skipped, sessions: shown.length, order: s.oldest ? 'oldest' : 'newest' }, left,
+    next: left > 0 ? indexCommand(s, ` --skip ${skipped + shown.length} --max ${s.max}`) : null,
+    ms: Date.now() - started,
+  };
+  out(JSON.stringify(coverage) + '\n');
+  for (let i = 0; i < shown.length; i += 10000) out(shown.slice(i, i + 10000).map((h) => JSON.stringify(h.line) + '\n').join(''));
+
+  const n = held.length, notRead = walk.parts + walk.setAside;
+  let close = `ltms index: ${plural(n, 'session', 'sessions')} in ${plural(found, 'file', 'files')} (${read} read, ${failed} failed${failed ? ', as reported above' : ''}${notRead ? `; ${walk.parts} in sessions' own directories and ${walk.setAside} set aside, not read` : ''}); ${shown.length} shown`;
+  if (n && !shown.length) close += `: --skip ${s.skip} passes over all ${n}`;
+  else {
+    if (skipped) close += ` after the first ${skipped}`;
+    if (left > 0) close += `, ${left} left: --skip ${skipped + shown.length} shows the next ${Math.min(left, s.max)}`;
+  }
+  err(close + '.');
+  return failed ? 1 : 0;
+}
+
+// ---- skill --------------------------------------------------------------------------------------
+// Prints the package's own SKILL.md (skills/ltms/SKILL.md, the Claude Code plugin's layout and the Agent Skills format),
+// and on stderr the command that installs it where Claude Code looks for personal skills. Reads only that file.
+
+/** The command that installs the skill: under $CLAUDE_CONFIG_DIR when it is set, else ~/.claude; npx -y, since without
+ *  it npx writes its install prompt into the file; a temporary file, so a run that fails leaves the old copy whole. */
+function skillInstallLine(): string {
+  const config = claudeConfigDir(), minor = readVersion().split('.').slice(0, 2).join('.');
+  const raw = join(config.path, 'skills', 'ltms'), dir = config.fromEnv ? shellWord(raw) : '~/.claude/skills/ltms';
+  const dash = config.fromEnv && raw.startsWith('-') ? ' --' : '';
+  return `mkdir -p${dash} ${dir} && npx -y long-term-memory-structure@${minor} skill > ${dir}/SKILL.md.tmp && mv${dash} ${dir}/SKILL.md.tmp ${dir}/SKILL.md`;
+}
+const installOrWhy = (): string => { try { return skillInstallLine(); } catch (e) { return `(the version could not be read from package.json: ${(e as NodeJS.ErrnoException)?.code ?? 'an error'}; the line is in the README)`; } };
+const skillHelp = (): string => `ltms skill
+
+Prints the skill that teaches an agent to use ltms: SKILL.md, in the Agent
+Skills format. To install it for Claude Code (and again after upgrading
+ltms, so that it names the fields this version prints):
+  ${installOrWhy()}
+It reads only its own SKILL.md, and package.json for the version; it writes only to
+stdout and stderr.
+
+Exit status: 0 when it printed the skill, 1 when it could not read it, 2 on a
+usage error.
+`;
+function skillMain(args: string[]): number {
+  for (const a of args) {
+    if (a === '--help' || a === '-h') { out(skillHelp()); return 0; }
+    if (a === '--version' || a === '-v') return printVersion();
+    err(`ltms skill: ${a.startsWith('-') ? `unknown option '${a}'` : `unexpected argument '${a}'`}. skill takes no arguments; ltms skill --help says how to install it.`);
+    return 2;
+  }
+  let text: string;
+  try { text = readFileSync(new URL('../skills/ltms/SKILL.md', import.meta.url), 'utf8'); }
+  catch (e) { err(`ltms skill: cannot read the skill file next to this program (skills/ltms/SKILL.md): ${(e as NodeJS.ErrnoException)?.code ?? 'an error'}.`); return 1; }
+  out(text);
+  try { err(`ltms skill: to install it for Claude Code: ${skillInstallLine()}`); } catch { /* the version could not be read: the skill is printed all the same */ }
+  return 0;
 }
 
 // ---- ltms pin ---------------------------------------------------------------------------------------------------
@@ -1709,10 +2100,12 @@ function main(argv: string[]): number | Promise<number> {
   if (cmd === '--help' || cmd === '-h' || cmd === 'help') { out(HELP); return 0; }
   if (cmd === '--version' || cmd === '-v') return printVersion();
   if (cmd === 'search') return searchMain(argv.slice(1));
+  if (cmd === 'index') return indexMain(argv.slice(1));
+  if (cmd === 'skill') return skillMain(argv.slice(1));
   if (cmd === 'pin') return pinMain(argv.slice(1));
   if (cmd !== 'skeleton' && cmd !== 'stats') {
     if (cmd.startsWith('-')) err(`ltms: unknown option '${cmd}'. The options are --help and --version.\n\n${USAGE}`);
-    else err(`ltms: unknown command '${cmd}'. The commands are skeleton, stats, search and pin.\n\n${USAGE}`);
+    else err(`ltms: unknown command '${cmd}'. The commands are index, skeleton, stats, search, pin and skill.\n\n${USAGE}`);
     return 2;
   }
 

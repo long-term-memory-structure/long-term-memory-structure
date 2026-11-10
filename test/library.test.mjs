@@ -812,12 +812,12 @@ test('CompactionJoin: a compactMetadata value of 0 or \'\' is kept as written; o
   assert.deepEqual(d.map((c) => [c.via, c.trigger, c.preTokens, c.postTokens, c.durationMs]), [['detached', '', 0, 0, 0], ['logical-parent', 'auto', 6000, null, null]]); // asserts: CompactionJoin.trigger CompactionJoin.preTokens CompactionJoin.postTokens CompactionJoin.durationMs
 });
 
-test('TranscriptStats.firstTimestamp: an empty-string timestamp is read in file order, as the row says (crafted records)', () => {
-  // the rule in parseTranscript: a first timestamp that is unset OR EMPTY is replaced by the next string; otherwise a
-  // smaller one replaces it. So an empty one replaces anything before it and is replaced by the next string after it.
-  // The last timestamp is the largest string, '' only when every one is '' (nothing is smaller than '').
+test('TranscriptStats.firstTimestamp and lastTimestamp: an empty-string timestamp is read as absent, in any record order (crafted records)', () => {
+  // the rule in parseTranscript: a timestamp that is not a string, or is '', is skipped; of the rest, the smallest and
+  // the largest string. 0.1.2 read '' in file order (it replaced the first timestamp found before it, and was replaced
+  // by the next), so (T1, '') gave ['', T1] and (T1, '', T2) gave [T2, T2].
   const T1 = '2026-08-05T10:00:01.000Z', T2 = '2026-08-05T10:00:02.000Z';
   const stamps = (...ts) => { const s = parseTranscript(jsonl(ts.map((timestamp) => ({ type: 'x', timestamp })))).stats; return [s.firstTimestamp, s.lastTimestamp]; };
-  assert.deepEqual([stamps('', T1), stamps(T1, ''), stamps(T1, '', T2), stamps(''), stamps(T2, T1)],
-    [[T1, T1], ['', T1], [T2, T2], ['', ''], [T1, T2]]); // asserts: TranscriptStats.firstTimestamp TranscriptStats.lastTimestamp
+  assert.deepEqual([stamps('', T1), stamps(T1, ''), stamps(T1, '', T2), stamps(''), stamps(T2, T1), stamps('', T2, T1), stamps(T2, '', T1), stamps('', '')],
+    [[T1, T1], [T1, T1], [T1, T2], [null, null], [T1, T2], [T1, T2], [T1, T2], [null, null]]); // asserts: TranscriptStats.firstTimestamp TranscriptStats.lastTimestamp
 });

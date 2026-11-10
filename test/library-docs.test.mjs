@@ -202,7 +202,7 @@ test('docs/library.md: the count of the symbols "." exports, by module and by ki
   const program = ts.createProgram([dot.file], { noEmit: true, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, types: [] });
   const checker = program.getTypeChecker();
   // each module "." exports from, by the words the doc's sentence calls it
-  const OWNER = { 'parser.d.ts': 'the parser\'s', 'search.d.ts': 'search\'s' };
+  const OWNER = { 'parser.d.ts': 'the parser\'s', 'search.d.ts': 'search\'s', 'session.d.ts': 'the session index\'s' };   // session: 0.2.0
   const by = new Map(Object.keys(OWNER).map((f) => [f, { fn: 0, cn: 0, ty: 0 }]));
   for (const exported of checker.getExportsOfModule(checker.getSymbolAtLocation(program.getSourceFile(dot.file)))) {
     const s = exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported;
@@ -214,10 +214,12 @@ test('docs/library.md: the count of the symbols "." exports, by module and by ki
     else if (s.flags & (ts.SymbolFlags.Interface | ts.SymbolFlags.TypeAlias)) c.ty++;
     else assert.fail(`${exported.name}: a kind of export this test does not count (${ts.SymbolFlags[s.flags] ?? s.flags})`);
   }
-  const n = (k, one, many) => (k === 1 ? `a ${one}` : `${k} ${many}`);
+  // a kind the module has none of is left out (0.2.0: the session index has no constant); the modules listed as a, b and c
+  const n = (k, one, many) => (k === 0 ? '' : k === 1 ? `a ${one}` : `${k} ${many}`);
+  const list = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
   const sum = (c) => c.fn + c.cn + c.ty;
-  const want = `exports ${[...by.values()].reduce((a, c) => a + sum(c), 0)} symbols: ` + [...by].map(([f, c]) =>
-    `${OWNER[f]} ${sum(c)} (${n(c.fn, 'function', 'functions')}, ${n(c.cn, 'constant', 'constants')} and ${n(c.ty, 'type', 'types')})`).join(' and ');
+  const want = `exports ${[...by.values()].reduce((a, c) => a + sum(c), 0)} symbols: ` + list([...by].map(([f, c]) =>
+    `${OWNER[f]} ${sum(c)} (${list([n(c.fn, 'function', 'functions'), n(c.cn, 'constant', 'constants'), n(c.ty, 'type', 'types')].filter((x) => x))})`));
   assert.ok(readFileSync(DOC, 'utf8').includes(want), `docs/library.md does not say "${want}"`);
 });
 

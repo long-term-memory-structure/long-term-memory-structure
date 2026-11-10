@@ -489,9 +489,10 @@ function inside(a: string, b: string, platform: string): boolean {
 }
 /** A path as it was given, and its real path when that is not just the given one made absolute. */
 const shown = (given: string, real: string): string => (resolve(given) === real ? `'${given}'` : `'${given}' (real path '${real}')`);
-/** A path as one word of a command a notice gives: in single quotes, each single quote in it written '\'', as cli.ts
- *  quotes a path in the commands it gives (its `quoted`), so the command runs as printed whatever the path holds. */
-const quoted = (s: string): string => `'${s.replace(/'/g, "'\\''")}'`;
+/** A path as one word of a command a notice gives, by cli.ts's rule for the commands it gives (its `quoted`): in single
+ *  quotes, with every ' and every backslash written outside them, as backslash-quote and backslash-backslash, so the
+ *  command runs as printed in sh, bash, zsh and fish whatever the path holds. */
+const quoted = (s: string): string => `'${s.replace(/['\\]/g, (c) => `'\\${c}'`)}'`;
 /** A rel read from PINS.log is used only when it cannot lead out of the pin. */
 function safeRel(r: unknown, platform: string): r is string {
   return typeof r === 'string' && r.length > 0 && !r.includes('\0') && !isAbsolute(r)

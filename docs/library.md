@@ -2,7 +2,7 @@
 
 `ltms` is built on a parser of Claude Code transcripts, and the package exports that parser as a library: plain functions over a transcript's text that return what the transcript records (its records, the tree their parent links make, the session's live path, its turns, its API requests and its tool calls), and where each record sits in the file. The parser has no dependencies and imports nothing from Node, so it runs unchanged in Node and in a browser. It reads only the string it is given.
 
-The package has two entry points. [`long-term-memory-structure`](#long-term-memory-structure) holds the parser and the exact search that `ltms search` runs: functions over strings, with no Node imports. [`long-term-memory-structure/pin`](#long-term-memory-structurepin) holds the file I/O of `ltms pin`, for Node only: it copies transcripts where Claude Code's cleanup does not reach them, and checks the copies.
+The package has two entry points. [`long-term-memory-structure`](#long-term-memory-structure) holds the parser, the exact search that `ltms search` runs, and the session index that `ltms index` prints: functions over strings, with no Node imports. [`long-term-memory-structure/pin`](#long-term-memory-structurepin) holds the file I/O of `ltms pin`, for Node only: it copies transcripts where Claude Code's cleanup does not reach them, and checks the copies.
 
 The package is ESM. `import` it on Node 20 or newer. `require()` loads it only on a Node that loads ES modules with `require()` by default: 20.19 or newer in Node 20, 22.12 or newer in Node 22, and every version from 23 on. Its type declarations ship with it, in `dist/*.d.ts`, and TypeScript finds those of both entry points under its `node10`, `node16`, `nodenext` and `bundler` module resolutions (`node10` reads `./pin`'s through `typesVersions`; measured with TypeScript 5.7.2).
 
@@ -31,7 +31,7 @@ for (const turn of turnsOf(t, repairedLivePath(t).path)) {
 
 ## `long-term-memory-structure`
 
-The entry point `.` (`dist/index.js`) exports 70 symbols: the parser's 47 (12 functions, a constant and 34 types) and search's 23 (5 functions, 3 constants and 15 types). Below, in four groups: the functions; what they return; the records as Claude Code writes them, which the library returns as they are; and the search.
+The entry point `.` (`dist/index.js`) exports 74 symbols: the parser's 47 (12 functions, a constant and 34 types), search's 23 (5 functions, 3 constants and 15 types) and the session index's 4 (a function and 3 types). Below, in five groups: the functions; what they return; the records as Claude Code writes them, which the library returns as they are; the search; and the session index.
 
 ### The functions
 
@@ -162,8 +162,8 @@ Counts over one file. Except for `lines`, `parsed`, `unparseable` and the two re
 | `branchPoints` | the nodes with more than one child: parallel tool calls, retries, hook records racing a result onto one parent, rarely a rewind | 0 |
 | `inputTurns` | the records that open a turn ([`isInputTurn`](#isinputturnr)), on every branch, not only the live path: every input channel (typed, sdk, input, task, loop, parent and another agent's word), none of the `harness:` ones. A `user` record without the envelope that `isInputTurn` accepts is counted too, though it is in no tree and opens no turn of `turnsOf` | 0 |
 | `toolResultRecords` | the records [`isToolResultRecord`](#istoolresultrecordr) accepts | 0 |
-| `firstTimestamp` | the smallest `timestamp` among the records whose `timestamp` is a string, compared as strings (which orders ISO 8601 times written in one format and one time zone). An empty `timestamp` is read in file order: it replaces the one found before it and is replaced by the next, so the value is the smallest written after the last empty one, or `''` when the last string `timestamp` is empty | `null` when no record has a string `timestamp` |
-| `lastTimestamp` | the largest `timestamp` among the records whose `timestamp` is a string, compared as strings: `''` only when every one of them is empty | `null` when no record has a string `timestamp` |
+| `firstTimestamp` | the smallest `timestamp` among the records whose `timestamp` is a string other than `''`, compared as strings (which orders ISO 8601 times written in one format and one time zone). An empty `timestamp` is read as absent, as a missing one is, so the value does not depend on the order the records were written in | `null` when no record has a string `timestamp` other than `''` |
+| `lastTimestamp` | the largest `timestamp` among the records whose `timestamp` is a string other than `''`, compared as strings | `null` when no record has a string `timestamp` other than `''` |
 | `totalContextLoad` | the sum of every request's `contextLoad`, in tokens | 0 |
 | `totalOutputTokens` | the sum of every request's `outputTokens`, in tokens | 0 |
 | `replayedCopies` | the records with the envelope whose uuid an earlier record already carries: replays, not events | 0 |
@@ -684,7 +684,7 @@ stay whole.
 |---|---|---|
 | `turns` | the matching turns, one [`SearchTurnHit`](#searchturnhit) each, in path order | `[]` |
 | `counts` | the file's [`SearchCounts`](#searchcounts) | never absent |
-| `last` | the file's latest timestamp (`stats.lastTimestamp`: the greatest string `timestamp` of any record but a replay), as the transcript holds it: any string, unchecked | `null` when no record has a string timestamp |
+| `last` | the file's latest timestamp (`stats.lastTimestamp`: the greatest string `timestamp` other than `''` of any record but a replay), as the transcript holds it: any string, unchecked | `null` when no record has a string timestamp other than `''` |
 | `fileKind` | the parser's [`FileKind`](#filekind) | never absent |
 
 #### `SearchTurnHit`
@@ -754,6 +754,41 @@ whatever kinds are searched.
 | `ok` | false when the search cannot run on this runtime; `missing` then says why | never absent |
 | `segmenter` | `icu` when `Intl.Segmenter` splits a known Thai string and a known Chinese string, built from code points, into their known words; else `no-dictionary` | `null` when not `ok` |
 | `missing` | what is missing: `Intl`, `unicode property escapes` or `String.prototype.normalize` | `null` when `ok` |
+
+### The session index
+
+`ltms index` prints one line per session. `indexTranscript` gives the part of that line that comes from the transcript; the prefix, the path and the count of agent transcripts come from the file system, and are the command's. It reads the transcript as `ltms skeleton` does (`turnsOf(t, repairedLivePath(t).path)`), so its turns and tool calls are skeleton's, and each address is a line of the file, as skeleton's are. It returns counts and addresses, and no transcript text but `first` and `last`, the first and latest timestamps as the transcript holds them, unchecked (`ltms index` prints them only when they are ISO 8601 times).
+
+#### `indexTranscript(input, options?)`
+
+`indexTranscript(input: string | Transcript, options?: IndexOptions): TranscriptIndex`. `input` is a transcript's text, which it parses with [`parseTranscript`](#parsetranscripttext-opts), or a [`Transcript`](#transcript) that `parseTranscript` returned. A transcript with no turn gives `turns` 0 and null prompts; its `compactions` and `lastReply` are read from its live path all the same.
+
+#### `TranscriptIndex`
+
+| member | meaning | when absent, null or empty |
+|---|---|---|
+| `first` | [`TranscriptStats.firstTimestamp`](#transcriptstats): the smallest string `timestamp` other than `''`, compared as strings (Claude Code writes them in one format and one time zone), as the transcript holds it, unchecked | `null` when no record has a string `timestamp` other than `''` |
+| `last` | `TranscriptStats.lastTimestamp`: the largest, by the same rule | `null` when no record has a string `timestamp` other than `''` |
+| `turns` | the turns of the live path, `turnsOf(t, repairedLivePath(t).path)`: `ltms skeleton`'s turn lines | 0 |
+| `calls` | the tool calls of those turns: skeleton's call lines | 0 |
+| `failures` | the calls whose result was recorded and is an error: skeleton's call lines with `ok` false | 0 |
+| `compactions` | one [`TranscriptCompaction`](#transcriptcompaction) per `system` record with subtype `compact_boundary` on the repaired live path, joined or not, in path order | `[]` |
+| `firstPrompt` | the address of the first turn's prompt (skeleton's first turn line's `a`) | `null` when there is no turn |
+| `lastPrompt` | the address of the last turn's prompt | `null` when there is no turn |
+| `lastReply` | the address of the last assistant record on the live path that holds reply text, by the search's rule for the kind `reply`: a text block whose `text` is a non-empty string, in a record whose `isApiErrorMessage` is not `true` | `null` when no record on the live path holds reply text |
+
+#### `TranscriptCompaction`
+
+| member | meaning | when absent, null or empty |
+|---|---|---|
+| `boundary` | the address of the `compact_boundary` record | never absent |
+| `summary` | the address of the first record after the boundary on the live path, before the next turn's prompt and the next boundary, whose `isCompactSummary` is `true`: the summary the model carried on from | `null` when no such record follows the boundary there |
+
+#### `IndexOptions`
+
+| member | meaning | when absent, null or empty |
+|---|---|---|
+| `prefix` | the address prefix (`ltms` passes the file name's first 8 characters, or `agent-` and 8) | absent or empty: addresses are `L<n>` |
 
 ## `long-term-memory-structure/pin`
 
@@ -1023,5 +1058,5 @@ How far a pin is behind its sources: what a pin that has silently stopped looks 
 - **The records, with the transcript's text in them.** Every record is the object `JSON.parse` made of its line: prompts, replies, thinking, tool inputs and results, attachments and compaction summaries are all in `records`, and in what is built from them (`TreeNode.record`, `ToolCall.input`, `wireInput`, `resultBlock` and `toolUseResult`, `ApiRequest.blocks`).
 - **`LineProblem.sample` and `LineProblem.message` can hold a line's text.** The sample is the line's first 120 characters, by design; the message is `JSON.parse`'s, which quotes part of the line for some errors.
 - **The census keys and the ids are the file's own strings.** The keys of `stats.byToolName`, `byType` and the other census maps, `ApiRequest.requestId`, `spillFileHint`, `sessionIds` and `agentIds` are copied from the file, and a crafted or damaged file can put any text there.
-- **`ltms`'s output rule is the command's.** What `ltms` prints holds no prompt, reply, tool input or tool output; its labels pass the label rule; an internal error is reported by its kind and place, never its message. All of that is done in `src/cli.ts`, on what the library returns; none of it applies to what the parser's functions return. The search is the exception: it applies the label rule itself (a copy of `src/cli.ts`'s) to the two values a hit takes from the transcript, the channel and the keys of a field's path, so its results hold no transcript text but those, the query's own terms, and `last`, the file's latest timestamp as the transcript holds it, unchecked ([Search](#search)). Pin's results hold paths, sizes, hashes and times, never a transcript's text; the copies it writes are the transcripts themselves.
-- **What each entry point reads.** `long-term-memory-structure` (the parser and the search) reads only the string it is given, or the `Transcript` made of it: it opens no file, makes no network connection, has no dependencies and imports nothing from Node. `long-term-memory-structure/pin` reads and writes files, through `node:fs`, `node:crypto`, `node:path` and `node:os`, and makes no network connection either.
+- **`ltms`'s output rule is the command's.** What `ltms` prints holds no prompt, reply, tool input or tool output; its labels pass the label rule; an internal error is reported by its kind and place, never its message. All of that is done in `src/cli.ts`, on what the library returns; none of it applies to what the parser's functions return. The search is the exception: it applies the label rule itself (a copy of `src/cli.ts`'s) to the two values a hit takes from the transcript, the channel and the keys of a field's path, so its results hold no transcript text but those, the query's own terms, and `last`, the file's latest timestamp as the transcript holds it, unchecked ([Search](#search)). The session index holds counts and addresses, and no transcript text but `first` and `last`, the timestamps as the transcript holds them, unchecked ([The session index](#the-session-index)). Pin's results hold paths, sizes, hashes and times, never a transcript's text; the copies it writes are the transcripts themselves.
+- **What each entry point reads.** `long-term-memory-structure` (the parser, the search and the session index) reads only the string it is given, or the `Transcript` made of it: it opens no file, makes no network connection, has no dependencies and imports nothing from Node. `long-term-memory-structure/pin` reads and writes files, through `node:fs`, `node:crypto`, `node:path` and `node:os`, and makes no network connection either.

@@ -747,8 +747,9 @@ test('a reader that closes the pipe early: exit 0, nothing on stderr', async () 
 
 test('usage errors: exit 2, nothing on stdout, the message names the input and the fix', () => {
   const cases = [
-    { args: [], message: /^ltms: no command given\.\n\nUsage:\n {2}ltms skeleton <file\.jsonl>/ },
-    { args: ['skelton', DEMO], message: /unknown command 'skelton'\. The commands are skeleton, stats, search and pin/ },
+    // 0.2.0: index heads the usage (the entry point for an agent orienting itself), and skill is a command
+    { args: [], message: /^ltms: no command given\.\n\nUsage:\n {2}ltms index <path>\.\.\. {12}one JSON line per session, newest first\n {2}ltms skeleton <file\.jsonl>/ },
+    { args: ['skelton', DEMO], message: /unknown command 'skelton'\. The commands are index, skeleton, stats, search, pin and skill/ },
     { args: ['--frobnicate'], message: /unknown option '--frobnicate'\. The options are --help and --version/ },
     { args: ['stats'], message: /ltms stats: no input files\. Pass one or more transcripts, e\.g\. ltms stats ~\/\.claude/ },
     { args: ['stats', '--summary', DEMO], message: /ltms stats: unknown option '--summary'.*put -- before a file name/ },
@@ -797,8 +798,15 @@ test('README: its example lines are what the commands print, and it describes ev
   // search's three line shapes are checked against search's own output in test/search.test.mjs
   const examples = readme.split('\n').filter((l) => (l.startsWith('{"k":') || l.startsWith('{"session":')) && !/^\{"k":"(?:coverage","query"|file"|hit")/.test(l));
   assert.ok(examples.length >= 7, `only ${examples.length} example lines found`);
-  const printed = new Set(nonEmpty(run('skeleton', DEMO).out + run('stats', DEMO).out));
+  // 0.2.0: index's example, run as the README shows it (two fixtures by their paths from the repository's root), its
+  // coverage line's time made the README's
+  const ix = spawnSync(process.execPath, [CLI, 'index', 'test/fixtures/compacted.jsonl', 'test/fixtures/demo.jsonl'], { encoding: 'utf8', timeout: 20000, cwd: root });
+  assert.equal(ix.status, 0, ix.stderr);
+  const readmeMs = /^\{"k":"coverage","files".*"ms":(\d+)\}$/m.exec(readme)?.[1];
+  assert.ok(readmeMs, "the README has no example of index's coverage line");
+  const printed = new Set(nonEmpty(run('skeleton', DEMO).out + run('stats', DEMO).out + ix.stdout.replace(/"ms":\d+\}/, `"ms":${readmeMs}}`)));
   for (const l of examples) assert.ok(printed.has(l), `the README shows a line the commands do not print: ${l}`);
+  for (const l of nonEmpty(ix.stdout)) assert.ok(examples.includes(l.replace(/"ms":\d+\}/, `"ms":${readmeMs}}`)), `the README's index example lacks a line index prints: ${l}`);
   // each command's fields have their rows in that command's own section (search's tables name k, a, ta, ch and turns too)
   const section = (heading) => {
     const start = readme.indexOf(heading);
@@ -811,6 +819,12 @@ test('README: its example lines are what the commands print, and it describes ev
     const text = section(heading);
     for (const k of keys) assert.match(text, new RegExp(`^\\| \`${k}\` \\|`, 'm'), `the README's section ${heading}... does not describe '${k}'`);
   }
+  // 0.2.0: index's section names every key its lines hold, nested ones included (its --help has the whole table)
+  const indexKeys = new Set();
+  const keysOf = (o) => { if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) { if (!Array.isArray(o)) indexKeys.add(k); keysOf(v); } };
+  for (const o of parsed(ix.stdout)) keysOf(o);
+  const indexText = section('### `ltms index');
+  for (const k of indexKeys) assert.ok(indexText.includes(`\`${k}\``), `the README's section on index does not name '${k}'`);
 });
 
 test('the package: a shebang, no runtime dependencies, nothing imported but node: built-ins', () => {
@@ -819,10 +833,11 @@ test('the package: a shebang, no runtime dependencies, nothing imported but node
   assert.equal(pkg.bin.ltms, 'dist/cli.js');
   assert.equal(pkg.bin['long-term-memory-structure'], 'dist/cli.js');
   assert.ok(readFileSync(CLI, 'utf8').startsWith('#!/usr/bin/env node\n'));
-  for (const f of ['cli.js', 'parser.js', 'search.js', 'pin.js']) {
+  // 0.2.0: session.js (indexTranscript, ltms index's line) joins the modules
+  for (const f of ['cli.js', 'parser.js', 'search.js', 'session.js', 'pin.js']) {
     const src = readFileSync(join(dirname(CLI), f), 'utf8');
     const specifiers = [...src.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
-    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './pin.js', `${f} imports '${s}'`);
+    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js', `${f} imports '${s}'`);
     assert.doesNotMatch(src, /\brequire\s*\(|\bimport\s*\(|\bfetch\s*\(|node:(?:https?|net|dgram|tls|http2|child_process)\b/, f);
   }
 });

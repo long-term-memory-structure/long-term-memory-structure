@@ -1288,33 +1288,50 @@ test('command: every string an output line carries is a fixed word, a label, an 
 });
 
 const HELP_005 = read('help-0.0.5.txt');   // `ltms --help` as 0.0.5 printed it (its build, run once; 9,026 bytes)
-test("help: ltms --help is 0.0.5's, with search's and pin's usage lines and paragraphs more (each pointing to its own --help, the two together after the stats fields), pin's two sentences (DESIGN 4.5) with search's walk in the one on reading, and nothing else changed", () => {
+test("help: ltms --help is 0.0.5's, with search's, index's, pin's and skill's usage lines and paragraphs more (each pointing to its own --help, after the stats fields in that order), pin's two sentences (DESIGN 4.5), the sentence on reading with search's and index's walks, the index named apart from skeleton (0.2.0), and nothing else changed", () => {
   const h = ltms(['--help']).out;
   const usageLine = '  ltms search <query> <path>...   the turns that hold every word of the query\n';
   const start = h.indexOf('search finds the turns'), stop = h.indexOf('\n\n', start) + 2;
   assert.ok(start > 0 && h.includes(usageLine));
   const paragraph = h.slice(start, stop);
   assert.match(paragraph.replace(/\s+/g, ' '), /ltms search --help gives its whole part/);
+  // 0.2.0: index's usage line and paragraph, right after search's
+  const indexUsageLine = '  ltms index <path>...            one JSON line per session, newest first\n';
+  const indexStart = h.indexOf('index lists the sessions in the transcripts named'), indexStop = h.indexOf('\n\n', indexStart) + 2;
+  assert.ok(indexStart > 0 && h.includes(indexUsageLine));
+  const indexParagraph = h.slice(indexStart, indexStop);
+  assert.match(indexParagraph.replace(/\s+/g, ' '), /ltms index --help gives its whole part/);
   // the merge: pin's usage line and paragraph, and the two sentences pin changed (as printed now, and as 0.0.5 printed them)
   const pinUsageLine = '  ltms pin <path>... --to <dir>   copies the cleanup does not delete, and a log\n';
   const pinStart = h.indexOf('pin keeps copies of the transcripts'), pinStop = h.indexOf('\n\n', pinStart) + 2;
   assert.ok(pinStart > 0 && h.includes(pinUsageLine));
   const pinParagraph = h.slice(pinStart, pinStop);
   assert.match(pinParagraph.replace(/\s+/g, ' '), /ltms pin --help has its forms and output/);
-  const appends = ['Claude Code appends to it (it can rewrite one only in rare cases, and pin\nkeeps both versions). ltms prints an index of the transcript,\n',
-    'Claude Code only appends to it. ltms prints an index of the transcript,\n'];
-  // the repair round (merge 1): the sentence on reading names search's walk too
-  const reads = ['ltms reads only the files it is given (search: also every .jsonl file under\nthe directories it is given; pin: the files under the paths it is given),\nwrites only to stdout and stderr, except pin, which writes only into its --to\ndirectory, and uses no network.\n',
+  // 0.2.0: skill's usage line and paragraph, right after pin's
+  const skillUsageLine = '  ltms skill                      the skill that teaches an agent to use ltms\n';
+  const skillStart = h.indexOf('skill prints SKILL.md'), skillStop = h.indexOf('\n\n', skillStart) + 2;
+  assert.ok(skillStart > 0 && h.includes(skillUsageLine));
+  const skillParagraph = h.slice(skillStart, skillStop);
+  assert.match(skillParagraph.replace(/\s+/g, ' '), /ltms skill --help says how to install it/);
+  // 0.2.0: the index is index's list of sessions; the per-turn lines are skeleton's (the sentence as printed now, and
+  // as 0.0.5 printed it)
+  const appends = ['Claude Code appends to it (it can rewrite one only in rare cases, and pin\nkeeps both versions). ltms index lists the sessions, one line each, and\nltms skeleton prints one line per turn and per tool call of a session, each\nwith the line of the file where it is written, so what compaction took out of\nthe context can be found and read again (for line 22: sed -n 22p <file>).\n',
+    'Claude Code only appends to it. ltms prints an index of the transcript,\none line per turn and per tool call, each with the line of the file where it\nis written, so what compaction took out of the context can be found and read\nagain (for line 22: sed -n 22p <file>).\n'];
+  // the repair round (merge 1), then 0.2.0: the sentence on reading names search's and index's walks, and skill's file
+  const reads = ["ltms reads only the files it is given (search and index: also the .jsonl\nfiles under the directories they are given, index not those in a session's\nown directory, set-aside copies or pin directories; pin: the files under the\npaths it is given; skill: its own SKILL.md and package.json), writes only to\nstdout and stderr, except pin, which writes only into its --to directory, and\nuses no network.\n",
     'ltms reads only the files it is given, writes only to stdout and stderr,\nand uses no network.\n'];
   assert.ok(h.includes(appends[0]) && h.includes(reads[0]));
-  // the repair round (merge 11): search's paragraph right after the stats fields, pin's right after it
+  // the repair round (merge 11), then 0.2.0: search's paragraph right after the stats fields, then index's, pin's and skill's
   assert.ok(h.slice(0, start).endsWith('  hopsOver2     chains of more than 2 hops\n\n'), "search's paragraph does not follow the stats fields");
-  assert.equal(pinStart, stop, "pin's paragraph does not follow search's");
-  assert.equal(h.replace(usageLine, '').replace(paragraph, '').replace(pinUsageLine, '').replace(pinParagraph, '').replace(...appends).replace(...reads), HELP_005);
+  assert.deepEqual([indexStart, pinStart, skillStart], [stop, indexStop, pinStop], 'the paragraphs are not search, index, pin and skill, in that order');
+  assert.equal(h.replace(usageLine, '').replace(indexUsageLine, '').replace(skillUsageLine, '').replace(paragraph, '').replace(indexParagraph, '')
+    .replace(pinUsageLine, '').replace(pinParagraph, '').replace(skillParagraph, '').replace(...appends).replace(...reads)
+    // 0.2.0: index tells files with one prefix apart by their path, so the sentence names skeleton and stats
+    .replace('that get the same prefix cannot be told apart in one run of skeleton or stats\n(a warning names them): give them to separate runs.\n', 'that get the same prefix cannot be told apart in one run (a warning names\nthem): give them to separate runs.\n'), HELP_005);
   for (const args of [['skeleton', '--help'], ['stats', '-h'], ['help']]) assert.equal(ltms(args).out, h, args.join(' '));
-  // the usage errors print the usage with search and pin in it
-  assert.ok(ltms([]).err.includes(usageLine) && ltms([]).err.includes(pinUsageLine));
-  assert.match(ltms(['skelton']).err, /^ltms: unknown command 'skelton'\. The commands are skeleton, stats, search and pin\.\n/);
+  // the usage errors print the usage with every command in it
+  for (const l of [usageLine, indexUsageLine, pinUsageLine, skillUsageLine]) assert.ok(ltms([]).err.includes(l), l);
+  assert.match(ltms(['skelton']).err, /^ltms: unknown command 'skelton'\. The commands are index, skeleton, stats, search, pin and skill\.\n/);
 });
 
 /** The keys search prints, read from its output: the top-level keys of each kind of line, and the nested ones. */
@@ -1440,7 +1457,7 @@ test('command: with a Segmenter without dictionaries (taken away here), notices 
     r = ltms(['search', th, fixture(SC)], { node: ['-r', noSeg] });
     assert.deepEqual(r.err.split('\n').filter((l) => l.includes('notice')), [`ltms search: notice: '${th}' is in the Thai script, written without spaces between words: this Node's Intl.Segmenter has no dictionary for them, so a run of such text is read as one word, and only a whole run is found. To find it inside any run of text: ltms search --substring '${th}' ${sh(fixture(SC))}`]);
     r = ltms(['search', 'zqkfind', fixture(SC)], { node: ['-r', noIntl] });
-    assert.deepEqual([r.code, r.out, r.err], [2, '', 'ltms search: this Node cannot run the search: it has no Intl. skeleton, stats and pin do not need it. Node 20 or newer, built with Intl (as the builds from nodejs.org are), has it.\n']);
+    assert.deepEqual([r.code, r.out, r.err], [2, '', 'ltms search: this Node cannot run the search: it has no Intl. index, skeleton, stats, pin and skill do not need it. Node 20 or newer, built with Intl (as the builds from nodejs.org are), has it.\n']);
     assert.equal(ltms(['search', '--help'], { node: ['-r', noIntl] }).code, 0);
     assert.equal(ltms(['stats', fixture('demo.jsonl')], { node: ['-r', noIntl] }).code, 0);
   } finally { rm(dir); }
@@ -1564,13 +1581,13 @@ test('command: an internal error inside search is reported by its kind and its p
   } finally { rm(dir); }
 });
 
-test('source: cli.ts holds ASCII only and no typed backslash-u escape, and imports nothing but node: built-ins, the parser, search and pin', () => {
+test('source: cli.ts holds ASCII only and no typed backslash-u escape, and imports nothing but node: built-ins, the parser, search, session (0.2.0) and pin', () => {
   const src = readFileSync(join(root, 'src', 'cli.ts'), 'utf8');
   assert.ok(!/[^\x00-\x7f]/.test(src), 'a character outside ASCII in src/cli.ts');
   assert.ok(!src.includes(BSL + 'u'), 'a typed backslash-u in src/cli.ts');
   for (const text of [src, readFileSync(CLI, 'utf8')]) {
     const specifiers = [...text.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
-    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './pin.js', s);
+    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js', s);
     assert.ok(specifiers.includes('./search.js'));
   }
 });
@@ -2087,13 +2104,13 @@ test('command: --skip passes over the first matching turns; shown.skipped counts
   } finally { rm(dir); }
 });
 
-test('command: no Intl: the message says that skeleton, stats and pin do not need it, and pin runs [merge 9]', () => {
+test('command: no Intl: the message says that index, skeleton, stats, pin and skill do not need it (0.2.0), and pin runs [merge 9]', () => {
   const dir = tmp();
   try {
     const noIntl = join(dir, 'no-intl.cjs');
     writeFileSync(noIntl, 'delete globalThis.Intl;\n');
     const r = ltms(['search', 'zqkfind', fixture(SC)], { node: ['-r', noIntl] });
-    assert.deepEqual([r.code, r.out, r.err], [2, '', 'ltms search: this Node cannot run the search: it has no Intl. skeleton, stats and pin do not need it. Node 20 or newer, built with Intl (as the builds from nodejs.org are), has it.\n']);
+    assert.deepEqual([r.code, r.out, r.err], [2, '', 'ltms search: this Node cannot run the search: it has no Intl. index, skeleton, stats, pin and skill do not need it. Node 20 or newer, built with Intl (as the builds from nodejs.org are), has it.\n']);
     // pin, with no Intl: a pin of one project, then its check
     const root = join(dir, 'projects'), to = join(dir, 'pins');
     mkdirSync(join(root, 'p'), { recursive: true });

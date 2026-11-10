@@ -5,9 +5,9 @@ When a Claude Code session fills its context window, or on `/compact`, Claude Co
 
 What compaction writes, and what each model keeps through it, measured: [Claude Code's compaction doesn't delete your history. It re-roots it.](https://long-term-memory-structure.github.io/long-term-memory-structure/compaction.html)
 
-Long-Term Memory Structure reads that transcript, across its compactions, and prints an index of it without its content: one JSON line per turn and per tool call. A turn's line gives the address of its prompt, the line of the file where it is written. A tool call's line gives the addresses of the call and of its result, and hashes of what went in and what came out. On the 2,539 transcripts it was tested on (3.35 GB), the index came to 0.7 % of their size, so it fits in a context window where the transcript does not, and every address leads back to the line to read.
+Long-Term Memory Structure reads that transcript, across its compactions, and prints an index of it without its content: `ltms skeleton` gives one JSON line per turn and per tool call. A turn's line gives the address of its prompt, the line of the file where it is written. A tool call's line gives the addresses of the call and of its result, and hashes of what went in and what came out. On the 2,539 transcripts it was tested on (3.35 GB), that index came to 0.7 % of their size, so it fits in a context window where the transcript does not, and every address leads back to the line to read.
 
-Three more commands. `ltms search` finds the turns that hold every word of a query, and prints their addresses. `ltms stats` counts each transcript's turns, calls and failures. `ltms pin` keeps copies of the transcripts outside Claude Code's config directory, where its cleanup does not delete them, so the addresses still lead somewhere after it; its log is only appended to, and each line after the first holds the sha256 of the line before it. ltms reads local files only, makes no network connections and has no runtime dependencies.
+Five more commands. `ltms index` lists a project's sessions, one line each, newest first: when each ran, its turns, calls and failures, and the addresses of its prompts, its compaction summaries and its last reply. `ltms search` finds the turns that hold every word of a query, and prints their addresses. `ltms stats` counts each transcript's turns, calls and failures. `ltms pin` keeps copies of the transcripts outside Claude Code's config directory, where its cleanup does not delete them, so the addresses still lead somewhere after it; its log is only appended to, and each line after the first holds the sha256 of the line before it. `ltms skill` prints a skill, a SKILL.md, that teaches an agent to use them. ltms reads local files only, makes no network connections and has no runtime dependencies.
 
 Long-Term Memory Structure is an independent project. It is not affiliated with or endorsed by Anthropic.
 
@@ -21,12 +21,12 @@ The objective of this tool is to provide support, a dependency sub-system of the
 - It does not include an identity (disposition) layer. Bring your own: ltms indexes the record, not the self.
 - It is orthogonal to a shared brain in any configuration (a swarm, a company brain). Whatever a shared brain is, it reaches this record only as what the agent read from it, and nothing in this record reaches it except what the agent chose to send.
 
-**The objectives of the design as a whole, and what each one costs** (this package is its first piece, the index of a transcript):
+**The objectives of the design as a whole, and what each one costs** (this package is its first piece: the indexes of a transcript and of a project's sessions):
 
 1. **Monotonically rising, append-only, heal by addition ⟹ data structure L0.**
    *Costs:* the store only grows. A mistake is corrected by a new record, never erased, so it stays visible beside its correction. Anything sensitive that was written stays written.
 2. **Preserve structure and sequence ⟹ the compaction JSONL: walk the tree backwards.**
-   *Costs:* the index depends on the harness's transcript format, which changes between versions. It carries one path through the tree, the one the session ended on, in its order, not a bag of facts.
+   *Costs:* the indexes depend on the harness's transcript format, which changes between versions. It carries one path through the tree, the one the session ended on, in its order, not a bag of facts.
 3. **Cryptographically verifiable and recomputable ⟹ Merkle root hashes, etc.**
    *Costs:* the bytes are kept exactly as written, with no reformatting and no lossy compression. A correction is a new record, never an edit.
 4. **Automatic write sequence, independent of the model.**
@@ -49,7 +49,7 @@ The objective of this tool is to provide support, a dependency sub-system of the
 
 A context window keeps nothing between sessions, and every call reads all of it again, so an agent pays again and again for everything it carries, and models do worse as it grows: context rot (Hong et al. 2025). This project is built around that budget: memory for one long-lived agent, with a small fixed cost in every session (an index of about 9,000 tokens, read from cache) and as little as possible per question: a surgical search, through a language server or a syntax tree, that reads one address (a line of a transcript, a symbol) rather than whole files.
 
-One popular approach is a shared "company brain" for a swarm of agents. This is something else: persistence for a single agent. The design and its measurements are in the report *Durable Memory on a Fixed Context Budget* (Ben Yanai 2026). This package is the first piece released: the index of a transcript.
+One popular approach is a shared "company brain" for a swarm of agents. This is something else: persistence for a single agent. The design and its measurements are in the report *Durable Memory on a Fixed Context Budget* (Ben Yanai 2026). This package is the first piece released: the indexes of a transcript and of a project's sessions.
 
 ## Install
 
@@ -59,11 +59,20 @@ Needs Node.js 20 or newer. No dependencies.
 npx long-term-memory-structure stats ~/.claude/projects/<project>/<session>.jsonl
 ```
 
-Or install it once: `npm install -g long-term-memory-structure`, which gives the command `ltms`. Without installing, write `npx long-term-memory-structure` where this page says `ltms`.
+Or install it once: `npm install -g long-term-memory-structure`, which gives the command `ltms`. Without installing, write `npx long-term-memory-structure` where this page says `ltms`. npx asks the npm registry about the package on every run; an installed `ltms` runs without the network.
+
+To give your agent the skill that teaches it these commands (Claude Code reads personal skills from `~/.claude/skills/`; after upgrading, run the line that `ltms skill --help` prints, which names the installed version, so that the skill names the fields that version prints):
+
+```sh
+mkdir -p ~/.claude/skills/ltms && npx -y long-term-memory-structure@0.2 skill > ~/.claude/skills/ltms/SKILL.md.tmp && mv ~/.claude/skills/ltms/SKILL.md.tmp ~/.claude/skills/ltms/SKILL.md
+```
+
+Keep the `-y`: without it, npx asks before installing the package, and its question would be written into the file. `ltms skill --help` gives the line for a `CLAUDE_CONFIG_DIR` of your own.
 
 `<project>` is your project's directory path with every character other than an ASCII letter or digit written as `-` (`/home/me/my.app` becomes `~/.claude/projects/-home-me-my-app/`); Claude Code cuts a name longer than 200 characters there and adds a hash, so for a very long path find the folder with `ls ~/.claude/projects/`. The newest `.jsonl` there is the latest session, and a subagent's transcript is in `<session>/subagents/`. A first look, then reading one line back:
 
 ```sh
+npx long-term-memory-structure index ~/.claude/projects/-home-me-my-app    # the sessions, newest first
 f=$(ls -t ~/.claude/projects/-home-me-my-app/*.jsonl | head -1)
 npx long-term-memory-structure skeleton "$f" | grep '"ok":false'
 sed -n 22p "$f"    # the line an address names, here <prefix>:L22
@@ -71,9 +80,28 @@ sed -n 22p "$f"    # the line an address names, here <prefix>:L22
 
 ## Commands
 
+### `ltms index <path>...`
+
+One JSON line per session, newest first by the time it started: when it ran, its turns, calls and failures, and the addresses of its prompts, of its compaction summaries and of its last reply. It is where to start in a project's history: on a demo project of 31 sessions, a line came to about 340 bytes and the default page of 20 to 6,785 bytes. Two of the test transcripts, named on the command line:
+
+```
+{"k":"coverage","files":{"given":2,"found":2,"read":2,"failed":0,"notConversation":0,"sessionParts":0,"setAside":0,"symlinks":0},"pinStores":0,"sessions":2,"shown":{"skipped":0,"sessions":2,"order":"newest"},"left":0,"next":null,"ms":3}
+{"k":"session","p":"compacte","first":"2026-08-01T10:00:02.000Z","last":"2026-08-01T12:00:01.000Z","turns":2,"calls":4,"failures":0,"compactions":[{"boundary":"compacte:L9","summary":"compacte:L10"}],"agents":null,"firstPrompt":"compacte:L1","lastPrompt":"compacte:L11","lastReply":"compacte:L14","path":"test/fixtures/compacted.jsonl"}
+{"k":"session","p":"demo.jso","first":"2026-01-05T09:00:00.000Z","last":"2026-01-05T09:03:05.000Z","turns":4,"calls":12,"failures":5,"compactions":[],"agents":null,"firstPrompt":"demo.jso:L2","lastPrompt":"demo.jso:L33","lastReply":"demo.jso:L36","path":"test/fixtures/demo.jsonl"}
+```
+
+- `compactions`: for each compaction on the session's live path, the address of its `boundary` and of the `summary` the model carried on from (`null` when none follows). The summary says what the session had done until then; the lines before the boundary hold what it left out.
+- `agents`: the agent transcripts in the session's own directory. Here it is `null`, because the files were named on the command line: their sessions' directories were not given.
+- `p` is the address prefix, as skeleton's; `first` and `last` the session's earliest and latest timestamps, compared as strings, as Claude Code writes them; `turns`, `calls` and `failures` are `ltms stats`'s; `firstPrompt` and `lastPrompt` the addresses of its first and last turn's prompts; `lastReply` the address of the last assistant record with text, by search's rule for a reply; `path` the file.
+- Each line's `k` says what it is: the coverage line, first, then one `session` line each. The coverage line: of the `files` given and found, those read, `failed`, `notConversation` (read, with no turn), and those counted and not read (`sessionParts`, `setAside`), with the `symlinks` met; the `pinStores` not entered; the `sessions` listed, those `shown` (`skipped`, `sessions`, `order`), those `left`, the `next` command, and the `ms` it took. Its `given`, `found` and `read` are counted as search counts them, outside the pin directories not entered: `read` is `found` less `failed`, `sessionParts` and `setAside`.
+
+Under a directory given, these are counted and not read: the `.jsonl` files in a session's own directory (a directory named by a UUID, or named as a `.jsonl` file beside it, where Claude Code keeps a session's `subagents/`, `tool-results/`, `mcp-tasks/` and `workflows/`); set-aside copies of a session (Claude Code's `<session>.orphaned-<time>-<suffix>.jsonl`, and pin's `<session>.superseded-<12 hex digits>.jsonl`); and a pin directory, one that holds `PINS.log`, which is not entered, and whose files are neither read nor counted (give it to list the sessions pinned there). To list a session's agent transcripts, give its `subagents` directory. Every other file read that holds a turn gets a line, including sessions run with `claude -p`, the Agent SDK or `/loop`, which Claude Code's session picker leaves out.
+
+`--max <n>` (20 by default; 0 prints every one), `--skip <n>` and `--oldest` page the sessions as search pages its turns, and the coverage line's `next` is the command that prints the next page. A session started between two runs moves the later pages down by one, so a line can print twice; one deleted between them (Claude Code's cleanup deletes the oldest first) moves them up by one, so a session can be passed over. index parses every file it reads, as search does: on this machine, 31 demo sessions (17.9 MB) took 0.37 s, and a project folder of 385 sessions, with 2,849 files of their own directories counted and not read, took 39 s. `ltms index --help` describes every field.
+
 ### `ltms skeleton <file.jsonl>...`
 
-One JSON line per turn and per tool call. A turn starts at a prompt; its tool calls follow it in order. This is one turn of the synthetic test transcript [`test/fixtures/demo.jsonl`](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.1.2/test/fixtures/demo.jsonl): a hook blocks a command, the tests fail twice, a fix is made, the tests pass.
+One JSON line per turn and per tool call. A turn starts at a prompt; its tool calls follow it in order. This is one turn of the synthetic test transcript [`test/fixtures/demo.jsonl`](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.0/test/fixtures/demo.jsonl): a hook blocks a command, the tests fail twice, a fix is made, the tests pass.
 
 ```
 {"k":"turn","a":"demo.jso:L20","ta":"demo.jso:T003","ch":"typed","n":47}
@@ -243,7 +271,7 @@ Nothing else is folded: no stems, no prefixes. In Hebrew, Arabic and Korean a wo
 ltms search: notice: 'בית' is in the Hebrew script, whose words take letters attached before or after them, and words mode finds whole words only: for example, בית does not find והבית. To find it inside longer words too: ltms search --substring 'בית' test/fixtures/demo.jsonl
 ```
 
-With `gapScripts`, the coverage counts that script's letters in the text searched: the size of what the notice is about. If this Node's `Intl.Segmenter` cannot cut Thai and Chinese into words (it is tested at the start), the coverage says `"segmenter":"no-dictionary"`, a run of such text is read as one word, and a notice says so. A Node without `Intl` cannot run the search at all, and says so (exit 2); skeleton, stats and pin do not need it.
+With `gapScripts`, the coverage counts that script's letters in the text searched: the size of what the notice is about. If this Node's `Intl.Segmenter` cannot cut Thai and Chinese into words (it is tested at the start), the coverage says `"segmenter":"no-dictionary"`, a run of such text is read as one word, and a notice says so. A Node without `Intl` cannot run the search at all, and says so (exit 2); index, skeleton, stats, pin and skill do not need it.
 
 #### The output's fields
 
@@ -442,14 +470,22 @@ A failure line is `{"k":"failure","path","rel","op","code"}`: `op` is the step (
 - `--rehash` cannot clear damage in a kept copy, which is never written again, and `--check` reports the versions such a copy no longer holds at every check, with no command. A pin keeps a damaged copy that is no prefix of its source as it is, as the old copy of a rewrite, when the source has been rewritten since the version the copy's last line records; and also when recovery has recorded the copy's bytes first, which a pin without `--rehash` does for a copy whose size is not that version's, and so does a pin with `--rehash` that does not pin that copy's source (one given other paths). The current copy is then written from the source: nothing the source holds is lost.
 - Under `--rehash` too, a copy that holds its version followed by bytes that a pin could have written (whole lines of a `.jsonl`, or any bytes of a file copied whole) is recorded as it is, since those bytes can be a version that only the pin holds: a pin killed between the rename of a grown copy and its line leaves one. When its source does not hold them, the pin keeps them as the old copy of a rewrite, and `PINS.log` says `rewritten` though the source may not have changed. Bytes after the version of a `.jsonl` copy that hold no new line, which no pin wrote, are never recorded by a `--rehash` that pins its source. Of a `.jsonl` copy, bytes after the version that hold a new line but do not end in one are recorded too, since what they hold up to their last new line can be such a version.
 
+### `ltms skill`
+
+Prints `skills/ltms/SKILL.md`, a skill in the Agent Skills format (other agents read the format too, each from its own folder) that teaches an agent the loop: list the sessions with `index`, read one session's turns with `skeleton`, `search`, then read one address, a window at a time. It names this session's own transcript, `<project folder>/$CLAUDE_CODE_SESSION_ID.jsonl`. Install it with the line under [Install](#install).
+
+- It spells every command `npx -y long-term-memory-structure@0.2 <command>`, pinned to the minor version whose fields it names, or `ltms <command>` where `ltms --version` prints 0.2.x; never `npx ltms`, a name this package does not hold.
+- Its frontmatter pre-approves, for the turn that uses it, the four commands that only read: `index`, `skeleton`, `search` and `stats`, never `pin`.
+- On stderr, `ltms skill` prints the line that installs it, under `CLAUDE_CONFIG_DIR` when that is set.
+
 ## What it reads
 
-- `skeleton` and `stats`: only the files named on the command line. `search`: the files named and every `.jsonl` file under the directories named; symbolic links met there are not followed, and a directory met there twice (the same device and inode) is read once. `pin`: the files of a transcript's shape under the paths it is given (with `--from-hook`, under the project directory of the transcript the hook names), and its own pin directory; `pin --check`: the pin directory, and the files under the root: their sizes, to count what the pin is missing; of a `.jsonl` longer than its copy, the bytes past its copy's length, to see whether a whole line was added, and, when none was, its first bytes, as many as its copy holds, to see whether its copy is a prefix of it; and whether the source of a damaged copy is there, as a regular file of the cleanup's shape reached through no symbolic link (not its bytes), to give the `--rehash` command.
+- `skeleton` and `stats`: only the files named on the command line. `search`: the files named and every `.jsonl` file under the directories named; symbolic links met there are not followed, and a directory met there twice (the same device and inode) is read once. `index`: the same, but below a directory named it does not read the files in a session's own directory or the set-aside copies of a session (it counts them, and lists the names in a session's directory to count its agent transcripts), and does not enter a directory that holds `PINS.log` (it names it). `skill`: its own `SKILL.md`. `pin`: the files of a transcript's shape under the paths it is given (with `--from-hook`, under the project directory of the transcript the hook names), and its own pin directory; `pin --check`: the pin directory, and the files under the root: their sizes, to count what the pin is missing; of a `.jsonl` longer than its copy, the bytes past its copy's length, to see whether a whole line was added, and, when none was, its first bytes, as many as its copy holds, to see whether its copy is a prefix of it; and whether the source of a damaged copy is there, as a regular file of the cleanup's shape reached through no symbolic link (not its bytes), to give the `--rehash` command.
 - Only the live path of each session: the branch it ended on, as the transcript's own `last-prompt` record names it (a file without one is read along the branch of the last record written). The path is joined across compactions, and across API-error records that Claude Code writes late, after the retry that followed the error, and a record whose parent is not in the file is joined to the record written just before it. Branches that were rewound are not shown. Calls made in parallel by one response all belong to their turn, even when their results came back out of order; a response is known by its `requestId`, or by its `message.id` in versions that wrote none, and a response whose records fall in two turns gives its calls to the first.
 - Compaction, as measured on Claude Code 2.1.270, 2.1.272 and 2.1.300: the file before a `/compact` is a byte-for-byte prefix of the file after it. The compaction appends a boundary record, which starts a new root and points back to the last record before it, and then the summary. ltms follows that pointer, so the turns before and after a compaction appear in order.
 - The transcript format is internal to Claude Code and changes between versions. Records of a shape ltms does not know are passed over, not treated as errors.
 - A file is read into memory whole: it takes about five to eight times the file's size (up to about nine for a file packed with very small tool calls). For a file over about 200 MB, give Node more memory, for example `NODE_OPTIONS=--max-old-space-size=4096`; a file over about 500 MB cannot be read at all (JavaScript's limit on a string's length).
-- A line that is not a JSON object, or that is nested more than 1,000 levels deep, is skipped and reported on stderr. A file with nothing to show (empty, a workflow journal, no conversation records, no turns) is reported too, so a zero never reads as a clean result, and so are records whose parent links loop instead of reaching the start of the session, files in one run that share an address prefix (search tells them apart by `f`, and says nothing), and assistant records with neither a `requestId` nor a string `message.id` (which records form one response is then read from their parent links). An internal error is reported by its kind and the place in ltms where it happened, never by its message, which could quote the transcript.
+- A line that is not a JSON object, or that is nested more than 1,000 levels deep, is skipped and reported on stderr. A file with nothing to show (empty, a workflow journal, no conversation records, no turns) is reported too, so a zero never reads as a clean result, and so are records whose parent links loop instead of reaching the start of the session, files in one run that share an address prefix (search tells them apart by `f` and index by `path`, and neither says anything), and assistant records with neither a `requestId` nor a string `message.id` (which records form one response is then read from their parent links). An internal error is reported by its kind and the place in ltms where it happened, never by its message, which could quote the transcript.
 
 Exit status: 0 when every file was processed, 1 when a file could not be read or processed, 2 on a usage error.
 
@@ -460,14 +496,15 @@ Exit status: 0 when every file was processed, 1 when a file could not be read or
 - The output contains no prompts, replies, tool inputs or tool outputs. It does contain a few short labels derived from them: the program a shell command runs (or a shell keyword), a file's extension (or its name, when it has none), a subagent type, a skill name, a tool's name, the channel a prompt came through, the name of a hook script that blocked a call, an error class, and the lengths of prompts and results.
 - A label is printed only when it looks like one: at most 64 ASCII letters, digits and `. _ : + -` (a file's name or extension: without `:`; the shell's `[` and `[[` as they are). Anything else (free text, a quoted or computed command, a value that is not a string) prints as `(withheld)`, except that a hook name that does not qualify gives a plain `hook-block`. The shell command's label is read by the whitelist in [The Bash verb](#the-bash-verb): it is printed only when it and every word before it are words bash reads exactly as written, so an argument, a quoted string or a here-document is never taken for the program. The record types named in a warning pass the same label rule.
 - A hash cannot be reversed, but it can confirm a guess: whoever can guess the exact bytes of an input or a result (a short command and its description, a one-line output) can hash the guess and compare. Treat the output as derived from your transcripts.
+- index's lines hold counts, addresses, paths, and each session's first and last timestamps (printed only when they are ISO 8601 times, else `(withheld)`).
 - A search hit says which records hold the words asked for, so, like a hash, it can confirm a guess: whoever can guess a word learns which turn of which session holds it. search's output also holds the key names of the fields that matched, down to a tool's parameter and a system or attachment record's own keys (each by the label rule; a key below them prints `(withheld)`), the offsets of the matches, the latest timestamp of each file with a hit, the query's own words, and the paths of the files with hits.
-- The library (below) returns the transcript's content: its parser returns the records themselves, with every prompt, reply, tool input and tool output in them. The rules above are the command's, applied to what it prints; none of them applies to what the parser returns. The library's search applies the label rule itself, so its results hold no transcript text but the query's own words, the key names of the fields that matched, the channel, and each file's latest timestamp, as the file holds it (unchecked); `pin`'s functions return paths, sizes, hashes and times, while the copies they write are the transcripts themselves.
+- The library (below) returns the transcript's content: its parser returns the records themselves, with every prompt, reply, tool input and tool output in them. The rules above are the command's, applied to what it prints; none of them applies to what the parser returns. The library's search applies the label rule itself, so its results hold no transcript text but the query's own words, the key names of the fields that matched, the channel, and each file's latest timestamp, as the file holds it (unchecked); the session index's results hold no transcript text but `first` and `last`, a session's first and latest timestamps, as the file holds them (unchecked); `pin`'s functions return paths, sizes, hashes and times, while the copies they write are the transcripts themselves.
 
 ## Library
 
 The parser `ltms` is built on is exported as a library: plain functions over a transcript's text, with no dependencies and no Node imports, so they run unchanged in Node and in a browser. The package is ESM: `require()` loads it on Node 20.19 or newer in Node 20, 22.12 or newer in Node 22, and any Node from 23 on. Its type declarations ship with it.
 
-- `long-term-memory-structure`: the parser (`parseTranscript`, `repairedLivePath`, `turnsOf`, and the types of what they return) and the search functions that `ltms search` uses.
+- `long-term-memory-structure`: the parser (`parseTranscript`, `repairedLivePath`, `turnsOf`, and the types of what they return), the search functions that `ltms search` uses, and `indexTranscript`, the part of `ltms index`'s line that comes from a transcript.
 - `long-term-memory-structure/pin`: the file I/O of `ltms pin`, for Node only.
 - Every path that 0.0.5 resolved, such as `long-term-memory-structure/dist/parser.js`, still resolves.
 
@@ -481,11 +518,11 @@ const t = parseTranscript(readFileSync(file, 'utf8'));
 const turns = turnsOf(t, repairedLivePath(t).path);   // each turn: its prompt, its records, its tool calls
 ```
 
-`turnsOf(t)` without the repaired path stops at the last compaction: on a demo project's 35 transcripts it gives 201 turns, where `ltms` counts 218. Every exported function, type and field is described in [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.1.2/docs/library.md), with its meaning, its unit, and when it is absent.
+`turnsOf(t)` without the repaired path stops at the last compaction: on a demo project's 35 transcripts it gives 201 turns, where `ltms` counts 218. Every exported function, type and field is described in [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.0/docs/library.md), with its meaning, its unit, and when it is absent.
 
 ## Status
 
-Version 0.1.2. Early: the output format may change between versions.
+Version 0.2.0. Early: the output format may change between versions.
 
 ## Development
 

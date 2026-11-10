@@ -521,11 +521,13 @@ export function parseTranscript(text, opts = {}) {
             aids.add(r.agentId);
         if (typeof r.isSidechain === 'boolean')
             sc.add(r.isSidechain);
+        // an empty timestamp is read as absent, as a missing one is: read as a value, the first one would replace any
+        // set before it and be replaced by the next, so the result would depend on the order the records were written in
         const ts = r.timestamp;
-        if (typeof ts === 'string') {
-            if (!stats.firstTimestamp || ts < stats.firstTimestamp)
+        if (typeof ts === 'string' && ts !== '') {
+            if (stats.firstTimestamp === null || ts < stats.firstTimestamp)
                 stats.firstTimestamp = ts;
-            if (!stats.lastTimestamp || ts > stats.lastTimestamp)
+            if (stats.lastTimestamp === null || ts > stats.lastTimestamp)
                 stats.lastTimestamp = ts;
         }
         if (r.type === 'assistant' || r.type === 'user') {
