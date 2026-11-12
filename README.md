@@ -92,7 +92,7 @@ The opening paragraph is a strong claim, so it was attacked before this release.
 | A `cp -al` snapshot of the pin directory (a natural second copy) gives `PINS.log` a second name: every pin refuses it, and `--check` exited 0 | `--check` exits 1, with the `find` command that names the other name |
 | `~/.claude` moved to another disk, with a symbolic link left at its path: every pin was refused | pins go on: the root `PINS.log` records leads to the same directory |
 | A file whose modification time lies past a JavaScript Date's range stopped every pin at that file | pinned like any other |
-| A transcript over 2 GiB failed every pin | read in parts |
+| A transcript of 2 GiB or more fails every pin | **open**, as in 0.2.0 (a first repair, read in parts, wrote a wrong copy, and was undone before release): `--check` now counts such files (`tooLarge`), says every pin fails on them, and exits 1 |
 | A transcript larger than the memory a pin may use (in a container, or under cron with a limit) ends every pin at it, and the files after it in name order are not pinned | **open**: `--check` counts them missing or longer, and `PINS.log`'s `takeover` lines show the pins that were killed |
 | A lock left by a pin killed in another PID namespace (a container that shares the pin directory) | **open**: it counts as running, so every pin waits for it and exits 1 until it is removed by hand (the `rm` the message gives); `--check` exits 1, naming it |
 
