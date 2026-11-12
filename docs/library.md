@@ -31,7 +31,7 @@ for (const turn of turnsOf(t, repairedLivePath(t).path)) {
 
 ## `long-term-memory-structure`
 
-The entry point `.` (`dist/index.js`) exports 81 symbols: the parser's 47 (12 functions, a constant and 34 types), search's 30 (8 functions, 5 constants and 17 types) and the session index's 4 (a function and 3 types). Below, in five groups: the functions; what they return; the records as Claude Code writes them, which the library returns as they are; the search; and the session index.
+The entry point `.` (`dist/index.js`) exports 82 symbols: the parser's 47 (12 functions, a constant and 34 types), search's 31 (9 functions, 5 constants and 17 types) and the session index's 4 (a function and 3 types). Below, in five groups: the functions; what they return; the records as Claude Code writes them, which the library returns as they are; the search; and the session index.
 
 ### The functions
 
@@ -762,7 +762,10 @@ of its text without the text: which tokens it holds (words mode), and which 1- t
 reading of it holds, each tagged with the kind of the text it came from. It holds no text: bits and counts. Neither test
 has false negatives, so a search that passes over the files `sieveMayHold` rules out, counting each from
 `sieveResult`, returns what it returns when it reads every file. The words are read with a segmenter, and a sieve
-answers a words-mode query only when it was read with the same.
+answers a words-mode query only when it was read with the same. A sieve also names the runtime that read its file
+([`searchRuntime()`](#searchruntime)), and answers only under that runtime: two runtimes can read the same text into
+other tokens (a newer Unicode's letters, or other ICU data even under the same versions), and a sieve read under one
+could then rule out a file the other's search finds a turn in.
 
 ```js
 const s = sieveTranscript(t, checkSearchSupport().segmenter);          // keep s; later, for a query q:
@@ -780,8 +783,19 @@ the same kinds, in both forms of a string that holds JSON escapes.
 `sieveMayHold(sieve: SearchSieve, query: SearchQuery, kinds?: readonly SearchKind[]): boolean`. `false` only when no
 turn of the sieve's file can hold every term of the query in the kinds searched (default `SEARCH_DEFAULT_KINDS`): some
 term's tokens (words mode) or grams (`--substring`) are not all in any one kind searched. `true` when the sieve cannot
-tell, and then the file must be read: also for a sieve of another format, and for a words-mode query read with another
-segmenter. A false positive only costs a read (the filters are sized for about 0.8 %).
+tell, and then the file must be read: also for a sieve of another format, for one read under another runtime (its
+`runtime` is not this runtime's `searchRuntime()`), and for a words-mode query read with another segmenter. A false
+positive only costs a read (the filters are sized for about 0.8 %).
+
+#### `searchRuntime()`
+
+`searchRuntime(): string`: the runtime that reads text here, as one string: its versions (`node`, `v8`, `icu`, `unicode`,
+`cldr`, and `deno` or `bun` when it is one), the locale its `Intl.Segmenter` takes, and `reading`, a 64-bit digest of the
+search's own reading of a fixed probe: seeded strings of each script ICU segments by dictionary, and of Hangul, as words
+mode reads them with the Segmenter and without and as `--substring` reads them; and every code point of planes 0 to 3
+and 14, by which of the reading's classes it is in, and folded. Computed once, on first use (about a tenth of a second).
+Equal strings do not prove that two runtimes read every text alike: the probe reads what it holds. `ltms search --cache`
+also keys each sieve on the files the runtime reads text with (its executable and the ICU libraries it has loaded).
 
 #### `sieveResult(sieve, query, kinds?)`
 
@@ -804,6 +818,7 @@ reading of ASCII text is made of (a-z, 0-9 and the space), rounded up to whole b
 | member | meaning | when absent, null or empty |
 |---|---|---|
 | `format` | `SEARCH_SIEVE_FORMAT` when it was built | never absent |
+| `runtime` | [`searchRuntime()`](#searchruntime) where it was built | never absent |
 | `segmenter` | the [`SearchSegmenter`](#searchsegmenter) its words were read with | never absent |
 | `fileKind` | the parser's [`FileKind`](#filekind) | never absent |
 | `last` | the file's latest timestamp, as [`SearchResult`](#searchresult) gives it | `null` as there |

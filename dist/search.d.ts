@@ -179,7 +179,7 @@ export declare function searchTranscript(input: string | Transcript, query: Sear
 /** The sieve's format. Any change to what it holds, or to how the search reads text (the tokens, --substring's
  *  reading, which fields are of which kind, the gap scripts' letters), must change it: a sieve of another format is
  *  never used. */
-export declare const SEARCH_SIEVE_FORMAT = 1;
+export declare const SEARCH_SIEVE_FORMAT = 2;
 /** A Bloom filter: `m` bits (a multiple of 8), `k` probes per entry. */
 export interface SearchBloom {
     m: number;
@@ -189,6 +189,8 @@ export interface SearchBloom {
 /** What a search can know about one transcript without reading it again (sieveTranscript). */
 export interface SearchSieve {
     format: number;
+    /** searchRuntime() where the sieve was read: a sieve read under another runtime never rules a file out. */
+    runtime: string;
     /** The segmenter the words were read with: a sieve answers a words-mode query only when it was read with the same. */
     segmenter: SearchSegmenter;
     fileKind: FileKind;
@@ -208,6 +210,10 @@ export interface SearchSieve {
 }
 /** The bits one kind takes in `ascii`: SIEVE_ASCII_GRAMS_RAW rounded up to whole bytes. */
 export declare const SEARCH_SIEVE_ASCII_GRAMS: number;
+/** The runtime that reads text here, as one string: its versions (node, v8, icu, unicode, cldr; deno or bun when it is
+ *  one), the locale its Segmenter takes, and the digest of this module's reading of a fixed probe (readingDigest). A
+ *  sieve keeps the string it was read under, and answers under that runtime only. Computed once, on first use. */
+export declare function searchRuntime(): string;
 /** The sieve of one transcript (its text, or the parser's Transcript of it), its words read with `segmenter`. */
 export declare function sieveTranscript(input: string | Transcript, segmenter: SearchSegmenter): SearchSieve;
 /** False only when no turn of the sieve's file can hold every term of the query in the kinds searched: some term's

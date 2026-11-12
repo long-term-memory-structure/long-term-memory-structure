@@ -13,6 +13,11 @@ export interface CachedSieve {
     sieve: SearchSieve;
     flags: SieveFlags;
 }
+/** The files this runtime reads text with, as a sha256 (32 hex digits): its executable, the ICU libraries it has
+ *  loaded (process.report's shared objects, else /proc/self/maps), and NODE_ICU_DATA and ICU_DATA when set, each file
+ *  by its path, size, modification time and inode. An upgrade of any of them makes every kept sieve be read again and
+ *  rebuilt; searchRuntime() reads what the files do, this which files they are. Computed once. */
+export declare function runtimeFiles(): string;
 /** The directory, or why there is none: XDG_CACHE_HOME when it is an absolute path, else the home directory's .cache. */
 export declare function sieveCacheDir(): {
     dir: string;
@@ -29,7 +34,8 @@ export declare class SieveCache {
     writeError: string | null;
     constructor(dir: string, version: string);
     private nameOf;
-    /** The sieve kept for this file as it stands (st), or null: none, another key, version or format, or unreadable. */
+    /** The sieve kept for this file as it stands (st), or null: none, another key, version, format or runtime, damaged,
+     *  or unreadable. */
     read(st: BigIntStats): CachedSieve | null;
     /** Keep a file's sieve, under the key it was read with: a new file renamed over the old one. */
     write(st: BigIntStats, sieve: SearchSieve, flags: SieveFlags): void;

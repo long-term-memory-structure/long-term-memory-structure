@@ -889,10 +889,13 @@ kind, as bits. No text. A later search answers a file from its sieve,
 without opening it, when the sieve shows that some term is in no kind
 searched; any other file is read as without one. So the output is the
 same, the time aside. A sieve is used only while its file is unchanged
-(the same size, times and inode); a file that changed while it was read
-gets none. The first search with --cache reads every file and is slower
-(it builds the sieves); rm -r ~/.cache/ltms removes them. Files named on
-the command line are always read.
+(the same size, times and inode), and only by the node that kept it: its
+versions, its ICU files and its reading of a fixed text must be the same,
+since another runtime can read the same text into other words; after an
+upgrade every file is read again, once, and its sieve kept anew. A file
+that changed while it was read gets none. The first search with --cache
+reads every file and is slower (it builds the sieves); rm -r ~/.cache/ltms
+removes them. Files named on the command line are always read.
 
 The coverage line:
   k             "coverage"
