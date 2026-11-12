@@ -2131,7 +2131,7 @@ stdout: one line, then one line per finding.
   {"k":"check","dir","root","lines","versions","files","mismatches",
   "chainBreaks","unreadableLines","unlogged","temps","lock","lastLog",
   "staleness":{"root","fromLog","sources","missing","longer","unfinished",
-  "projectsNotPinned","failed"},"ms"}
+  "projectsNotPinned","failed","tooLarge"},"ms"}
   {"k":"mismatch","rel","copy","line","want":{"bytes","sha256"},"got"}
   {"k":"chain","line","want","got"}
   {"k":"unreadable","line"}
@@ -2145,10 +2145,10 @@ Exit status: 0 when every file was pinned; 1 when a file or directory failed,
 or the lock stayed held; 2 on a usage error or a refusal. --check: 0 when the
 pin holds what PINS.log records; 1 on a mismatch, a chain break, a line that
 is not a log line, a directory under the root that could not be read, a lock
-held for the whole wait, or a PINS.log with another name, which every pin
-refuses (unlogged files, temp files, a lock left by a pin that stopped, and
-missing sources are reported, and fail nothing); 2 on a usage error or a
-directory that is not a pin.
+held for the whole wait, a PINS.log with another name, which every pin
+refuses, or a source larger than a pin reads, 2 GiB (unlogged files, temp
+files, a lock left by a pin that stopped, and missing sources are reported,
+and fail nothing); 2 on a usage error or a directory that is not a pin.
 `;
 const PIN_VALUE_OPTIONS = ['--to', '--root', '--check'];
 const PIN_OPTION_KEY = { '--to': 'to', '--root': 'root', '--check': 'check' };
@@ -2360,7 +2360,7 @@ function checkLine(r) {
     return { k: 'check', dir: r.dir, root: r.root, lines: r.lines, versions: r.versions, files: r.files, mismatches: r.mismatches.length,
         chainBreaks: r.chainBreaks.length, unreadableLines: r.unreadableLines.length, unlogged: r.unlogged.length, temps: r.temps, lock: r.lock,
         lastLog: r.lastLog,
-        staleness: s === null ? null : { root: s.root, fromLog: s.fromLog, sources: s.sources, missing: s.missing, longer: s.longer, unfinished: s.unfinished, projectsNotPinned: s.projectsNotPinned, failed: s.failed },
+        staleness: s === null ? null : { root: s.root, fromLog: s.fromLog, sources: s.sources, missing: s.missing, longer: s.longer, unfinished: s.unfinished, projectsNotPinned: s.projectsNotPinned, failed: s.failed, tooLarge: s.tooLarge },
         ms: r.ms };
 }
 const jsonLine = (o) => JSON.stringify(o) + '\n';
@@ -2482,7 +2482,10 @@ function printChecked(r) {
     }
     // while PINS.log has another name every pin into this directory is refused: the pins have stopped, and a check run
     // from cron says so by its status too (S368, the adversarial reading's B3)
-    return damage || (s !== null && s.failed) || !pinRuns ? 1 : 0;
+    // a source larger than a pin reads: every pin fails on it, so the pin is behind it for good (S368, B5)
+    if (s !== null && s.tooLarge)
+        err(`ltms pin: ${plural(s.tooLarge, 'file', 'files')} under the root ${q(s.root)} ${s.tooLarge === 1 ? 'is' : 'are'} larger than a pin reads (2 GiB): every pin fails on ${s.tooLarge === 1 ? 'it' : 'them'} (ERR_FS_FILE_TOO_LARGE), and no copy of ${s.tooLarge === 1 ? 'its' : 'their'} later lines is kept.`);
+    return damage || (s !== null && (s.failed || s.tooLarge)) || !pinRuns ? 1 : 0;
 }
 async function pinMain(argv) {
     const a = readPinArgs(argv);

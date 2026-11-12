@@ -904,7 +904,7 @@ test('check: a clean pin, and a pin after rewrites, where each version is checke
     const k = await checkPin(t.to);
     checkClean(k);
     assert.deepEqual([k.dir, k.root, k.lines, k.versions, k.files, k.temps, k.lock], [t.to, t.root, 11, 10, 10, 0, null]);
-    assert.deepEqual(k.staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 0, projectsNotPinned: 0, failed: 0 });
+    assert.deepEqual(k.staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 0, projectsNotPinned: 0, failed: 0, tooLarge: 0 });
     assert.equal(k.lastLog, logLines(t.to).at(-1).t);
     const rel = `${Q}/${SB}.jsonl`;
     writeFileSync(t.src(rel), L4); await pinPaths([t.root], t.opts());
@@ -976,10 +976,10 @@ test('check: the staleness, against the root PINS.log records or one given: sour
     t.put('-home-u-gamma/88888888-8888-4888-8888-888888888888.jsonl', L1);
     const k = await checkPin(t.to);
     checkClean(k);
-    assert.deepEqual(k.staleness, { root: t.root, fromLog: true, sources: 12, missing: 2, longer: 1, unfinished: 0, projectsNotPinned: 1, failed: 0 });
+    assert.deepEqual(k.staleness, { root: t.root, fromLog: true, sources: 12, missing: 2, longer: 1, unfinished: 0, projectsNotPinned: 1, failed: 0, tooLarge: 0 });
     assert.equal((await checkPin(t.to, { root: t.root })).staleness.fromLog, false);
     const none = join(t.tmp, 'no-such-root');
-    assert.deepEqual((await checkPin(t.to, { root: none })).staleness, { root: none, fromLog: false, sources: 0, missing: 0, longer: 0, unfinished: 0, projectsNotPinned: 0, failed: 1 });
+    assert.deepEqual((await checkPin(t.to, { root: none })).staleness, { root: none, fromLog: false, sources: 0, missing: 0, longer: 0, unfinished: 0, projectsNotPinned: 0, failed: 1, tooLarge: 0 });
   } finally { t.clean(); }
 });
 
@@ -1496,7 +1496,7 @@ const COVERAGE_KEYS = ['k', 'root', 'to', 'files', 'failures', 'partial', 'skipp
 const FILES_KEYS = ['seen', 'new', 'grown', 'rewritten', 'unchanged', 'notCopied', 'failed'];
 const SKIPPED_KEYS = ['notSessionShaped', 'symlinks', 'memory', 'git'];
 const CHECK_KEYS = ['k', 'dir', 'root', 'lines', 'versions', 'files', 'mismatches', 'chainBreaks', 'unreadableLines', 'unlogged', 'temps', 'lock', 'lastLog', 'staleness', 'ms'];
-const STALENESS_KEYS = ['root', 'fromLog', 'sources', 'missing', 'longer', 'unfinished', 'projectsNotPinned', 'failed'];
+const STALENESS_KEYS = ['root', 'fromLog', 'sources', 'missing', 'longer', 'unfinished', 'projectsNotPinned', 'failed', 'tooLarge'];
 const BYTES = RELS.reduce((n, rel) => n + len(PINNED[rel]), 0);
 
 /** A pin that finds its lock held by a running pid on this host waits the command's 30 s, then exits 1. Started when
@@ -1838,7 +1838,7 @@ test('ltms pin --check: a clean pin is exit 0 with one line, its fields in the d
     assert.deepEqual([Object.keys(rows[0]), Object.keys(rows[0].staleness)], [CHECK_KEYS, STALENESS_KEYS]);
     assert.deepEqual({ ...rows[0], ms: 0 }, { k: 'check', dir: t.to, root: t.root, lines: 11, versions: 10, files: 10, mismatches: 0, chainBreaks: 0,
       unreadableLines: 0, unlogged: 0, temps: 0, lock: null, lastLog: logLines(t.to).at(-1).t,
-      staleness: { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 0, projectsNotPinned: 0, failed: 0 }, ms: 0 });
+      staleness: { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 0, projectsNotPinned: 0, failed: 0, tooLarge: 0 }, ms: 0 });
     const g = ltms(t, ['pin', `--check=${t.to}`, '--root', t.root]);
     assert.deepEqual([g.code, rowsOf(g.out)[0].staleness.fromLog], [0, false]);
   } finally { t.clean(); }
@@ -1938,7 +1938,7 @@ test('ltms pin --check: an unlogged file, a temp file, a lock, and sources missi
     assert.equal(r.code, 0, r.err);
     const rows = rowsOf(r.out);
     assert.deepEqual([rows[0].unlogged, rows[0].temps, rows[0].lock, rows[0].staleness], [1, 1, holder,
-      { root: t.root, fromLog: true, sources: 11, missing: 1, longer: 1, unfinished: 0, projectsNotPinned: 0, failed: 0 }]);
+      { root: t.root, fromLog: true, sources: 11, missing: 1, longer: 1, unfinished: 0, projectsNotPinned: 0, failed: 0, tooLarge: 0 }]);
     assert.deepEqual(rows.slice(1), [{ k: 'unlogged', rel: stray }]);
     const lines = r.err.split('\n').filter((l) => l !== '');
     assert.equal(lines.length, 4, r.err);
@@ -1949,7 +1949,7 @@ test('ltms pin --check: an unlogged file, a temp file, a lock, and sources missi
     const none = join(t.tmp, 'no-such-root');
     const f = ltms(t, ['pin', '--check', t.to, '--root', none]);
     assert.equal(f.code, 1);
-    assert.deepEqual(rowsOf(f.out)[0].staleness, { root: none, fromLog: false, sources: 0, missing: 0, longer: 0, unfinished: 0, projectsNotPinned: 0, failed: 1 });
+    assert.deepEqual(rowsOf(f.out)[0].staleness, { root: none, fromLog: false, sources: 0, missing: 0, longer: 0, unfinished: 0, projectsNotPinned: 0, failed: 1, tooLarge: 0 });
     assert.ok(f.err.includes(`ltms pin: the root '${none}' could not be read (ENOENT), so no file under it was counted, and the counts of files missing from the pin are short of the truth. Check it: ls -ld '${none}'\n`), f.err);
     const n = ltms(t, ['pin', '--check', t.tmp]);
     assert.deepEqual([n.code, n.out], [2, '']);
@@ -2506,11 +2506,11 @@ test('check: a .jsonl longer than its copy only by an unfinished line is counted
     appendFileSync(t.src(`${P}/${SA}/tool-results/b000000001.txt`), 'more');  // not a .jsonl, larger: longer
     const k = await checkPin(t.to);
     checkClean(k);
-    assert.deepEqual(k.staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 2, unfinished: 1, projectsNotPinned: 0, failed: 0 });
+    assert.deepEqual(k.staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 2, unfinished: 1, projectsNotPinned: 0, failed: 0, tooLarge: 0 });
     // what a pin then does agrees: the file longer only by an unfinished line is unchanged (and partial), the others grown
     const r = await pinPaths([t.root], t.opts({ rehash: true }));
     assert.deepEqual([r.coverage.files, r.coverage.partial], [counts({ seen: 10, grown: 2, unchanged: 8 }), 2]);
-    assert.deepEqual((await checkPin(t.to)).staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 2, projectsNotPinned: 0, failed: 0 });
+    assert.deepEqual((await checkPin(t.to)).staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 2, projectsNotPinned: 0, failed: 0, tooLarge: 0 });
   } finally { t.clean(); }
 });
 
@@ -2521,7 +2521,7 @@ test('ltms pin --check: files longer than their copies only by an unfinished lin
     appendFileSync(t.src(`${Q}/${SB}.jsonl`), '{"type":"user","text":"an invented line not yet fin');
     let r = ltms(t, ['pin', '--check', t.to]);
     assert.equal(r.code, 0, r.err);
-    assert.deepEqual(rowsOf(r.out)[0].staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 1, projectsNotPinned: 0, failed: 0 });
+    assert.deepEqual(rowsOf(r.out)[0].staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 1, projectsNotPinned: 0, failed: 0, tooLarge: 0 });
     assert.equal(r.err, `ltms pin: 1 file under the root '${t.root}' ends in an unfinished line, which a pin does not copy: it is longer than its copy only by that line, and is not counted as longer.\n`);
     appendFileSync(t.src(`${P}/${SA}.jsonl`), '{"type":"user","text":"another invented line not yet fin');
     t.put(`${Q}/77777777-7777-4777-8777-777777777777.jsonl`, L1);   // and one missing
@@ -2780,12 +2780,12 @@ test('check: a .jsonl larger than its copy, with no new line past the copy\'s le
     writeFileSync(t.src(shorter), L5 + half + 'x'.repeat(len(PINNED[shorter])));   // its whole lines shorter than the copy, larger in all
     const k = await checkPin(t.to);
     checkClean(k);
-    assert.deepEqual(k.staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 2, unfinished: 0, projectsNotPinned: 0, failed: 0 });
+    assert.deepEqual(k.staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 2, unfinished: 0, projectsNotPinned: 0, failed: 0, tooLarge: 0 });
     // what a pin then does agrees: both rewritten (each keeps its old copy), each partial
     const r = await pinPaths([t.root], t.opts());
     assert.deepEqual([r.coverage.files, r.coverage.partial], [counts({ seen: 10, rewritten: 2, unchanged: 8 }), 2]);
     // now each copy is a prefix of its source, which is longer only by its unfinished line
-    assert.deepEqual((await checkPin(t.to)).staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 2, projectsNotPinned: 0, failed: 0 });
+    assert.deepEqual((await checkPin(t.to)).staleness, { root: t.root, fromLog: true, sources: 10, missing: 0, longer: 0, unfinished: 2, projectsNotPinned: 0, failed: 0, tooLarge: 0 });
   } finally { t.clean(); }
 });
 
@@ -4673,5 +4673,49 @@ test('S368 A1, a version of another size: a pin killed between a rename and its 
     assert.ok(heldUnder(t.to).includes(C), 'C is held by a file of the pin');
     assert.equal(readFileSync(t.pin(rel), 'utf8'), A);
     checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+/** A patch (childModule's) under which lstat gives one path a size of 2^31 bytes, one more than a pin reads: the file
+ *  itself stays small, so no test writes 2 GiB (measured on Box B instead, S368: a 2.3 GB transcript). */
+const tooLargeAt = (p) => `
+  const lstat = fs.lstatSync;
+  fs.lstatSync = function (path, o) {
+    const s = lstat.apply(this, arguments);
+    if (String(path) === ${JSON.stringify(p)}) s.size = o && o.bigint ? 2n ** 31n : 2 ** 31;
+    return s;
+  };`;
+
+test('S368 B5: a source larger than a pin reads (2 GiB) is a failure before anything is read (ERR_FS_FILE_TOO_LARGE), as in 0.2.0, and its copy stays as it was (a first repair read it in parts, and wrote a copy cut at a wrapped offset)', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.src(Q)], t.opts());
+    appendFileSync(t.src(rel), L4);
+    const log = logText(t.to);
+    const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts())}); process.stdout.write(JSON.stringify(r));`, { patch: tooLargeAt(t.src(rel)) }));
+    assert.deepEqual(r.failures, [{ path: t.src(rel), rel, op: 'read', code: 'ERR_FS_FILE_TOO_LARGE' }]);
+    assert.deepEqual([r.lines, logText(t.to), readFileSync(t.pin(rel), 'utf8')], [[], log, PINNED[rel]]);
+  } finally { t.clean(); }
+});
+
+test('S368 B5: --check counts the sources larger than a pin reads (staleness.tooLarge), and ltms pin --check exits 1 on one, saying every pin fails on it', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.root], t.opts());
+    const k = ranTo(childModule(`const k = await checkPin(${JSON.stringify(t.to)}); process.stdout.write(JSON.stringify(k));`, { patch: tooLargeAt(t.src(rel)) }));
+    assert.equal(k.staleness.tooLarge, 1);
+    const clean = await checkPin(t.to);
+    assert.equal(clean.staleness.tooLarge, 0);
+    // the command, the same patch preloaded (node --import)
+    const patch = join(t.tmp, 'too-large.mjs');
+    writeFileSync(patch, `import fs from 'node:fs';\nimport { syncBuiltinESMExports } from 'node:module';\n${tooLargeAt(t.src(rel))}\nsyncBuiltinESMExports();\n`);
+    const c = spawnSync(process.execPath, ['--import', pathToFileURL(patch).href, CLI, 'pin', '--check', t.to], { encoding: 'utf8', timeout: 60000, cwd: t.tmp,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: t.config } });
+    assert.equal(c.status, 1, c.stderr);
+    assert.equal(rowsOf(c.stdout)[0].staleness.tooLarge, 1);
+    assert.match(c.stderr, new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is larger than a pin reads \\(2 GiB\\): every pin fails on it \\(ERR_FS_FILE_TOO_LARGE\\), and no copy of its later lines is kept\\.$`, 'm'));
+    assert.equal(ltms(t, ['pin', '--check', t.to]).code, 0, 'without the patch: 0');
   } finally { t.clean(); }
 });
