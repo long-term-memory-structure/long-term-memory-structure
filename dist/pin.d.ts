@@ -8,11 +8,17 @@ export interface PinVersion {
     bytes: number;
     sha256: string;
 }
-/** What a pin's lock file holds: the process that holds it, the host it runs on, and when it took the lock (ISO). */
+/** What a pin's lock file holds: the process that holds it, the host it runs on, and when it took the lock (ISO); and,
+ *  where the platform gives them (Linux: /proc), the host's boot id, the process's PID namespace and its start time in
+ *  clock ticks since boot, which tell a lock left before the last boot, a pid now used by another process, and a pin
+ *  that runs in another PID namespace (S368). A lock written by ltms 0.2.0 or older has none of the three. */
 export interface PinLockHolder {
     pid: number;
     host: string;
     started: string;
+    boot?: string;
+    pidns?: string;
+    start?: string;
 }
 /** One line of PINS.log. Which fields a line has depends on `how`: `root` (the first line), `takeover`, a file's line
  *  (`new`, `grown`, `rewritten`, `recovered`), or a `recovered` line that names a line cut short (`torn`). */
@@ -155,6 +161,9 @@ export interface PinBusy {
     holder: PinLockHolder | null;
     /** the holder is on another host, so whether it still runs cannot be seen */
     otherHost: boolean;
+    /** the holder is on this host in another PID namespace (a container, a sandbox), so whether it still runs cannot be
+     *  seen either (S368) */
+    otherNamespace: boolean;
     /** how long the pin waited, in ms */
     waitedMs: number;
     /** the holder, its start time, and the rm command */
