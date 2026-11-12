@@ -4567,7 +4567,9 @@ test('S368: a lock from this host left before its last boot is taken over at onc
   const t = tree();
   const live = spawn('sleep', ['30']);
   try {
-    plantLock(t, { pid: live.pid, host: hostname(), started: '2026-11-01T10:00:00.000Z', boot: '00000000-0000-4000-8000-000000000000', pidns: myPidNs(), start: '1' });
+    await new Promise((r) => setTimeout(r, 50));
+    // its pid, namespace and start time those of a process running now: only the boot id tells it is not that process's
+    plantLock(t, { pid: live.pid, host: hostname(), started: '2026-11-01T10:00:00.000Z', boot: '00000000-0000-4000-8000-000000000000', pidns: myPidNs(), start: startOf(live.pid) });
     const r = await pinPaths([t.src(Q)], t.opts({ lockWaitMs: 300 }));
     assert.deepEqual([r.k, r.takeover?.pid], ['pinned', live.pid]);
   } finally { live.kill(); t.clean(); }
@@ -4648,5 +4650,28 @@ test('S368: PINS.log written by another process while a pin runs (its lock still
     assert.deepEqual(r1.lines, []);
     assert.equal(logText(t.to).trimEnd().split('\n').at(-1), other, 'nothing appended after the other line');
     assert.equal(readFileSync(t.pin(rel), 'utf8'), PINNED[rel], 'the copy is as it was');
+  } finally { t.clean(); }
+});
+
+test('S368 A1, a version of another size: a pin killed between a rename and its line, the file then back to a kept version; the next plain pin (recovery, as its size differs) records the copy and names the kept copy of the version its last line records, and the check is clean', async () => {
+  const t = tree();
+  try {
+    const rel = `${P}/${SA}/workflows/state.json`;
+    const A = '{"status":"idle"}', B = '{"status":"busy, and longer"}', C = '{"status":"failed, at some length"}';
+    assert.notEqual(len(A), len(C), 'precondition: C is not the size of A');
+    t.put(rel, A); await pinPaths([t.root], t.opts());
+    writeFileSync(t.src(rel), B); await pinPaths([t.root], t.opts());
+    writeFileSync(t.src(rel), A); await pinPaths([t.root], t.opts());
+    writeFileSync(t.src(rel), C);
+    const c = childPin(t, [t.root], 'renamed', rel, KILL);
+    assert.equal(c.signal, 'SIGKILL', c.stderr);
+    writeFileSync(t.src(rel), A);
+    const r = await pinPaths([t.root], t.opts());
+    assert.deepEqual(r.failures, []);
+    const rec = r.lines.find((l) => l.rel === rel && l.how === 'recovered');
+    assert.equal(rec?.kept, `${rel}.superseded-${sha12(A)}`, "recovery's line names the kept copy of A");
+    assert.ok(heldUnder(t.to).includes(C), 'C is held by a file of the pin');
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), A);
+    checkClean(await checkPin(t.to));
   } finally { t.clean(); }
 });
