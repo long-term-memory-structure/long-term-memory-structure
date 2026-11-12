@@ -20,6 +20,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+// ltms runs below with the cache off (LTMS_CACHE unset), and any sieve in a directory of this file's own, removed at exit
+{ const { mkdtempSync: m, rmSync: r } = await import('node:fs'); const { tmpdir: d } = await import('node:os'); const c = m((await import('node:path')).join(d(), 'ltms-test-cache-')); process.env.XDG_CACHE_HOME = c; delete process.env.LTMS_CACHE; process.on('exit', () => r(c, { recursive: true, force: true })); }
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -1019,7 +1021,7 @@ test('command: usage errors exit 2 with nothing on stdout, each one echoing the 
       [['--count=yes', W, dir], "ltms search: --count takes no value; '--count=yes' gives it one."],
       [['--substring=1', W, dir], "ltms search: --substring takes no value; '--substring=1' gives it one."],
       [['--oldest=yes', W, dir], "ltms search: --oldest takes no value; '--oldest=yes' gives it one."],
-      [['--frobnicate', W, dir], "ltms search: unknown option '--frobnicate'. The options are --kind <list>, --substring, --max <n>, --skip <n>, --count and --oldest; put -- before a query or a path that starts with '-'."],
+      [['--frobnicate', W, dir], "ltms search: unknown option '--frobnicate'. The options are --kind <list>, --substring, --max <n>, --skip <n>, --count, --oldest, --cache and --no-cache; put -- before a query or a path that starts with '-'."],
       [['-', dir], "ltms search: reading from standard input ('-') is not supported. Give the transcripts' folder or files after the query, e.g. ltms search 'compaction summary' ~/.claude/projects/<project>"],
       [['--', '...', dir], `ltms search: the query '...' has no word to search: it has no letter or digit. Give words, e.g. ltms search 'compaction summary' ${sh(dir)}`],
       [['--', '-> ...', dir], `ltms search: the query '-> ...' has no word to search: none of its terms has a letter or digit. Give words, e.g. ltms search 'compaction summary' ${sh(dir)}`],
@@ -1581,13 +1583,13 @@ test('command: an internal error inside search is reported by its kind and its p
   } finally { rm(dir); }
 });
 
-test('source: cli.ts holds ASCII only and no typed backslash-u escape, and imports nothing but node: built-ins, the parser, search, session (0.2.0) and pin', () => {
+test('source: cli.ts holds ASCII only and no typed backslash-u escape, and imports nothing but node: built-ins, the parser, search, session (0.2.0), pin and the sieve cache (S366)', () => {
   const src = readFileSync(join(root, 'src', 'cli.ts'), 'utf8');
   assert.ok(!/[^\x00-\x7f]/.test(src), 'a character outside ASCII in src/cli.ts');
   assert.ok(!src.includes(BSL + 'u'), 'a typed backslash-u in src/cli.ts');
   for (const text of [src, readFileSync(CLI, 'utf8')]) {
     const specifiers = [...text.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
-    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js', s);
+    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js' || s === './sieve-cache.js', s);
     assert.ok(specifiers.includes('./search.js'));
   }
 });
@@ -2099,7 +2101,7 @@ test('command: --skip passes over the first matching turns; shown.skipped counts
       [['--skip'], 'ltms search: --skip needs a number after it: the matching turns to pass over before printing.'],
       [['--skip', '-1', W, dir], "ltms search: --skip takes a whole number of matching turns to pass over before printing; '-1' is not one."],
       [['--skip=x', W, dir], "ltms search: --skip takes a whole number of matching turns to pass over before printing; 'x' is not one."],
-      [['--frobnicate', W, dir], "ltms search: unknown option '--frobnicate'. The options are --kind <list>, --substring, --max <n>, --skip <n>, --count and --oldest; put -- before a query or a path that starts with '-'."],
+      [['--frobnicate', W, dir], "ltms search: unknown option '--frobnicate'. The options are --kind <list>, --substring, --max <n>, --skip <n>, --count, --oldest, --cache and --no-cache; put -- before a query or a path that starts with '-'."],
     ]) assert.deepEqual([ltms(['search', ...args]).code, ltms(['search', ...args]).err], [2, message + '\n'], args.join(' '));
   } finally { rm(dir); }
 });

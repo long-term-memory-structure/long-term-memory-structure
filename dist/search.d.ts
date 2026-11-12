@@ -176,3 +176,51 @@ export declare function parseSearchQuery(query: string, options?: SearchQueryOpt
  *  order, with one entry per record and kind holding a term; the file's counts; its latest timestamp. A query with no
  *  terms matches nothing. */
 export declare function searchTranscript(input: string | Transcript, query: SearchQuery, options?: SearchOptions): SearchResult;
+/** The sieve's format. Any change to what it holds, or to how the search reads text (the tokens, --substring's
+ *  reading, which fields are of which kind, the gap scripts' letters), must change it: a sieve of another format is
+ *  never used. */
+export declare const SEARCH_SIEVE_FORMAT = 2;
+/** A Bloom filter: `m` bits (a multiple of 8), `k` probes per entry. */
+export interface SearchBloom {
+    m: number;
+    k: number;
+    bits: Uint8Array;
+}
+/** What a search can know about one transcript without reading it again (sieveTranscript). */
+export interface SearchSieve {
+    format: number;
+    /** searchRuntime() where the sieve was read: a sieve read under another runtime never rules a file out. */
+    runtime: string;
+    /** The segmenter the words were read with: a sieve answers a words-mode query only when it was read with the same. */
+    segmenter: SearchSegmenter;
+    fileKind: FileKind;
+    last: string | null;
+    parsed: number;
+    turns: number;
+    /** The not-searched counts that do not depend on the kinds searched; kindsOff is 0 here (see masks). */
+    notSearched: SearchNotSearched;
+    /** The turn records, by the set of kinds their text is of (bit i is SEARCH_KINDS[i]; 0: no text): [set, records]. */
+    masks: [number, number][];
+    /** For each script of SEARCH_GAP_SCRIPTS, its letters in the text of each kind, in SEARCH_KINDS order. */
+    gapLetters: Record<string, number[]>;
+    words: SearchBloom;
+    /** SEARCH_SIEVE_ASCII_GRAMS bits per kind, in SEARCH_KINDS order. */
+    ascii: Uint8Array;
+    grams: SearchBloom;
+}
+/** The bits one kind takes in `ascii`: SIEVE_ASCII_GRAMS_RAW rounded up to whole bytes. */
+export declare const SEARCH_SIEVE_ASCII_GRAMS: number;
+/** The runtime that reads text here, as one string: its versions (node, v8, icu, unicode, cldr; deno or bun when it is
+ *  one), the locale its Segmenter takes, and the digest of this module's reading of a fixed probe (readingDigest). A
+ *  sieve keeps the string it was read under, and answers under that runtime only. Computed once, on first use. */
+export declare function searchRuntime(): string;
+/** The sieve of one transcript (its text, or the parser's Transcript of it), its words read with `segmenter`. */
+export declare function sieveTranscript(input: string | Transcript, segmenter: SearchSegmenter): SearchSieve;
+/** False only when no turn of the sieve's file can hold every term of the query in the kinds searched: some term's
+ *  tokens (words mode) or grams (--substring) are not all in any one kind searched. True when the sieve cannot tell:
+ *  then the file must be read. A sieve of another format, or a words-mode query read with another segmenter, always
+ *  answers true. */
+export declare function sieveMayHold(s: SearchSieve, query: SearchQuery, kinds?: readonly SearchKind[]): boolean;
+/** The SearchResult a search returns for the sieve's file when sieveMayHold is false: no turn, and the file's counts
+ *  for these kinds and this query's gap scripts. */
+export declare function sieveResult(s: SearchSieve, query: SearchQuery, kinds?: readonly SearchKind[]): SearchResult;

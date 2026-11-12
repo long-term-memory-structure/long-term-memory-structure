@@ -20,6 +20,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { freemem, tmpdir } from 'node:os';
 import { constants } from 'node:buffer';
+// ltms runs below with the cache off (LTMS_CACHE unset), and any sieve in a directory of this file's own, removed at exit
+{ const { mkdtempSync: m, rmSync: r } = await import('node:fs'); const { tmpdir: d } = await import('node:os'); const c = m((await import('node:path')).join(d(), 'ltms-test-cache-')); process.env.XDG_CACHE_HOME = c; delete process.env.LTMS_CACHE; process.on('exit', () => r(c, { recursive: true, force: true })); }
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -833,11 +835,11 @@ test('the package: a shebang, no runtime dependencies, nothing imported but node
   assert.equal(pkg.bin.ltms, 'dist/cli.js');
   assert.equal(pkg.bin['long-term-memory-structure'], 'dist/cli.js');
   assert.ok(readFileSync(CLI, 'utf8').startsWith('#!/usr/bin/env node\n'));
-  // 0.2.0: session.js (indexTranscript, ltms index's line) joins the modules
-  for (const f of ['cli.js', 'parser.js', 'search.js', 'session.js', 'pin.js']) {
+  // 0.2.0: session.js (indexTranscript, ltms index's line) joins the modules; S366: sieve-cache.js (search's kept sieves)
+  for (const f of ['cli.js', 'parser.js', 'search.js', 'session.js', 'pin.js', 'sieve-cache.js']) {
     const src = readFileSync(join(dirname(CLI), f), 'utf8');
     const specifiers = [...src.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
-    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js', `${f} imports '${s}'`);
+    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js' || s === './sieve-cache.js', `${f} imports '${s}'`);
     assert.doesNotMatch(src, /\brequire\s*\(|\bimport\s*\(|\bfetch\s*\(|node:(?:https?|net|dgram|tls|http2|child_process)\b/, f);
   }
 });
