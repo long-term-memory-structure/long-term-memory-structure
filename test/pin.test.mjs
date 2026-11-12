@@ -1351,13 +1351,15 @@ test('pin, the notices of recovery: temp files removed (M12), a copy written aga
   const t = tree();
   try {
     await pinPaths([t.src(Q)], t.opts());
-    writeFileSync(join(t.to, Q, `.${SB}.jsonl.ltms-tmp-${deadPid()}`), 'half a write');
+    // half a write of the version a killed pin was writing: a prefix of it, which its source still holds (S367: a temp
+    // holding bytes nothing else holds is kept, not removed)
+    writeFileSync(join(t.to, Q, `.${SB}.jsonl.ltms-tmp-${deadPid()}`), (L1 + L2 + L3).slice(0, 12));
     rmSync(t.pin(`${Q}/${SB}.jsonl`));
     appendFileSync(join(t.to, 'PINS.log'), 'not a log line\n{"t":"cut sh');
     const r = await pinPaths([t.src(Q)], t.opts());
     assert.deepEqual(r.notices, [
-      `removed 1 temp file left in '${t.to}' by a pin that did not finish.`,
       `'${join(t.to, 'PINS.log')}' did not end in a new line: line 4 was cut short; it is closed as it was, and the recovered line after it names it.`,
+      `removed 1 temp file left in '${t.to}' by a pin that did not finish, each holding what a copy or its source holds.`,
       `'${join(t.to, 'PINS.log')}' has 1 line that is not a log line (first: line 3); it is passed over here, and a check of the pin reports it.`,
       `1 copy was missing from '${t.to}' and written again from its source, with a recovered line each.`,
     ]);
@@ -1922,7 +1924,7 @@ test('ltms pin --check: an unlogged file, a temp file, a lock, and sources missi
     const lines = r.err.split('\n').filter((l) => l !== '');
     assert.equal(lines.length, 4, r.err);
     assert.equal(lines[0], `ltms pin: 1 file in '${t.to}' is named by no line in PINS.log (on stdout, "k":"unlogged"); the next pin records each with a recovered line.`);
-    assert.equal(lines[1], `ltms pin: 1 temp file in '${t.to}' was left by a pin that stopped; the next pin removes it.`);
+    assert.equal(lines[1], `ltms pin: 1 temp file in '${t.to}' was left by a pin that stopped; the next pin removes it if a copy or its source holds what it holds, and otherwise keeps it as a kept copy.`);
     assert.equal(lines[2], `ltms pin: '${lockOf(t)}' names pid ${holder.pid} on ${hostname()}, since 2026-11-08T10:00:00.000Z: a pin is running, or one stopped without removing it (the next pin takes over a lock whose pid is no longer running on this host).`);
     assert.match(lines[3], new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is missing from the pin, and 1 is longer than its copy \\(PINS\\.log's last line: ${escapeRe(rows[0].lastLog)}, \\d+ min ago\\)\\. To pin them: ltms pin '${escapeRe(t.root)}' --to '${escapeRe(t.to)}' --root '${escapeRe(t.root)}'$`));
     const none = join(t.tmp, 'no-such-root');
@@ -3530,7 +3532,7 @@ test('ltms pin --check, a PINS.log with another name: nothing is said of what a 
         `ltms pin: '${log}' does not end in a new line: line ${n} is cut short; the next pin closes it with a recovered line.`,
         closing,
         `ltms pin: 1 file in ${shQuoted(to)} is named by no line in PINS.log (on stdout, "k":"unlogged"); the next pin records each with a recovered line.`,
-        `ltms pin: 1 temp file in ${shQuoted(to)} was left by a pin that stopped; the next pin removes it.`,
+        `ltms pin: 1 temp file in ${shQuoted(to)} was left by a pin that stopped; the next pin removes it if a copy or its source holds what it holds, and otherwise keeps it as a kept copy.`,
         `ltms pin: ${shQuoted(lock)} names pid ${holder.pid} on ${hostname()}, since ${holder.started}: a pin is running, or one stopped without removing it (the next pin takes over a lock whose pid is no longer running on this host).`,
         '',
       ], name);
@@ -4148,4 +4150,80 @@ test('README and ltms pin --help say when --check gives the pin command and when
     'Beside the --rehash command it gives none, and says to run the --rehash first: a pin run before it may record a damaged copy.']) {
     assert.ok(help.includes(p), `ltms pin --help does not say: ${p}`);
   }
+});
+
+// ---- S367: what the temp sweep may remove (the adversarial reading of "nothing ltms does destroys a record") -----------
+// The next pin removed every file named like its temp files (/^\..+\.ltms-tmp-\d+$/) anywhere in the pin, unread and
+// before reading PINS.log: a copy of a source so named, and a temp holding the only copy of a version (seats A, B, C).
+
+test('S367 temps: a source of the sweep\'s shape named like a temp file is pinned, and no later pin removes its copy, also after its source is gone', async () => {
+  const t = tree();
+  try {
+    const rel = `${P}/${SA}/tool-results/.out.ltms-tmp-42`, body = 'invented output named like a temp file\n';
+    t.put(rel, body);
+    const r1 = await pinPaths([t.root], t.opts());
+    assert.ok(r1.lines.some((l) => l.how === 'new' && l.rel === rel), 'logged new');
+    unlinkSync(t.src(rel));                                      // the cleanup deletes it by its own age
+    const r2 = await pinPaths([t.root], t.opts());
+    assert.equal(r2.removedTemps, 0, 'not a temp: PINS.log names it');
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), body, 'the only copy is still there');
+    const k = await checkPin(t.to);
+    checkClean(k);
+    assert.equal(k.temps, 0, 'a check does not count it as a temp file either');
+  } finally { t.clean(); }
+});
+
+test('S367 temps: a temp a killed pin left, holding a version that neither the source nor any copy holds any more, is kept, not removed', async () => {
+  const t = tree();
+  try {
+    const rel = `${P}/${SA}.jsonl`, only = '{"type":"user","text":"an invented line that only the temp file will hold"}\n';
+    await pinPaths([t.root], t.opts());
+    appendFileSync(t.src(rel), only);                            // the session grows
+    const c = childPin(t, [t.root], 'temp-written', rel, KILL);  // a pin dies with the grown version in its temp
+    assert.equal(c.signal, 'SIGKILL', c.stderr);
+    assert.equal(readFileSync(join(t.to, P, `.${SA}.jsonl.ltms-tmp-${c.pid}`), 'utf8'), L1 + L2 + only);
+    writeFileSync(t.src(rel), L4);                               // Claude Code rewrites the transcript before the next pin
+    const r = await pinPaths([t.root], t.opts());
+    assert.deepEqual(r.failures, []);
+    const held = filesUnder(t.to).filter((f) => f !== 'PINS.log').map((f) => readFileSync(join(t.to, f), 'utf8'));
+    assert.equal(held.filter((x) => x.includes(only)).length, 1, `the version only the temp held is kept (the pin holds ${held.length} files, none with that line)`);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), L4, 'the source as it is now is pinned');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S367 temps: a temp a killed pin left, whose bytes only a kept copy of its target holds now, is removed: nothing is lost', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = L1 + L2 + L3;
+    await pinPaths([t.root], t.opts());
+    writeFileSync(t.src(rel), L5);                               // rewritten: the next pin keeps v1's copy under its sha12
+    const r1 = await pinPaths([t.root], t.opts());
+    const kept = r1.lines.find((l) => l.how === 'rewritten' && l.rel === rel)?.kept;
+    assert.equal(typeof kept, 'string', 'v1 kept');
+    const temp = join(t.to, Q, `.${SB}.jsonl.ltms-tmp-${deadPid()}`);
+    writeFileSync(temp, v1.slice(0, 20));                        // half a write of v1, left by a pin that died
+    const r2 = await pinPaths([t.root], t.opts());
+    assert.deepEqual(r2.failures, []);
+    assert.deepEqual([r2.removedTemps, existsSync(temp)], [1, false], 'removed: only the kept copy holds what it held');
+    assert.equal(readFileSync(t.pin(kept), 'utf8'), v1);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S367 temps: a temp a killed pin left, whose bytes only the copy holds when the next pin starts (its source rewritten since), is removed; the rewrite then keeps that copy', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = L1 + L2 + L3;
+    await pinPaths([t.root], t.opts());
+    const temp = join(t.to, Q, `.${SB}.jsonl.ltms-tmp-${deadPid()}`);
+    writeFileSync(temp, v1.slice(0, 20));                        // half a write of v1, left by a pin that died
+    writeFileSync(t.src(rel), L5);                               // rewritten since: the source no longer holds it
+    const r = await pinPaths([t.root], t.opts());
+    assert.deepEqual(r.failures, []);
+    assert.deepEqual([r.removedTemps, existsSync(temp)], [1, false], 'removed: the copy holds what it held');
+    const kept = r.lines.find((l) => l.how === 'rewritten' && l.rel === rel)?.kept;
+    assert.equal(readFileSync(t.pin(kept), 'utf8'), v1, 'and the rewrite keeps the copy');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
 });

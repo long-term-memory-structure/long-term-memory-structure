@@ -1227,6 +1227,125 @@ function recover(e, scan, sources, unread) {
     }
     return n;
 }
+/** The temp files a pin that did not finish left, settled once PINS.log is read (S367; the adversarial reading of
+ *  "nothing ltms does destroys a record"). A file named like a temp that a line names is a pinned file, not a temp: a
+ *  source of the sweep's shape can bear such a name. A temp is removed only when what it holds is held already: a byte
+ *  prefix of its target's copy, of a kept copy of its target, or of its target's source (which this run pins). Any other
+ *  can be the only copy of a version, its source rewritten or gone since: it is kept, linked to the kept name of its own
+ *  bytes (never over another file), and recorded by a recovered line, as a file of the pin no line named. */
+function settleTemps(e, scan, root) {
+    const st = e.log.st, out = { removed: 0, kept: [] };
+    const fail = (path, rel, op, err) => {
+        if (typeof err !== 'string' && !isFsError(err))
+            throw err;
+        e.failures.push({ path, rel, op, code: typeof err === 'string' ? err : codeOf(err) });
+    };
+    for (const abs of scan.temps) {
+        const rel = relative(e.to, abs).split(sep).join('/');
+        // a waiting pin's lock temp file, its pid no longer running (scanPin): the lock's, never a copy (a file directly
+        // under the root is never of the sweep's shape), so removed as before
+        if (dirname(abs) === e.to && LOCK_TEMP.test(basename(abs))) {
+            try {
+                unlinkSync(abs);
+                out.removed++;
+            }
+            catch (err) {
+                fail(abs, null, 'recover', err);
+            }
+            continue;
+        }
+        if (st.named.has(rel)) {
+            try {
+                const s = lstatSync(abs, { bigint: true });
+                scan.files.set(rel, { size: Number(s.size), mtime: isoNs(s.mtimeNs) });
+                e.present.add(rel);
+            }
+            catch { /* gone since the scan */ }
+            continue;
+        }
+        let t;
+        try {
+            t = readRegular(abs);
+        }
+        catch (err) {
+            fail(abs, null, 'recover', err);
+            continue;
+        }
+        const m = /^\.(.+)\.ltms-tmp-\d+$/.exec(basename(abs)), slash = rel.lastIndexOf('/');
+        const target = m === null ? null : `${slash < 0 ? '' : rel.slice(0, slash + 1)}${m[1]}`;
+        const holdsT = (path) => {
+            let b;
+            try {
+                b = readRegular(path);
+            }
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+                return false;
+            }
+            return b.length >= t.length && b.subarray(0, t.length).equals(t);
+        };
+        let held = t.length === 0;
+        if (!held && target !== null) {
+            const where = [under(e.to, target), under(root, target)];
+            for (const l of st.parsed)
+                if (l !== null && l.rel === target && typeof l.kept === 'string')
+                    where.push(under(e.to, l.kept));
+            held = where.some(holdsT);
+        }
+        if (held) {
+            try {
+                unlinkSync(abs);
+                out.removed++;
+            }
+            catch (err) {
+                fail(abs, null, 'recover', err);
+            }
+            continue;
+        }
+        const sha = sha256(t), k = keptRel(target ?? rel, sha), kAbs = under(e.to, k);
+        try {
+            linkSync(abs, kAbs);
+        }
+        catch (err) {
+            if (codeOf(err) !== 'EEXIST') {
+                fail(kAbs, k, 'keep', err);
+                continue;
+            }
+            let there;
+            try {
+                there = readRegular(kAbs);
+            }
+            catch (err2) {
+                fail(kAbs, k, 'keep', err2);
+                continue;
+            }
+            if (sha256(there) !== sha) {
+                fail(kAbs, k, 'keep', 'kept-copy-differs');
+                continue;
+            }
+        }
+        try {
+            fsyncDir(dirname(kAbs), e.platform);
+            unlinkSync(abs);
+        }
+        catch (err) {
+            fail(abs, null, 'recover', err);
+        }
+        let mtime = null;
+        try {
+            mtime = isoNs(lstatSync(kAbs, { bigint: true }).mtimeNs);
+        }
+        catch { /* linked a moment ago */ }
+        if (!st.named.has(k))
+            e.log.append({ t: now(), rel: k, how: 'recovered', bytes: t.length, sha256: sha, prev: null, ...(mtime === null ? {} : { mtime }) });
+        if (mtime !== null)
+            scan.files.set(k, { size: t.length, mtime });
+        e.present.add(k);
+        out.kept.push(k);
+    }
+    return out;
+}
 /** The pinned files under the given paths whose source is gone (lstat gives ENOENT or ENOTDIR). */
 function keptSourceGone(st, w, present, root) {
     let n = 0;
@@ -1315,17 +1434,6 @@ export async function pinPaths(paths, options) {
         held = got.held;
         takeover = got.takeover;
         const scan = scanPin(to);
-        for (const tmp of scan.temps) {
-            try {
-                unlinkSync(tmp);
-                removedTemps++;
-            }
-            catch (err) {
-                failures.push({ path: tmp, rel: null, op: 'recover', code: codeOf(err) });
-            }
-        }
-        if (removedTemps)
-            notices.push(`removed ${removedTemps} temp ${plural(removedTemps, 'file', 'files')} left in '${to}' by a pin that did not finish.`);
         const logPath = join(to, LOG);
         try {
             // read again under the lock, as a regular file: a link or a FIFO put at its name since the refusals were checked
@@ -1357,6 +1465,13 @@ export async function pinPaths(paths, options) {
                 log.append({ t: now(), how: 'takeover', lock: takeover });
                 notices.push(`took over the lock '${join(to, LOCK)}': pid ${takeover.pid} took it at ${takeover.started} and is no longer running on this host; PINS.log has a takeover line.`);
             }
+            // the temp files a pin that did not finish left, settled only now that PINS.log is read (settleTemps, S367)
+            const temps = settleTemps(e, scan, root);
+            removedTemps = temps.removed;
+            if (removedTemps)
+                notices.push(`removed ${removedTemps} temp ${plural(removedTemps, 'file', 'files')} left in '${to}' by a pin that did not finish, each holding what a copy or its source holds.`);
+            if (temps.kept.length)
+                notices.push(`${temps.kept.length} temp ${plural(temps.kept.length, 'file', 'files')} left in '${to}' by a pin that did not finish held what no copy and no source holds any more: kept as ${temps.kept.map((k) => `'${k}'`).join(', ')}, with a recovered line each.`);
             const unread = state.unreadable.length;
             if (unread)
                 notices.push(`'${logPath}' has ${unread} ${plural(unread, 'line', 'lines')} that ${plural(unread, 'is not a log line', 'are not log lines')} (first: line ${state.unreadable[0]}); ${plural(unread, 'it is', 'they are')} passed over here, and a check of the pin reports ${plural(unread, 'it', 'them')}.`);
@@ -1643,5 +1758,5 @@ export async function checkPin(dir, options = {}) {
         staleness = { root, fromLog: options?.root === undefined, sources: w.files.size, missing, longer, unfinished, projectsNotPinned, failed: w.failures.length };
     }
     return { k: 'checked', dir: d, root: st.root?.root ?? null, lines: st.lines, logNames: log.names, versions: fileLines.length, files, mismatches,
-        chainBreaks, unreadableLines, unlogged, temps: scan.temps.length, lastLog: st.lastT, staleness, lock, notices, ms: Date.now() - t0 };
+        chainBreaks, unreadableLines, unlogged, temps: scan.temps.filter((a) => !st.named.has(relative(d, a).split(sep).join('/'))).length, lastLog: st.lastT, staleness, lock, notices, ms: Date.now() - t0 };
 }

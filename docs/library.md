@@ -902,7 +902,7 @@ A pin that ran.
 | `failures` | one [`PinFailure`](#pinfailure) per file or directory that could not be read or written | `[]` |
 | `lines` | every line this run appended to PINS.log, in order, each equal to the line as it parses: the root line when the log was made; a `recovered` line for a log line cut short; a `takeover` line; recovery's `recovered` lines for files; then one line per file written, in rel order (a file found holding other bytes than its line records gets a `recovered` line just before its own) | `[]` when nothing changed |
 | `takeover` | the lock this run took over: its pid no longer ran on this host (`process.kill(pid, 0)` gave ESRCH), or it was this process's pid and this process had not taken it. PINS.log has a `takeover` line for it | `null` |
-| `removedTemps` | the temp files of a pin that did not finish, removed before pinning | 0 |
+| `removedTemps` | the temp files of a pin that did not finish, removed once `PINS.log` was read, each because its copy, a kept copy or its source holds what it held; any other is kept as the kept copy of its own bytes, with a `recovered` line (a notice names it) | 0 |
 | `notices` | sentences about what this run found and did besides pinning: a pin directory open to other users (its mode, and the `chmod` command), a takeover, temp files removed, a log line closed, recovered lines, copies written again (missing, or with `rehash` holding other bytes), versions lost (a copy missing while its source was rewritten), log lines that are not log lines, a stop by a signal, a log that could not be written | `[]` |
 | `interrupted` | the signal (`SIGINT`, `SIGTERM` or `SIGHUP`) that stopped the run between two files, or during its wait for the lock; every file pinned before it is whole and logged. When nothing else listens for that signal, the process is ended by it, and the promise never settles | `null` |
 
@@ -1011,7 +1011,7 @@ A check that ran.
 | `chainBreaks` | one [`PinChainBreak`](#pinchainbreak) per line whose chain is not the sha256 of the line before it. A line that is not a log line is not checked, but the line after it is checked against its bytes | `[]` |
 | `unreadableLines` | the numbers of the lines that are not log lines, a last line cut short (with no new line yet) included. A cut line that a `recovered` line names (`torn.line`) is not counted | `[]` |
 | `unlogged` | the rels of files of the pin's shape that no line names, as its `rel` or its `kept`, sorted | `[]` |
-| `temps` | temp files of a pin that did not finish (`.<name>.ltms-tmp-<pid>`); the lock's temp file of a pin waiting for the lock, whose pid runs on this host, is not counted | 0 |
+| `temps` | temp files of a pin that did not finish (`.<name>.ltms-tmp-<pid>`); the lock's temp file of a pin waiting for the lock, whose pid runs on this host, is not counted, and neither is a file so named that a line of `PINS.log` names (a copy) | 0 |
 | `lastLog` | the `t` of the last log line | `null` when no line is a log line |
 | `staleness` | the [`PinStaleness`](#pinstaleness): how far the pin is behind its sources | `null` when no root is given and PINS.log records none |
 | `lock` | what `<dir>/.ltms-pin.lock` holds after the check: a pin that stopped without removing it, or one that took the lock while the check ran (a notice says so; a running pin found at the start is waited for) | `null` when there is no lock, or it cannot be read as one (a notice says so) |
