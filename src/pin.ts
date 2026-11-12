@@ -1163,6 +1163,24 @@ function linkOnTheWay(to: string, dir: string, seen: Map<string, string | null>)
   return found;
 }
 
+/** Whether the file at path is exactly buf's first n bytes, read in chunks of 1 MiB, never whole, as a regular file: a
+ *  grown copy is checked so, beside the source already held (S368, the re-check's A2: reading the copy whole doubled
+ *  the memory a pin needs, and under a limit killed pins that 0.2.0 finished). False when it cannot be read. */
+function equalsPrefix(path: string, buf: Buffer, n: number): boolean {
+  let fd: number;
+  try { fd = openRegular(path, fsConstants.O_RDONLY); } catch { return false; }
+  try {
+    if (fstatSync(fd).size !== n || n > buf.length) return false;
+    const chunk = Buffer.allocUnsafe(Math.min(1 << 20, Math.max(n, 1)));
+    for (let pos = 0; pos < n;) {
+      const r = readSync(fd, chunk, 0, Math.min(chunk.length, n - pos), pos);
+      if (r === 0 || !chunk.subarray(0, r).equals(buf.subarray(pos, pos + r))) return false;
+      pos += r;
+    }
+    return true;
+  } catch { return false; } finally { closeSync(fd); }
+}
+
 /** Whether the copy at path holds exactly version v; a copy that cannot be read, or is not a regular file, does not. */
 function holds(path: string, v: FileState): boolean {
   try { const b = readRegular(path); return b.length === v.bytes && sha256(b) === v.sha256; } catch { return false; }
@@ -1266,7 +1284,11 @@ function pinOne(rel: string, src: string, e: Env): Outcome {
   if (how === 'rewritten' && present && disk === null) return fail('keep', dst, 'ENOENT');
   const believed: FileState | null = present && last !== undefined ? last : null;
   let old: Buffer | null = null;
-  if (disk !== null) {
+  // a grown copy that is the version its last line records, the bytes the source starts with: compared in chunks, not
+  // read whole (equalsPrefix); any other copy is read whole, as a rewrite read it in 0.2.0
+  const grownAsLine = disk !== null && how === 'grown' && believed !== null && Number(disk.size) === believed.bytes
+    && prefix === believed.sha256 && equalsPrefix(dst, buf, believed.bytes);
+  if (disk !== null && !grownAsLine) {
     try { old = readRegular(dst); } catch (err) { if (!isFsError(err)) throw err; return fail('keep', dst, err); }
   }
   // a copy missing from the pin cannot be kept: when its source has been rewritten since, its version is lost
