@@ -653,7 +653,7 @@ function holderIn(raw) {
             return null;
         const h = { pid: o.pid, host: o.host, started: o.started };
         const fields = o;
-        for (const k of ['boot', 'pidns', 'start']) {
+        for (const k of ['boot', 'pidns']) {
             const v = fields[k];
             if (typeof v === 'string')
                 h[k] = v;
@@ -691,17 +691,6 @@ function self() {
     }
     return selfRead;
 }
-/** A process's start time, in clock ticks since boot (field 22 of /proc/<pid>/stat, counted after the command's ')',
- *  which may hold spaces), or null where it cannot be read. */
-function startOf(pid) {
-    try {
-        const s = readFileSync(`/proc/${pid}/stat`, 'utf8');
-        return s.slice(s.lastIndexOf(')') + 2).split(' ')[19] ?? null;
-    }
-    catch {
-        return null;
-    }
-}
 function lockSeen(path, holder) {
     if (holder === null)
         return 'unreadable';
@@ -714,14 +703,7 @@ function lockSeen(path, holder) {
         return 'other-namespace';
     if (holder.pid === process.pid)
         return heldHere.has(path) ? 'running' : 'dead';
-    if (!running(holder.pid))
-        return 'dead';
-    if (holder.start !== undefined) {
-        const s = startOf(holder.pid);
-        if (s !== null && s !== holder.start)
-            return 'dead';
-    }
-    return 'running';
+    return running(holder.pid) ? 'running' : 'dead';
 }
 function busy(path, holder, seen, waitedMs) {
     const waited = `${(waitedMs / 1000).toFixed(1)} s`;
@@ -753,9 +735,9 @@ class LockLost extends Error {
  *  stops the wait (`stopped`). */
 async function acquire(to, waitMs, stop) {
     const path = join(to, LOCK), tmp = join(to, tempName(LOCK));
-    const me = self(), start = startOf('self');
+    const me = self();
     const body = JSON.stringify({ pid: process.pid, host: hostname(), started: now(),
-        ...(me.boot === null ? {} : { boot: me.boot }), ...(me.pidns === null ? {} : { pidns: me.pidns }), ...(start === null ? {} : { start }) });
+        ...(me.boot === null ? {} : { boot: me.boot }), ...(me.pidns === null ? {} : { pidns: me.pidns }) });
     const t0 = Date.now();
     let takeover = null;
     const failed = (e) => ({ k: 'failed', failure: { path, rel: null, op: 'lock', code: codeOf(e) } });
@@ -1152,6 +1134,7 @@ function pinOne(rel, src, e) {
                     throw err;
             } // read by recovery a moment ago
             if (held !== null && startsWith(held, last) && damageAfter(held, last, rel)) {
+                e.guard();
                 try {
                     cutBack(dst, held, last, e.platform);
                 }
@@ -1570,9 +1553,14 @@ function settleTemps(e, scan, root) {
             }
             return b.length >= t.length && b.subarray(0, t.length).equals(t);
         };
+        // held when a file of the pin holds its bytes: its target's copy, or a kept copy of it. Its source holding them is
+        // not enough (S368, the re-check's B1): a pin of another project leaves that source unpinned, and once it is
+        // rewritten the version is in no file. Except a .jsonl temp whose bytes do not end in a new line: a write cut short,
+        // which holds no version (a pin copies whole lines), removed when its source holds them too
         let held = t.length === 0;
+        const cutShort = target !== null && target.endsWith('.jsonl') && t[t.length - 1] !== 0x0a;
         if (!held && target !== null) {
-            const where = [under(e.to, target), under(root, target)];
+            const where = cutShort ? [under(e.to, target), under(root, target)] : [under(e.to, target)];
             for (const l of st.parsed)
                 if (l !== null && l.rel === target && typeof l.kept === 'string')
                     where.push(under(e.to, l.kept));

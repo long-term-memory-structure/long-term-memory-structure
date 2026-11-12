@@ -988,7 +988,7 @@ A pin that ran.
 | `coverage` | the [`PinCoverage`](#pincoverage) | never absent |
 | `failures` | one [`PinFailure`](#pinfailure) per file or directory that could not be read or written | `[]` |
 | `lines` | every line this run appended to PINS.log, in order, each equal to the line as it parses: the root line when the log was made; a `recovered` line for a log line cut short; a `takeover` line; recovery's `recovered` lines for files; then one line per file written, in rel order (a file found holding other bytes than its line records gets a `recovered` line just before its own) | `[]` when nothing changed |
-| `takeover` | the lock this run took over, on this host: one left before the host's last boot (another `boot`), one whose pid no longer ran (`process.kill(pid, 0)` gave ESRCH) or ran another process (another `start`), or this process's pid when this process had not taken it. Never one in another PID namespace (`PinBusy.otherNamespace`). PINS.log has a `takeover` line for it | `null` |
+| `takeover` | the lock this run took over, on this host: one left before the host's last boot (another `boot`), one whose pid no longer ran (`process.kill(pid, 0)` gave ESRCH), or this process's pid when this process had not taken it. Never one in another PID namespace (`PinBusy.otherNamespace`). PINS.log has a `takeover` line for it | `null` |
 | `removedTemps` | the temp files of a pin that did not finish, removed once `PINS.log` was read, each because its copy, a kept copy or its source holds what it held; any other is kept as the kept copy of its own bytes, with a `recovered` line (a notice names it) | 0 |
 | `notices` | sentences about what this run found and did besides pinning: a pin directory open to other users (its mode, and the `chmod` command), a pin directory that could not be listed (nothing written), a takeover, temp files removed, a log line closed, recovered lines, copies written again (missing, or with `rehash` holding other bytes), versions lost (a copy missing while its source was rewritten), the bytes of copies kept beside them before `rehash` wrote them again (each kept name), log lines that are not log lines, a stop by a signal, a lock lost or a log changed under the run (it stopped before its next write), a log that could not be written | `[]` |
 | `interrupted` | the signal (`SIGINT`, `SIGTERM` or `SIGHUP`) that stopped the run between two files, or during its wait for the lock; every file pinned before it is whole and logged. When nothing else listens for that signal, the process is ended by it, and the promise never settles | `null` |
@@ -1038,7 +1038,7 @@ A file or directory that could not be read or written. The run goes on, except a
 
 #### `PinLockHolder`
 
-What `<to>/.ltms-pin.lock` holds, as JSON. The lock is written whole into a temp file and fsynced before it is linked to its name, so it is never seen empty. Where the platform gives them (Linux: `/proc`), it also names the host's boot, the process's PID namespace and its start time, by which a pin tells a lock left before the last boot (taken over), a pid that now runs another process (taken over), and a holder in another PID namespace (never taken over: `PinBusy.otherNamespace`). A lock without them (ltms 0.2.0 or older, or another platform) is read by its pid alone, as before.
+What `<to>/.ltms-pin.lock` holds, as JSON. The lock is written whole into a temp file and fsynced before it is linked to its name, so it is never seen empty. Where the platform gives them (Linux: `/proc`), it also names the host's boot and the process's PID namespace, by which a pin tells a lock left before the last boot (taken over) and a holder in another PID namespace (never taken over: `PinBusy.otherNamespace`). A running pid counts as the holder, as in 0.2.0 (a time namespace shifts the start time a process sees, so a start time cannot tell a reused pid: S368). A lock without them (ltms 0.2.0 or older, or another platform) is read by its pid alone.
 
 | member | meaning | when absent, null or empty |
 |---|---|---|
@@ -1047,7 +1047,6 @@ What `<to>/.ltms-pin.lock` holds, as JSON. The lock is written whole into a temp
 | `started` | when it took the lock (ISO) | never absent |
 | `boot` | the host's boot id (`/proc/sys/kernel/random/boot_id`) | absent where it cannot be read, and in a lock written by ltms 0.2.0 or older |
 | `pidns` | the process's PID namespace (`readlink /proc/self/ns/pid`, e.g. `pid:[4026531836]`) | absent where it cannot be read, and in a lock written by ltms 0.2.0 or older |
-| `start` | the process's start time, in clock ticks since boot (field 22 of `/proc/<pid>/stat`) | absent where it cannot be read, and in a lock written by ltms 0.2.0 or older |
 
 #### `PinVersion`
 

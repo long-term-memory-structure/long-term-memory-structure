@@ -36,10 +36,10 @@ export type PinHow = 'new' | 'grown' | 'rewritten' | 'recovered';
 export interface PinVersion { bytes: number; sha256: string }
 
 /** What a pin's lock file holds: the process that holds it, the host it runs on, and when it took the lock (ISO); and,
- *  where the platform gives them (Linux: /proc), the host's boot id, the process's PID namespace and its start time in
- *  clock ticks since boot, which tell a lock left before the last boot, a pid now used by another process, and a pin
- *  that runs in another PID namespace (S368). A lock written by ltms 0.2.0 or older has none of the three. */
-export interface PinLockHolder { pid: number; host: string; started: string; boot?: string; pidns?: string; start?: string }
+ *  where the platform gives them (Linux: /proc), the host's boot id and the process's PID namespace, which tell a lock
+ *  left before the last boot, and a pin that runs in another PID namespace (S368). A lock written by ltms 0.2.0 or older
+ *  has neither. */
+export interface PinLockHolder { pid: number; host: string; started: string; boot?: string; pidns?: string }
 
 /** One line of PINS.log. Which fields a line has depends on `how`: `root` (the first line), `takeover`, a file's line
  *  (`new`, `grown`, `rewritten`, `recovered`), or a `recovered` line that names a line cut short (`torn`). */
@@ -859,7 +859,7 @@ function holderIn(raw: string): PinLockHolder | null {
     if (!isHolder(o)) return null;
     const h: PinLockHolder = { pid: o.pid, host: o.host, started: o.started };
     const fields = o as unknown as Record<string, unknown>;
-    for (const k of ['boot', 'pidns', 'start'] as const) { const v = fields[k]; if (typeof v === 'string') h[k] = v; }
+    for (const k of ['boot', 'pidns'] as const) { const v = fields[k]; if (typeof v === 'string') h[k] = v; }
     return h;
   } catch { return null; }
 }
@@ -878,18 +878,13 @@ function self(): { boot: string | null; pidns: string | null } {
   }
   return selfRead;
 }
-/** A process's start time, in clock ticks since boot (field 22 of /proc/<pid>/stat, counted after the command's ')',
- *  which may hold spaces), or null where it cannot be read. */
-function startOf(pid: number | 'self'): string | null {
-  try { const s = readFileSync(`/proc/${pid}/stat`, 'utf8'); return s.slice(s.lastIndexOf(')') + 2).split(' ')[19] ?? null; }
-  catch { return null; }
-}
 
 /** What a lock tells of its holder: `dead` (taken over), or why it counts as running: `running` (its process runs on this
  *  host), `other-host`, `other-namespace` (on this host, in another PID namespace: its pid names nothing here), or
  *  `unreadable` (not a pin's lock). Dead: on this host, left before its last boot (another boot id), or its pid runs no
- *  process, or another one (another start time), or this process's own pid when this process did not take it. A lock
- *  with no boot id, namespace or start time (ltms 0.2.0 or older) is read by its pid alone, as before. */
+ *  process, or this process's own pid when this process did not take it. A running pid counts as the lock's holder, as
+ *  in 0.2.0: a start time would tell a reused pid, but a time namespace shifts the start time a process sees, and a
+ *  live pin was taken over (S368, the re-check's A3). A lock with no boot id or namespace is read by its pid alone. */
 type LockSeen = 'dead' | 'running' | 'other-host' | 'other-namespace' | 'unreadable';
 function lockSeen(path: string, holder: PinLockHolder | null): LockSeen {
   if (holder === null) return 'unreadable';
@@ -898,9 +893,7 @@ function lockSeen(path: string, holder: PinLockHolder | null): LockSeen {
   if (holder.boot !== undefined && me.boot !== null && holder.boot !== me.boot) return 'dead';
   if (holder.pidns !== undefined && me.pidns !== null && holder.pidns !== me.pidns) return 'other-namespace';
   if (holder.pid === process.pid) return heldHere.has(path) ? 'running' : 'dead';
-  if (!running(holder.pid)) return 'dead';
-  if (holder.start !== undefined) { const s = startOf(holder.pid); if (s !== null && s !== holder.start) return 'dead'; }
-  return 'running';
+  return running(holder.pid) ? 'running' : 'dead';
 }
 
 function busy(path: string, holder: PinLockHolder | null, seen: LockSeen, waitedMs: number): PinBusy {
@@ -934,9 +927,9 @@ interface Stop { signal: NodeJS.Signals | null }
  *  stops the wait (`stopped`). */
 async function acquire(to: string, waitMs: number, stop: Stop): Promise<Acquired> {
   const path = join(to, LOCK), tmp = join(to, tempName(LOCK));
-  const me = self(), start = startOf('self');
+  const me = self();
   const body = JSON.stringify({ pid: process.pid, host: hostname(), started: now(),
-    ...(me.boot === null ? {} : { boot: me.boot }), ...(me.pidns === null ? {} : { pidns: me.pidns }), ...(start === null ? {} : { start }) });
+    ...(me.boot === null ? {} : { boot: me.boot }), ...(me.pidns === null ? {} : { pidns: me.pidns }) });
   const t0 = Date.now();
   let takeover: PinLockHolder | null = null;
   const failed = (e: unknown): Acquired => ({ k: 'failed', failure: { path, rel: null, op: 'lock', code: codeOf(e) } });
@@ -1225,6 +1218,7 @@ function pinOne(rel: string, src: string, e: Env): Outcome {
       let held: Buffer | null = null;
       try { held = readRegular(dst); } catch (err) { if (!isFsError(err)) throw err; }   // read by recovery a moment ago
       if (held !== null && startsWith(held, last) && damageAfter(held, last, rel)) {
+        e.guard();
         try { cutBack(dst, held, last, e.platform); } catch (err) { if (!isFsError(err)) throw err; return fail('write', dst, err); }
       }
     }
@@ -1530,9 +1524,14 @@ function settleTemps(e: Env, scan: PinScan, root: string): { removed: number; ke
       try { b = readRegular(path); } catch (err) { if (!isFsError(err)) throw err; return false; }
       return b.length >= t.length && b.subarray(0, t.length).equals(t);
     };
+    // held when a file of the pin holds its bytes: its target's copy, or a kept copy of it. Its source holding them is
+    // not enough (S368, the re-check's B1): a pin of another project leaves that source unpinned, and once it is
+    // rewritten the version is in no file. Except a .jsonl temp whose bytes do not end in a new line: a write cut short,
+    // which holds no version (a pin copies whole lines), removed when its source holds them too
     let held = t.length === 0;
+    const cutShort = target !== null && target.endsWith('.jsonl') && t[t.length - 1] !== 0x0a;
     if (!held && target !== null) {
-      const where = [under(e.to, target), under(root, target)];
+      const where = cutShort ? [under(e.to, target), under(root, target)] : [under(e.to, target)];
       for (const l of st.parsed) if (l !== null && l.rel === target && typeof l.kept === 'string') where.push(under(e.to, l.kept));
       held = where.some(holdsT);
     }
