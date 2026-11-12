@@ -881,23 +881,27 @@ that rate 6 GB would take 1.5 to 2.5 minutes, around the Bash tool's
 default timeout of 2 minutes: search the project's own folder, or give the
 command a longer timeout.
 
-The sieves (--cache, or LTMS_CACHE=1; experimental): each file read under
-a directory given gets a sieve, kept in $XDG_CACHE_HOME/ltms/sieves (else
+The sieves (--cache, or LTMS_CACHE=1; experimental): each file read under a
+directory given gets a sieve, kept in $XDG_CACHE_HOME/ltms/sieves (else
 ~/.cache/ltms/sieves): the counts the coverage line takes from it, and
-which words and which runs of up to 3 characters its text holds, each by
-kind, as bits. No text. A later search answers a file from its sieve,
+which words and which runs of up to 3 characters (UTF-16 code units) its
+text holds, each by kind, as bits. It keeps no text as written, but it
+tells whether a word or a short run is in its file, and short ASCII text
+can be pieced back from it: keep it as private as the transcripts (it is
+made 0700, its files 0600). A later search answers a file from its sieve,
 without opening it, when the sieve shows that some term is in no kind
-searched; any other file is read as without one. So the output is the
-same, the time aside. A sieve is used only while its file is unchanged
-(the same size, times and inode), and only by the node that kept it: its
-versions, its ICU files and its reading of a fixed text must be the same,
-since another runtime can read the same text into other words; after an
-upgrade every file is read again, once, and its sieve kept anew. A file
-that changed while it was read gets none, and so does a file modified in
-the last five minutes (a session still running): it is read at every
-search. The first search with --cache reads every file and is slower (it
-builds the sieves); rm -r ~/.cache/ltms removes them. Files named on the
-command line are always read.
+searched; any other file is read as without one. So the output is the same,
+the time and the closing line's sentence on the sieves aside. A sieve is
+used only while its file is unchanged (the same size, times and inode), and
+only by the node that kept it: its versions, its ICU files and its reading
+of a fixed text must be the same, since another runtime can read the same
+text into other words; after an upgrade every file is read again, once, and
+its sieve kept anew. A file that changed while it was read gets none, and
+so does a file modified in the last five minutes (a session still running):
+it is read at every search. The first search with --cache reads every file
+and is slower (it builds the sieves). Sieves stay until removed, also after
+their files are gone: rm -r the directory the closing line names. Files
+named on the command line are always read.
 
 The coverage line:
   k             "coverage"
@@ -1073,7 +1077,8 @@ function readSearchArgs(args) {
     const usage = (m) => { err(`ltms search: ${m}`); return 2; };
     const positional = [];
     const kinds = new Set();
-    let kindsGiven = false, substring = false, count = false, oldest = false, cache = process.env.LTMS_CACHE === '1', max = 20, skip = 0, ended = false;
+    const envCache = process.env.LTMS_CACHE;
+    let kindsGiven = false, substring = false, count = false, oldest = false, cache = envCache === '1', max = 20, skip = 0, ended = false;
     let cacheFlag = null;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -1168,6 +1173,10 @@ function readSearchArgs(args) {
     }
     if (cacheFlag !== null)
         cache = cacheFlag;
+    // a value read as neither on nor off is said, not passed over (S366 review B8)
+    else if (envCache !== undefined && envCache !== '' && envCache !== '0' && envCache !== '1') {
+        err(`ltms search: notice: LTMS_CACHE is ${JSON.stringify(envCache.slice(0, 40))}, not 1 or 0: no sieve is kept or used (LTMS_CACHE=1 keeps and uses them).`);
+    }
     return { query, paths, kinds: kindsGiven ? kinds : new Set(SEARCH_DEFAULT_KINDS), kindsGiven, substring, max, skip, count, oldest, cache, queryIsPath: queryNamesPath(query) };
 }
 /** The notices about the query, before the scan: terms dropped, an unclosed quote, the scripts whose words this search

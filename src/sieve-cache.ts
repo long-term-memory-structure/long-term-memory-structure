@@ -2,15 +2,17 @@
 //  sieve-cache.ts: the sieves `ltms search` keeps between searches (search.ts, section 10), on disk.
 //
 //  One file per transcript, named by a hash of its device and inode, in $XDG_CACHE_HOME/ltms/sieves (an absolute
-//  XDG_CACHE_HOME; else ~/.cache/ltms/sieves). A sieve is used only for the file it was built from, unchanged, and
-//  only by the runtime that built it: its key is the device, inode, size, modification time and status-change time
-//  (in nanoseconds), the ltms version and sieve format that built it, the runtime's reading of text (searchRuntime())
-//  and the files that runtime reads text with (runtimeFiles()); any difference, or any error reading it, and the
-//  transcript is read instead. Its bytes on disk are sealed by their sha256, so a sieve damaged there is passed over. It
-//  is written only when the file did not change while it was read (the same key before and after, and as many bytes
-//  as its size). It holds bits and counts, no text. The directories are made mode 0700 and the files 0600, and the
-//  cache is used only when the ltms and sieves directories are this user's, and no one else can write to them: a sieve
-//  someone else wrote could hide a file's hits.
+//  XDG_CACHE_HOME; else ~/.cache/ltms/sieves, under an absolute home). A sieve is used only for the file it was built
+//  from, unchanged, and only by the runtime that built it: its key is the device, inode, size, modification time and
+//  status-change time (in nanoseconds), the ltms version and sieve format that built it, the runtime's reading of text
+//  (searchRuntime()) and the files that runtime reads text with (runtimeFiles()); any difference, or any error reading
+//  it, and the transcript is read instead. Its bytes on disk are sealed by their sha256, so a sieve damaged there is
+//  passed over. It is written only when the file did not change while it was read (the same key before and after, and
+//  as many bytes as its size). It holds bits and counts and no text as written, not even the transcript's last
+//  timestamp; but its bits tell whether a word or a run of up to 3 code units is in the file, by kind, and short ASCII
+//  text can be pieced back from its exact gram bits: it is as private as the transcript. The directories are made mode
+//  0700 and the files 0600, and the cache is used only when the ltms and sieves directories are this user's, and no one
+//  else can write to them: a sieve someone else wrote could hide a file's hits.
 // ============================================================================
 
 import { createHash } from 'node:crypto';
@@ -81,6 +83,8 @@ export function sieveCacheDir(): { dir: string; base: string } | { why: string }
     let h = '';
     try { h = homedir(); } catch { /* none */ }
     if (!h) return { why: 'no home directory is known and XDG_CACHE_HOME is not an absolute path' };
+    // a relative home would put the sieves under the current directory, wherever the command runs (S366 review B8)
+    if (!isAbsolute(h)) return { why: `the home directory ${JSON.stringify(h.slice(0, 80))} is not an absolute path, and XDG_CACHE_HOME is not set to one` };
     base = join(h, '.cache');
   }
   return { dir: join(base, 'ltms', 'sieves'), base };
@@ -140,7 +144,9 @@ export class SieveCache {
    *  written. It is not fsynced: a sieve cut short by a crash fails its seal and is read as none (S366 review B4). */
   write(st: BigIntStats, sieve: SearchSieve, flags: SieveFlags): boolean {
     const { words, ascii, grams, ...rest } = sieve;
-    const head = JSON.stringify({ key: sieveKey(st), ltms: this.version, files: runtimeFiles(), sieve: rest, words: { m: words.m, k: words.k }, grams: { m: grams.m, k: grams.k }, flags });
+    // last, the transcript's own timestamp string, is not kept: the command never uses it for a file answered from its
+    // sieve (only files with hits are ordered by it), and a cache holds no string of the transcript (S366 review B6)
+    const head = JSON.stringify({ key: sieveKey(st), ltms: this.version, files: runtimeFiles(), sieve: { ...rest, last: null }, words: { m: words.m, k: words.k }, grams: { m: grams.m, k: grams.k }, flags });
     const z = deflateRawSync(Buffer.concat([Buffer.from(head + '\n', 'utf8'), words.bits, ascii, grams.bits]));
     const sealed = Buffer.concat([Buffer.from(MAGIC + createHash('sha256').update(z).digest('hex') + '\n', 'latin1'), z]);
     const name = this.nameOf(st), tmp = `${name}.${process.pid}.${Date.now()}.tmp`;

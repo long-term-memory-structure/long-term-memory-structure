@@ -953,7 +953,9 @@ export function searchTranscript(input, query, options = {}) {
 // A sieve holds, for one transcript, the counts a search adds up for it whatever the query (by the kinds searched),
 // and what can be asked of its text without the text: which tokens it holds (words mode), and which 1- to
 // 3-code-unit grams --substring's reading of it holds, each tagged with the kind of the text it came from. It holds
-// no text: bits and counts. Neither test has false negatives: when the sieve says some term's tokens (or grams) are
+// no text as written, only bits and counts (and `last`); but a sieve tells whether a word or a run of up to 3 code
+// units is in its file, by kind, and short ASCII text can be pieced back from its exact gram bits, so it is as private
+// as its file. Neither test has false negatives: when the sieve says some term's tokens (or grams) are
 // not all in any one kind searched, no field of that kind holds the term, so no turn holds every term, and the file's
 // counts are the sieve's. When it says they may be, the file is read and searched as without a sieve. So a search with
 // sieves prints what one without them prints. Both tests hold only under the runtime that read the file: a sieve names

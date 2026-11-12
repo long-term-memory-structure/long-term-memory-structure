@@ -610,3 +610,45 @@ test('command G2 [B5]: a sieve that could not be written is not counted as kept,
     assert.match(r.err, / A sieve could not be written \(/);
   } finally { try { chmodSync(dir, 0o700); } catch { /* gone */ } rm(d); rm(cache); }
 });
+
+// ---- 5. G3 (S367): what the cache keeps and where, and what it says (REPAIRS.md), each test red on 4130d60 first -------
+
+test('command G3 [B6 A4]: a kept sieve holds no string from its transcript: its head keeps no timestamp', () => {
+  const d = corpus(), cache = tmp();
+  try {
+    ltms(['search', '--cache', 'zqvabsent', d], { cache });
+    const dir = join(cache, 'ltms', 'sieves');
+    for (const name of sieveFiles(cache)) {
+      const buf = readFileSync(join(dir, name)), z = buf.subarray(buf.indexOf(10) + 1);
+      const body = inflateRawSync(z), head = JSON.parse(body.subarray(0, body.indexOf(10)).toString('utf8'));
+      assert.equal(head.sieve.last, null, `${name}: last`);
+      assert.doesNotMatch(body.subarray(0, body.indexOf(10)).toString('utf8'), /20\d\d-\d\d-\d\dT/, `${name}: a timestamp in the head`);
+    }
+    assert.ok(sieveFiles(cache).length >= 10);
+  } finally { rm(d); rm(cache); }
+});
+
+test('command G3 [B8]: a relative HOME, with no XDG_CACHE_HOME, keeps no sieve under the current directory: a notice, and every file read', () => {
+  const d = corpus(), cwd = tmp();
+  try {
+    const e = { ...process.env, HOME: 'relhome', LTMS_CACHE: '1' };
+    delete e.XDG_CACHE_HOME;
+    const r = spawnSync(process.execPath, [CLI, 'search', 'zqvalpha', d], { encoding: 'utf8', cwd, env: e, timeout: 60000 });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(readdirSync(cwd), [], 'nothing made in the current directory');
+    assert.match(r.stderr, /notice: no sieve is kept or used: .*not an absolute path/);
+  } finally { rm(d); rm(cwd); }
+});
+
+test('command G3 [B8]: LTMS_CACHE set to anything but 0 or 1 says so, and leaves the cache off', () => {
+  const d = corpus(), cache = tmp();
+  try {
+    for (const v of ['true', 'yes', '2']) {
+      const r = ltms(['search', 'zqvalpha', d], { cache, env: { LTMS_CACHE: v } });
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.err, new RegExp(`notice: LTMS_CACHE is "${v}", not 1 or 0: no sieve is kept or used`), v);
+      assert.deepEqual(sieveFiles(cache), [], `${v}: nothing kept`);
+    }
+    for (const v of ['', '0']) assert.doesNotMatch(ltms(['search', 'zqvalpha', d], { cache, env: { LTMS_CACHE: v } }).err, /LTMS_CACHE is/, `"${v}" is off, silently`);
+  } finally { rm(d); rm(cache); }
+});

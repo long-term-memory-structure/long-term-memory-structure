@@ -759,7 +759,9 @@ whatever kinds are searched.
 between searches, so that a later search can pass over a file that cannot hold its terms without reading it again. A
 sieve holds the counts a search adds up for the file whatever the query (by the kinds searched), and what can be asked
 of its text without the text: which tokens it holds (words mode), and which 1- to 3-code-unit grams `--substring`'s
-reading of it holds, each tagged with the kind of the text it came from. It holds no text: bits and counts. Neither test
+reading of it holds, each tagged with the kind of the text it came from. It holds no text as written, only bits and
+counts (and `last`); but it tells whether a word or a run of up to 3 code units is in its file, by kind, and short ASCII
+text can be pieced back from its exact gram bits: keep a sieve as private as its file. Neither test
 has false negatives, so a search that passes over the files `sieveMayHold` rules out, counting each from
 `sieveResult`, returns what it returns when it reads every file. The words are read with a segmenter, and a sieve
 answers a words-mode query only when it was read with the same. A sieve also names the runtime that read its file
@@ -768,7 +770,7 @@ other tokens (a newer Unicode's letters, or other ICU data even under the same v
 could then rule out a file the other's search finds a turn in.
 
 ```js
-const s = sieveTranscript(t, checkSearchSupport().segmenter);          // keep s; later, for a query q:
+const s = sieveTranscript(t, checkSearchSupport().segmenter ?? 'no-dictionary');   // keep s; later, for a query q:
 const r = sieveMayHold(s, q) ? searchTranscript(t, q) : sieveResult(s, q);
 ```
 
