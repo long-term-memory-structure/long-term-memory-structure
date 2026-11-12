@@ -231,13 +231,20 @@ function ruledOut(d, query, mode = 'words', kinds = S.SEARCH_DEFAULT_KINDS) {
   const q = S.parseSearchQuery(query, { mode, segmenter: SEG });
   return readdirSync(d).filter((f) => !S.sieveMayHold(S.sieveTranscript(P.parseTranscript(readFileSync(join(d, f), 'utf8')), SEG), q, kinds)).length;
 }
-/** A folder of fixture copies (a journal, an empty file, unreadable lines, a cycle, compactions) and two sessions. */
+/** The files of d given a modification time an hour ago, as the files of sessions that have ended: a file modified in the
+ *  last five minutes gets no sieve (S367, G2). */
+function settle(d) {
+  const past = new Date(Date.now() - 3600e3);
+  for (const f of readdirSync(d)) utimesSync(join(d, f), past, past);
+  return d;
+}
+/** A folder of fixture copies (a journal, an empty file, unreadable lines, a cycle, compactions) and two sessions, settled. */
 function corpus() {
   const d = tmp();
   for (const f of ['demo.jsonl', 'compacted.jsonl', 'journal.jsonl', 'empty.jsonl', 'errors.jsonl', 'cycle.jsonl', 'labels.jsonl', 'edges.jsonl', 'content.jsonl']) copyFileSync(join(FIX, f), join(d, f));
   writeFileSync(join(d, 'a.jsonl'), sessionWith([['zqvalpha one', 'two'], ['three', `zqvbeta ${cp(0x5e9, 0x5dc, 0x5d5, 0x5dd)}`]]));
   writeFileSync(join(d, 'b.jsonl'), sessionWith([['four', 'zqvalpha five']]));
-  return d;
+  return settle(d);
 }
 const QUERIES = [['zqvalpha'], ['zqvbeta'], ['zqvabsent'], ['--substring', 'qvalph'], ['--kind', 'all', 'the'], ['--kind', 'input', 'zqvalpha'], ['"zqvalpha one"'], [cp(0x5e9, 0x5dc, 0x5d5, 0x5dd)]];
 
@@ -459,6 +466,7 @@ test('command G1 [A1 B1 C1]: sieves kept under a runtime that splits Khmer other
   try {
     writeFileSync(join(d, 'k.jsonl'), sessionWith([['zqvone', `${KHMER_HELLO} zqvtwo`]]));
     writeFileSync(join(d, 'z.jsonl'), sessionWith([['zqvthree', 'zqvfour']]));
+    settle(d);
     const other = ltms(['search', '--cache', 'zqvanything', d], { cache, node: preload(p, 'khmer') });
     assert.equal(kept(other), 2, 'both sieves kept under the other reading');
     const plain = same(ltms(['search', KHMER_HELLO, d], { cache }));
@@ -561,9 +569,44 @@ test('search G1 [A2]: a phrase whose first word is followed by a line of 200,000
   const d = tmp(), cache = tmp();
   try {
     writeFileSync(join(d, 's.jsonl'), text);
+    settle(d);
     const plain = same(ltms(['search', '"zqvhead abs"', d], { cache }));
     assert.equal(plain.code, 0, plain.err);
     ltms(['search', '--cache', 'zqvhead', d], { cache });
     assert.deepEqual(same(ltms(['search', '--cache', '"zqvhead abs"', d], { cache })), plain);
   } finally { rm(d); rm(cache); }
+});
+
+// ---- 4. G2 (S367): performance and accounting (REPAIRS.md), each test red on the G1 build first --------------------
+
+test('command G2 [B4]: a file modified in the last five minutes gets no sieve (it will change again), and one older does; both are searched alike', () => {
+  const d = tmp(), cache = tmp();
+  try {
+    writeFileSync(join(d, 'live.jsonl'), sessionWith([['zqvone', 'zqvtwo']]));
+    writeFileSync(join(d, 'ended.jsonl'), sessionWith([['zqvthree', 'zqvfour']]));
+    const at = (min) => { const t = new Date(Date.now() - min * 60e3); return [t, t]; };
+    utimesSync(join(d, 'ended.jsonl'), ...at(60));
+    const plain = same(ltms(['search', 'zqvabsent', d], { cache }));
+    const cold = ltms(['search', '--cache', 'zqvabsent', d], { cache });
+    assert.deepEqual(same(cold), plain);
+    assert.equal(kept(cold), 1, 'the ended session only');
+    utimesSync(join(d, 'live.jsonl'), ...at(4));
+    assert.equal(kept(ltms(['search', '--cache', 'zqvabsent', d], { cache })), 0, 'four minutes is not five');
+    utimesSync(join(d, 'live.jsonl'), ...at(6));
+    const r = ltms(['search', '--cache', 'zqvabsent', d], { cache });
+    assert.equal(kept(r), 1, 'six minutes is');
+    assert.deepEqual(same(r), plain);
+  } finally { rm(d); rm(cache); }
+});
+
+test('command G2 [B5]: a sieve that could not be written is not counted as kept, and the closing line says one could not be written', { skip: process.getuid?.() === 0 && 'root writes into any directory' }, () => {
+  const d = corpus(), cache = tmp(), dir = join(cache, 'ltms', 'sieves');
+  try {
+    assert.ok(kept(ltms(['search', '--cache', 'zqvabsent', d], { cache })) >= 10, 'the first search keeps them');
+    for (const f of sieveFiles(cache)) rmSync(join(dir, f));
+    chmodSync(dir, 0o500);
+    const r = ltms(['search', '--cache', 'zqvabsent', d], { cache });
+    assert.equal(kept(r), 0, 'none could be written');
+    assert.match(r.err, / A sieve could not be written \(/);
+  } finally { try { chmodSync(dir, 0o700); } catch { /* gone */ } rm(d); rm(cache); }
 });

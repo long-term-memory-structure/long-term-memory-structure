@@ -37,8 +37,9 @@ export declare class SieveCache {
     /** The sieve kept for this file as it stands (st), or null: none, another key, version, format or runtime, damaged,
      *  or unreadable. */
     read(st: BigIntStats): CachedSieve | null;
-    /** Keep a file's sieve, under the key it was read with: a new file renamed over the old one. */
-    write(st: BigIntStats, sieve: SearchSieve, flags: SieveFlags): void;
+    /** Keep a file's sieve, under the key it was read with: a new file renamed over the old one. True when it was
+     *  written. It is not fsynced: a sieve cut short by a crash fails its seal and is read as none (S366 review B4). */
+    write(st: BigIntStats, sieve: SearchSieve, flags: SieveFlags): boolean;
 }
 /** The cache, made if it is missing, or why it is not used. */
 export declare function openSieveCache(version: string): SieveCache | {

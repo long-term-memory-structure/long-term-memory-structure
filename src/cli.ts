@@ -790,9 +790,11 @@ same, the time aside. A sieve is used only while its file is unchanged
 versions, its ICU files and its reading of a fixed text must be the same,
 since another runtime can read the same text into other words; after an
 upgrade every file is read again, once, and its sieve kept anew. A file
-that changed while it was read gets none. The first search with --cache
-reads every file and is slower (it builds the sieves); rm -r ~/.cache/ltms
-removes them. Files named on the command line are always read.
+that changed while it was read gets none, and so does a file modified in
+the last five minutes (a session still running): it is read at every
+search. The first search with --cache reads every file and is slower (it
+builds the sieves); rm -r ~/.cache/ltms removes them. Files named on the
+command line are always read.
 
 The coverage line:
   k             "coverage"
@@ -1312,6 +1314,7 @@ function searchRun(args: string[]): number {
     for (const [k, v] of Object.entries(c.gapScripts)) gap[k] = (gap[k] ?? 0) + v;
   };
   // the sieves (search.ts, section 10): for a file found under a directory, unchanged since its sieve was kept
+  const SIEVE_SETTLED_MS = 5 * 60 * 1000;
   const kindList = [...s.kinds];
   let cache: SieveCache | null = null;
   const sieves = { answered: 0, kept: 0 };
@@ -1351,18 +1354,27 @@ function searchRun(args: string[]): number {
       sieves.answered++;
       continue;
     }
-    let bytes: Buffer, text: string;
-    try { bytes = readFileSync(f.path); text = bytes.toString('utf8'); } catch (e) { err(cannotRead('search', f.path, e)); failed++; continue; }
+    // with no cache, read as 0.2.0 reads: readFileSync's utf8 path makes the string with no Buffer, so the peak memory
+    // is 0.2.0's (a Buffer and its string together cost a file's size more; measured, S367); the cache needs the Buffer's
+    // length, to see that the whole file was read (S366 review B10)
+    let n = -1, text: string;
+    try {
+      if (cache) { const bytes = readFileSync(f.path); n = bytes.length; text = bytes.toString('utf8'); }
+      else text = readFileSync(f.path, 'utf8');
+    } catch (e) { err(cannotRead('search', f.path, e)); failed++; continue; }
     try {
       const t = parseTranscript(text);
       const r = searchTranscript(t, q, { kinds: kindList, prefix: prefixOf(f.path) });
       const flags: SieveFlags = { problems: t.problems.length > 0, cycle: t.fileKind === 'transcript' && cycleRecords(t) > 0, guessed: !!t.stats.requestKeyGuessed };
       account(f, r, flags, t);
-      // keep its sieve when there was none for the file as it stands, and the file did not change while it was read
-      if (cache && !f.named && !kept && bytes.length === size) {
+      // keep its sieve when there was none for the file as it stands, the file did not change while it was read, and it
+      // was last modified SIEVE_SETTLED_MS ago or more: a file modified a moment ago (the live session) will change again,
+      // and its sieve would be rebuilt at every search; and a change inside one tick of a coarse clock, the same size
+      // and the same times, cannot then be missed: any later change gives the file a newer time (S366 review B4)
+      if (cache && !f.named && !kept && n === size && Date.now() - Number(st.mtimeMs) >= SIEVE_SETTLED_MS) {
         let after: BigIntStats | null = null;
         try { after = statSync(f.path, { bigint: true }); } catch { /* gone: keep nothing */ }
-        if (after && sieveKey(after) === sieveKey(st)) { cache.write(st, sieveTranscript(t, q.segmenter), flags); sieves.kept++; }
+        if (after && sieveKey(after) === sieveKey(st) && cache.write(st, sieveTranscript(t, q.segmenter), flags)) sieves.kept++;
       }
     } catch (e) {
       err(`ltms search: '${f.path}': stopped with an internal error (${internalError(e)}), so nothing in it was searched. This is a bug in ltms; the other files are processed as usual.`);

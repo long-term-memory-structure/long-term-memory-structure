@@ -13,7 +13,7 @@
 //  someone else wrote could hide a file's hits.
 // ============================================================================
 import { createHash } from 'node:crypto';
-import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
@@ -155,7 +155,8 @@ export class SieveCache {
             return null;
         }
     }
-    /** Keep a file's sieve, under the key it was read with: a new file renamed over the old one. */
+    /** Keep a file's sieve, under the key it was read with: a new file renamed over the old one. True when it was
+     *  written. It is not fsynced: a sieve cut short by a crash fails its seal and is read as none (S366 review B4). */
     write(st, sieve, flags) {
         const { words, ascii, grams, ...rest } = sieve;
         const head = JSON.stringify({ key: sieveKey(st), ltms: this.version, files: runtimeFiles(), sieve: rest, words: { m: words.m, k: words.k }, grams: { m: grams.m, k: grams.k }, flags });
@@ -167,10 +168,10 @@ export class SieveCache {
             fd = openSync(tmp, 'wx', 0o600);
             for (let off = 0; off < sealed.length;)
                 off += writeSync(fd, sealed, off);
-            fsyncSync(fd);
             closeSync(fd);
             fd = -1;
             renameSync(tmp, name);
+            return true;
         }
         catch (e) {
             if (fd >= 0)
@@ -183,6 +184,7 @@ export class SieveCache {
             }
             catch { /* not made */ }
             this.writeError ??= String(e?.message ?? e);
+            return false;
         }
     }
 }
