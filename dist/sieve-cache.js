@@ -14,8 +14,8 @@
 //  0700 and the files 0600, and the cache is used only when the ltms and sieves directories are this user's, and no one
 //  else can write to them: a sieve someone else wrote could hide a file's hits.
 // ============================================================================
-import { createHash } from 'node:crypto';
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join } from 'node:path';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
@@ -26,6 +26,14 @@ import { SEARCH_SIEVE_FORMAT, SEARCH_SIEVE_ASCII_GRAMS, SEARCH_KINDS, searchRunt
 const MAGIC = 'ltms-sieve 2 ';
 /** The most a sieve may inflate to: two filters of 2^32 bits and the head. */
 const MAX_INFLATED = 2 ** 30 + 2 ** 20;
+/** The names of the cache's own files: a sieve, and a temp file (a sieve's name, the writer's pid and time, random hex;
+ *  without the hex before S367). Nothing of another name is ever removed (S366 review B7). */
+const SIEVE_NAME = /^[0-9a-f]{32}\.sieve$/;
+const TEMP_NAME = /^[0-9a-f]{32}\.sieve\.\d+\.\d+(?:\.[0-9a-f]{12})?\.tmp$/;
+/** A sieve is removed this long after it was kept (a file still searched gets a new one; one whose file is gone, no
+ *  longer answers for it); a temp file this long after it was made (a write takes milliseconds: the search stopped). */
+const SIEVE_DAYS = 30, SIEVE_MAX_AGE_MS = SIEVE_DAYS * 86400e3, TEMP_MAX_AGE_MS = 10 * 60e3;
+const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 let filesId = null;
 /** The files this runtime reads text with, as a sha256 (32 hex digits): its executable, the ICU libraries it has
  *  loaded (process.report's shared objects, else /proc/self/maps), and NODE_ICU_DATA and ICU_DATA when set, each file
@@ -106,21 +114,63 @@ const filterShape = (f) => !!f && Number.isInteger(f.m) && f.m >= 64 && f.m % 8 
 export class SieveCache {
     dir;
     version;
+    uid;
     /** The first error writing a sieve, if any (the search goes on without it). */
     writeError = null;
-    constructor(dir, version) { this.dir = dir; this.version = version; }
+    /** The files prune() removed. */
+    removed = 0;
+    constructor(dir, version, uid = typeof process.getuid === 'function' ? process.getuid() : null) {
+        this.dir = dir;
+        this.version = version;
+        this.uid = uid;
+    }
+    /** Sieves kept more than SIEVE_DAYS ago and temp files older than TEMP_MAX_AGE_MS removed, by their names only. */
+    prune(now) {
+        let names;
+        try {
+            names = readdirSync(this.dir);
+        }
+        catch {
+            return;
+        }
+        for (const n of names) {
+            const max = SIEVE_NAME.test(n) ? SIEVE_MAX_AGE_MS : TEMP_NAME.test(n) ? TEMP_MAX_AGE_MS : -1;
+            if (max < 0)
+                continue;
+            try {
+                if (now - lstatSync(join(this.dir, n)).mtimeMs > max) {
+                    unlinkSync(join(this.dir, n));
+                    this.removed++;
+                }
+            }
+            catch { /* gone */ }
+        }
+    }
     nameOf(st) {
         return join(this.dir, createHash('sha256').update(`${st.dev}:${st.ino}`).digest('hex').slice(0, 32) + '.sieve');
     }
     /** The sieve kept for this file as it stands (st), or null: none, another key, version, format or runtime, damaged,
      *  or unreadable. */
     read(st) {
-        let file, body;
+        // opened without following a link, and used only when it is one regular file with one name, this user's, that no one
+        // else can write to (S366 review B3): whoever could put a file there could hide a file's hits
+        let file, body, fd = -1;
         try {
-            file = readFileSync(this.nameOf(st));
+            fd = openSync(this.nameOf(st), constants.O_RDONLY | O_NOFOLLOW);
+            const s = fstatSync(fd);
+            if (!s.isFile() || s.nlink !== 1 || (s.mode & 0o022) || (this.uid !== null && s.uid !== this.uid))
+                return null;
+            file = readFileSync(fd);
         }
         catch {
             return null;
+        }
+        finally {
+            if (fd >= 0)
+                try {
+                    closeSync(fd);
+                }
+                catch { /* closed */ }
         }
         const top = MAGIC.length + 65;
         if (file.length <= top || file.subarray(0, MAGIC.length).toString('latin1') !== MAGIC || file[top - 1] !== 10)
@@ -169,10 +219,12 @@ export class SieveCache {
         const head = JSON.stringify({ key: sieveKey(st), ltms: this.version, files: runtimeFiles(), sieve: { ...rest, last: null }, words: { m: words.m, k: words.k }, grams: { m: grams.m, k: grams.k }, flags });
         const z = deflateRawSync(Buffer.concat([Buffer.from(head + '\n', 'utf8'), words.bits, ascii, grams.bits]));
         const sealed = Buffer.concat([Buffer.from(MAGIC + createHash('sha256').update(z).digest('hex') + '\n', 'latin1'), z]);
-        const name = this.nameOf(st), tmp = `${name}.${process.pid}.${Date.now()}.tmp`;
-        let fd = -1;
+        // a name no other writer takes (random hex), and removed on failure only when this call made it (S366 review B11)
+        const name = this.nameOf(st), tmp = `${name}.${process.pid}.${Date.now()}.${randomBytes(6).toString('hex')}.tmp`;
+        let fd = -1, made = false;
         try {
             fd = openSync(tmp, 'wx', 0o600);
+            made = true;
             for (let off = 0; off < sealed.length;)
                 off += writeSync(fd, sealed, off);
             closeSync(fd);
@@ -186,10 +238,11 @@ export class SieveCache {
                     closeSync(fd);
                 }
                 catch { /* already closed */ }
-            try {
-                unlinkSync(tmp);
-            }
-            catch { /* not made */ }
+            if (made)
+                try {
+                    unlinkSync(tmp);
+                }
+                catch { /* gone */ }
             this.writeError ??= String(e?.message ?? e);
             return false;
         }
@@ -197,17 +250,33 @@ export class SieveCache {
 }
 /** The cache, made if it is missing, or why it is not used. */
 export function openSieveCache(version) {
+    // Windows reports a file's mode as 0o666 or 0o444 whoever can write to it: the checks below would mean nothing there
+    if (process.platform === 'win32')
+        return { why: 'sieves are not kept on Windows, where a file\'s mode does not say who can write to it' };
     const d = sieveCacheDir();
     if ('why' in d)
         return d;
     const ltms = join(d.base, 'ltms');
+    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+    // the base itself, resolved: this user's or root's, and writable by no one else unless it is root's with the sticky bit
+    // (/tmp): whoever can write to it could rename ltms/ and put sieves of their own in its place (S366 review B3)
+    try {
+        mkdirSync(d.base, { recursive: true, mode: 0o700 });
+        const real = realpathSync(d.base), b = statSync(real);
+        if (uid !== null && b.uid !== uid && b.uid !== 0)
+            return { why: `${d.base} belongs to another user (uid ${b.uid})` };
+        if ((b.mode & 0o022) && !(b.uid === 0 && b.mode & 0o1000))
+            return { why: `others can write to ${d.base} (mode ${(b.mode & 0o7777).toString(8)})` };
+    }
+    catch (e) {
+        return { why: `${d.base} could not be read (${e?.message ?? e})` };
+    }
     try {
         mkdirSync(d.dir, { recursive: true, mode: 0o700 });
     }
     catch (e) {
         return { why: `${d.dir} could not be made (${e?.message ?? e})` };
     }
-    const uid = typeof process.getuid === 'function' ? process.getuid() : null;
     for (const p of [ltms, d.dir]) {
         let st;
         try {
@@ -223,5 +292,7 @@ export function openSieveCache(version) {
         if (st.mode & 0o022)
             return { why: `others can write to ${p} (mode ${(st.mode & 0o777).toString(8)})` };
     }
-    return new SieveCache(d.dir, version);
+    const cache = new SieveCache(d.dir, version, uid);
+    cache.prune(Date.now());
+    return cache;
 }

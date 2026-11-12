@@ -899,9 +899,11 @@ text into other words; after an upgrade every file is read again, once, and
 its sieve kept anew. A file that changed while it was read gets none, and
 so does a file modified in the last five minutes (a session still running):
 it is read at every search. The first search with --cache reads every file
-and is slower (it builds the sieves). Sieves stay until removed, also after
-their files are gone: rm -r the directory the closing line names. Files
-named on the command line are always read.
+and is slower (it builds the sieves). A sieve is removed 30 days after it
+was kept, also when its file is gone (a file still searched gets a new
+one), and rm -r of the directory the closing line names removes them all.
+On Windows no sieve is kept. Files named on the command line are always
+read.
 
 The coverage line:
   k             "coverage"
@@ -1728,7 +1730,7 @@ function searchRun(args) {
     }
     close += '.';
     if (cache)
-        close += ` The sieves in ${cache.dir} answered ${sieves.answered} of the ${plural(read, 'file', 'files')} read without opening ${sieves.answered === 1 ? 'it' : 'them'}, and ${sieves.kept} ${sieves.kept === 1 ? 'was' : 'were'} kept (--no-cache opens every file).`;
+        close += ` The sieves in ${cache.dir} answered ${sieves.answered} of the ${plural(read, 'file', 'files')} read without opening ${sieves.answered === 1 ? 'it' : 'them'}, and ${sieves.kept} ${sieves.kept === 1 ? 'was' : 'were'} kept${cache.removed ? `, and ${plural(cache.removed, 'file', 'files')} past their time removed` : ''} (--no-cache opens every file).`;
     if (cache?.writeError)
         close += ` A sieve could not be written (${cache.writeError}); the search is complete without it.`;
     if (sum.hitTurns === 0 && sum.turns > 0) {

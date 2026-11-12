@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -651,4 +651,88 @@ test('command G3 [B8]: LTMS_CACHE set to anything but 0 or 1 says so, and leaves
     }
     for (const v of ['', '0']) assert.doesNotMatch(ltms(['search', 'zqvalpha', d], { cache, env: { LTMS_CACHE: v } }).err, /LTMS_CACHE is/, `"${v}" is off, silently`);
   } finally { rm(d); rm(cache); }
+});
+
+// ---- 6. G4 (S367): robustness and platform (REPAIRS.md), each test red on 8893aa0 first ------------------------------
+
+test('command G4 [B3]: a cache base others can write to is not used: a notice, every file read, nothing kept', () => {
+  const d = corpus(), base = tmp();
+  try {
+    const plain = ltms(['search', 'zqvalpha', d], { cache: base });
+    chmodSync(base, 0o777);
+    const r = ltms(['search', '--cache', 'zqvalpha', d], { cache: base });
+    assert.match(r.err, /notice: no sieve is kept or used: others can write to /);
+    assert.equal(r.out.replace(/,"ms":\d+\}/, '}'), plain.out.replace(/,"ms":\d+\}/, '}'));
+    assert.deepEqual(sieveFiles(base), [], 'nothing kept');
+  } finally { chmodSync(base, 0o700); rm(d); rm(base); }
+});
+
+test('command G4 [B3]: a sieve that is a symbolic link, has a second name, or that others can write to is passed over and kept anew', () => {
+  const d = corpus(), cache = tmp(), elsewhere = tmp();
+  try {
+    const plain = same(ltms(['search', 'zqvabsent', d], { cache }));
+    ltms(['search', '--cache', 'zqvabsent', d], { cache });
+    const dir = join(cache, 'ltms', 'sieves'), names = sieveFiles(cache).sort();
+    renameSync(join(dir, names[0]), join(elsewhere, 's0'));
+    symlinkSync(join(elsewhere, 's0'), join(dir, names[0]));
+    linkSync(join(dir, names[1]), join(elsewhere, 's1'));
+    chmodSync(join(dir, names[2]), 0o666);
+    const r = ltms(['search', '--cache', 'zqvabsent', d], { cache });
+    assert.deepEqual(same(r), plain);
+    assert.equal(kept(r), 3, 'the three are passed over and kept anew');
+    for (const n of names.slice(0, 3)) {
+      const st = statSync(join(dir, n));
+      assert.deepEqual([st.isFile(), st.nlink, st.mode & 0o777], [true, 1, 0o600], n);
+    }
+  } finally { rm(d); rm(cache); rm(elsewhere); }
+});
+
+test('command G4 [B7]: sieve files kept more than 30 days ago, and temp files a stopped search left, are removed; newer ones and files of other names stay', () => {
+  const d = corpus(), cache = tmp();
+  try {
+    ltms(['search', '--cache', 'zqvabsent', d], { cache });
+    const dir = join(cache, 'ltms', 'sieves'), names = sieveFiles(cache).sort();
+    const ago = (ms) => { const t = new Date(Date.now() - ms); return [t, t]; };
+    const day = 86400e3;
+    utimesSync(join(dir, names[0]), ...ago(31 * day));
+    const orphan = `${'a'.repeat(32)}.sieve`, oldTemp = `${'b'.repeat(32)}.sieve.123.456.tmp`, newTemp = `${'c'.repeat(32)}.sieve.124.457.0123456789ab.tmp`;
+    for (const [n, age] of [[orphan, 31 * day], [oldTemp, 3600e3], [newTemp, 0], ['notes.txt', 31 * day], [`${'d'.repeat(32)}.sieve`, 29 * day]]) {
+      writeFileSync(join(dir, n), 'x', { mode: 0o600 });
+      if (age) utimesSync(join(dir, n), ...ago(age));
+    }
+    const r = ltms(['search', '--cache', 'zqvabsent', d], { cache });
+    const left = new Set(readdirSync(dir));
+    assert.deepEqual([orphan, oldTemp].filter((n) => left.has(n)), [], 'the old orphan and the old temp are removed');
+    assert.deepEqual([newTemp, 'notes.txt', `${'d'.repeat(32)}.sieve`, names[0]].filter((n) => !left.has(n)), [], 'a temp in progress, a file of another name, a sieve 29 days old, and the sieve of a file searched now (kept anew) are there');
+    assert.equal(kept(r), 1, 'the 31-day sieve of a file still searched is kept anew');
+    assert.match(r.err, /, and 3 files past their time removed \(--no-cache opens every file\)\./);
+  } finally { rm(d); rm(cache); }
+});
+
+test('command G4 [B9]: on Windows, where a file\'s mode does not say who can write to it, no sieve is kept or used: a notice', () => {
+  const d = corpus(), cache = tmp(), p = tmp();
+  try {
+    writeFileSync(join(p, 'win.mjs'), "Object.defineProperty(process, 'platform', { value: 'win32', configurable: true, enumerable: true });\n");
+    const r = ltms(['search', '--cache', 'zqvalpha', d], { cache, node: ['--import', pathToFileURL(join(p, 'win.mjs')).href] });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.err, /notice: no sieve is kept or used: .*Windows/);
+    assert.deepEqual(sieveFiles(cache), []);
+  } finally { rm(d); rm(cache); rm(p); }
+});
+
+test('command G4 [B11]: a temp file this search did not make is never removed, even when its name is taken', () => {
+  const d = corpus(), cache = tmp(), p = tmp();
+  try {
+    // every temp name is taken by another writer the moment this search opens it
+    writeFileSync(join(p, 'taken.mjs'), [
+      "import fs from 'node:fs';", "import { syncBuiltinESMExports } from 'node:module';",
+      "const open = fs.openSync;",
+      "fs.openSync = (path, flags, mode) => { if (String(path).endsWith('.tmp')) { fs.writeFileSync(path, 'another writer'); const e = new Error('EEXIST: taken'); e.code = 'EEXIST'; throw e; } return open(path, flags, mode); };",
+      'syncBuiltinESMExports();'].join('\n') + '\n');
+    const r = ltms(['search', '--cache', 'zqvabsent', d], { cache, node: ['--import', pathToFileURL(join(p, 'taken.mjs')).href] });
+    assert.equal(r.code, 0, r.err);
+    const temps = readdirSync(join(cache, 'ltms', 'sieves')).filter((n) => n.endsWith('.tmp'));
+    assert.ok(temps.length >= 10, `the other writer's files: ${temps.length}`);
+    assert.equal(kept(r), 0);
+  } finally { rm(d); rm(cache); rm(p); }
 });

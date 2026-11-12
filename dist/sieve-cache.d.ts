@@ -30,9 +30,14 @@ export declare function sieveKey(st: BigIntStats): string;
 export declare class SieveCache {
     readonly dir: string;
     private readonly version;
+    private readonly uid;
     /** The first error writing a sieve, if any (the search goes on without it). */
     writeError: string | null;
-    constructor(dir: string, version: string);
+    /** The files prune() removed. */
+    removed: number;
+    constructor(dir: string, version: string, uid?: number | null);
+    /** Sieves kept more than SIEVE_DAYS ago and temp files older than TEMP_MAX_AGE_MS removed, by their names only. */
+    prune(now: number): void;
     private nameOf;
     /** The sieve kept for this file as it stands (st), or null: none, another key, version, format or runtime, damaged,
      *  or unreadable. */
