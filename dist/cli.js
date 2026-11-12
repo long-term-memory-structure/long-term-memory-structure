@@ -2044,7 +2044,7 @@ The pin directory <dir>:
                   grown, rewritten, recovered, takeover), each holding the
                   sha256 of the line before it
   .ltms-pin.lock  while a pin runs: its pid, host and start time; on Linux
-                  also the boot, the PID namespace and the process's start
+                  also the boot and the PID namespace
 Copies and PINS.log are 0600 (or the source's mode, when stricter);
 directories are 0700.
 
@@ -2449,7 +2449,7 @@ function printChecked(r) {
     if (r.unlogged.length)
         err(`ltms pin: ${plural(r.unlogged.length, 'file', 'files')} in ${q(r.dir)} ${r.unlogged.length === 1 ? 'is' : 'are'} named by no line in PINS.log (on stdout, "k":"unlogged")${pinRuns ? '; the next pin records each with a recovered line' : ''}.`);
     if (r.temps)
-        err(`ltms pin: ${plural(r.temps, 'temp file', 'temp files')} in ${q(r.dir)} ${r.temps === 1 ? 'was' : 'were'} left by a pin that stopped${pinRuns ? `; the next pin removes ${r.temps === 1 ? 'it if a copy or its source holds what it holds, and otherwise keeps it as a kept copy' : 'each one whose bytes a copy or its source holds, and keeps any other as a kept copy'}` : ''}.`);
+        err(`ltms pin: ${plural(r.temps, 'temp file', 'temp files')} in ${q(r.dir)} ${r.temps === 1 ? 'was' : 'were'} left by a pin that stopped${pinRuns ? `; the next pin removes ${r.temps === 1 ? 'it if a copy holds what it holds (or its source, for a .jsonl write cut short), and otherwise keeps it as a kept copy' : 'each one whose bytes a copy holds (or its source, for a .jsonl write cut short), and keeps any other as a kept copy'}` : ''}.`);
     if (r.lock)
         err(`ltms pin: ${q(join(r.dir, '.ltms-pin.lock'))} names pid ${r.lock.pid} on ${r.lock.host}, since ${r.lock.started}: a pin is running, or one stopped without removing it${pinRuns ? ' (the next pin takes over a lock whose pid is no longer running on this host)' : ''}.`);
     const s = r.staleness;

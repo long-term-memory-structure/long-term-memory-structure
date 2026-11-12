@@ -211,14 +211,12 @@ test("pin, modes under umask 022: copies and the log 0600, or the source's mode 
     for (const f of filesUnder(t.to)) assert.equal(modeOf(join(t.to, f)), f === strict ? 0o400 : 0o600, f);
     for (const d of [t.to, ...dirsUnder(t.to)]) assert.equal(modeOf(d), 0o700, d);
     assert.deepEqual([seen.lock.mode, seen.temp], [0o600, 0o600]);
-    // S368: on Linux the lock also names the boot, the PID namespace and this process's start time (read here from /proc)
+    // S368: on Linux the lock also names the boot and the PID namespace (read here from /proc)
     const linux = process.platform === 'linux';
-    assert.deepEqual(Object.keys(seen.lock.body), ['pid', 'host', 'started', ...(linux ? ['boot', 'pidns', 'start'] : [])]);
+    assert.deepEqual(Object.keys(seen.lock.body), ['pid', 'host', 'started', ...(linux ? ['boot', 'pidns'] : [])]);
     assert.deepEqual([seen.lock.body.pid, seen.lock.body.host], [process.pid, hostname()]);
     if (linux) {
-      const stat = readFileSync('/proc/self/stat', 'utf8');
-      assert.deepEqual([seen.lock.body.boot, seen.lock.body.pidns, seen.lock.body.start],
-        [readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), readlinkSync('/proc/self/ns/pid'), stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]]);
+      assert.deepEqual([seen.lock.body.boot, seen.lock.body.pidns], [readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), readlinkSync('/proc/self/ns/pid')]);
     }
     assert.match(seen.lock.body.started, ISO);
   } finally { t.clean(); }
@@ -677,7 +675,7 @@ test('pin, the lock: removed on SIGINT, SIGTERM and SIGHUP, the pin stopping bet
 
 // ---- recovery -------------------------------------------------------------------------------------------------------
 
-test('recovery: a crash after the temp file is written; the next pin takes the lock over, removes the temp file and pins the file', async () => {
+test('recovery: a crash after the temp file is written; the next pin takes the lock over, keeps the temp file\'s whole version as a kept copy (only its source held it: S368, the re-check\'s B1), and pins the file', async () => {
   const t = tree();
   try {
     const rel = `${P}/${SA}.jsonl`;
@@ -690,8 +688,9 @@ test('recovery: a crash after the temp file is written; the next pin takes the l
     assert.equal(readFileSync(t.pin(rel), 'utf8'), L1 + L2);
     assert.equal(JSON.parse(readFileSync(lockOf(t), 'utf8')).pid, c.pid);
     const r = await pinPaths([t.root], t.opts());
-    assert.deepEqual([r.takeover?.pid, r.removedTemps, existsSync(temp)], [c.pid, 1, false]);
-    assert.deepEqual(r.lines.map((l) => [l.how, l.rel]), [['takeover', undefined], ['grown', rel]]);
+    const kept = `${P}/${SA}.superseded-${sha12(L1 + L2 + L3)}.jsonl`;
+    assert.deepEqual([r.takeover?.pid, r.removedTemps, existsSync(temp), readFileSync(t.pin(kept), 'utf8')], [c.pid, 0, false, L1 + L2 + L3]);
+    assert.deepEqual(r.lines.map((l) => [l.how, l.rel]), [['takeover', undefined], ['recovered', kept], ['grown', rel]]);
     assert.equal(readFileSync(t.pin(rel), 'utf8'), L1 + L2 + L3);
     checkClean(await checkPin(t.to));
   } finally { t.clean(); }
@@ -1943,7 +1942,7 @@ test('ltms pin --check: an unlogged file, a temp file, a lock, and sources missi
     const lines = r.err.split('\n').filter((l) => l !== '');
     assert.equal(lines.length, 4, r.err);
     assert.equal(lines[0], `ltms pin: 1 file in '${t.to}' is named by no line in PINS.log (on stdout, "k":"unlogged"); the next pin records each with a recovered line.`);
-    assert.equal(lines[1], `ltms pin: 1 temp file in '${t.to}' was left by a pin that stopped; the next pin removes it if a copy or its source holds what it holds, and otherwise keeps it as a kept copy.`);
+    assert.equal(lines[1], `ltms pin: 1 temp file in '${t.to}' was left by a pin that stopped; the next pin removes it if a copy holds what it holds (or its source, for a .jsonl write cut short), and otherwise keeps it as a kept copy.`);
     assert.equal(lines[2], `ltms pin: '${lockOf(t)}' names pid ${holder.pid} on ${hostname()}, since 2026-11-08T10:00:00.000Z: a pin is running, or one stopped without removing it (the next pin takes over a lock whose pid is no longer running on this host).`);
     assert.match(lines[3], new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is missing from the pin, and 1 is longer than its copy \\(PINS\\.log's last line: ${escapeRe(rows[0].lastLog)}, \\d+ min ago\\)\\. To pin them: ltms pin '${escapeRe(t.root)}' --to '${escapeRe(t.to)}' --root '${escapeRe(t.root)}'$`));
     const none = join(t.tmp, 'no-such-root');
@@ -3554,7 +3553,7 @@ test('ltms pin --check, a PINS.log with another name: nothing is said of what a 
         `ltms pin: '${log}' does not end in a new line: line ${n} is cut short; the next pin closes it with a recovered line.`,
         closing,
         `ltms pin: 1 file in ${shQuoted(to)} is named by no line in PINS.log (on stdout, "k":"unlogged"); the next pin records each with a recovered line.`,
-        `ltms pin: 1 temp file in ${shQuoted(to)} was left by a pin that stopped; the next pin removes it if a copy or its source holds what it holds, and otherwise keeps it as a kept copy.`,
+        `ltms pin: 1 temp file in ${shQuoted(to)} was left by a pin that stopped; the next pin removes it if a copy holds what it holds (or its source, for a .jsonl write cut short), and otherwise keeps it as a kept copy.`,
         `ltms pin: ${shQuoted(lock)} names pid ${holder.pid} on ${hostname()}, since ${holder.started}: a pin is running, or one stopped without removing it (the next pin takes over a lock whose pid is no longer running on this host).`,
         '',
       ], name);
@@ -4575,7 +4574,7 @@ test('S368: a lock from this host left before its last boot is taken over at onc
   } finally { live.kill(); t.clean(); }
 });
 
-test('S368: a lock whose pid now names another process (its start time differs) is taken over at once', { skip: LINUX_PROC }, async () => {
+test('S368 (re-check A3): a lock whose pid runs is waited for, whatever start time it names: a time namespace shifts the start time a process sees, and a start-time rule took a live pin over; a reused pid waits, as in 0.2.0', { skip: LINUX_PROC }, async () => {
   const t = tree();
   const live = spawn('sleep', ['30']);
   try {
@@ -4583,7 +4582,7 @@ test('S368: a lock whose pid now names another process (its start time differs) 
     assert.notEqual(startOf(live.pid), '1');
     plantLock(t, { pid: live.pid, host: hostname(), started: '2026-11-12T10:00:00.000Z', boot: myBoot(), pidns: myPidNs(), start: '1' });
     const r = await pinPaths([t.src(Q)], t.opts({ lockWaitMs: 300 }));
-    assert.deepEqual([r.k, r.takeover?.pid], ['pinned', live.pid]);
+    assert.deepEqual([r.k, r.holder?.pid], ['busy', live.pid]);
   } finally { live.kill(); t.clean(); }
 });
 
@@ -4718,4 +4717,40 @@ test('S368 B5: --check counts the sources larger than a pin reads (staleness.too
     assert.match(c.stderr, new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is larger than a pin reads \\(2 GiB\\): every pin fails on it \\(ERR_FS_FILE_TOO_LARGE\\), and no copy of its later lines is kept\\.$`, 'm'));
     assert.equal(ltms(t, ['pin', '--check', t.to]).code, 0, 'without the patch: 0');
   } finally { t.clean(); }
+});
+
+test('S368 (re-check B1): a temp file a killed pin left holding a whole version is kept, not removed, by a pin of another project, though its source holds it: that source is not pinned in that run, and once rewritten the version would be in no file', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.root], t.opts());
+    appendFileSync(t.src(rel), L4);
+    const c = childPin(t, [t.root], 'temp-written', rel, KILL);   // the grown version whole in its temp
+    assert.equal(c.signal, 'SIGKILL', c.stderr);
+    const r = await pinPaths([t.src(P)], t.opts());               // another project's pin
+    assert.deepEqual(r.failures, []);
+    writeFileSync(t.src(rel), L1);                                 // the source is rewritten before Q is pinned again
+    assert.ok(heldUnder(t.to).includes(PINNED[rel] + L4), 'the grown version is held by a file of the pin');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S368 (re-check A1): --rehash, a .jsonl copy holding its version and then bytes no pin wrote, its source with no whole line: a pin whose lock was taken meanwhile stops before cutting the copy back (lock-lost)', async () => {
+  const t = tree();
+  const other = spawn('sleep', ['30']);
+  try {
+    const rel = `${P}/sess-named.jsonl`;
+    await pinPaths([t.src(P)], t.opts());
+    const damaged = PINNED[rel] + '{"half a line no pin wrote';
+    writeFileSync(t.pin(rel), damaged);
+    writeFileSync(t.src(rel), '{"a first line still being written');   // no whole line: nothing to copy
+    const p1 = pausedPin(t, [t.src(P)], 'stat', rel, 'p1', { rehash: true });
+    await p1.paused();
+    writeFileSync(lockOf(t), JSON.stringify({ pid: other.pid, host: hostname(), started: '2026-11-12T23:00:00.000Z' }));
+    p1.go();
+    const { r: r1, stderr } = await p1.result();
+    assert.ok(r1 !== null, stderr);
+    assert.deepEqual(r1.failures.map((f) => [f.op, f.code]), [['lock', 'lock-lost']]);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), damaged, 'the copy is not cut back');
+  } finally { other.kill(); t.clean(); }
 });
