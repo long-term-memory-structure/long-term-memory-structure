@@ -991,9 +991,15 @@ test('a value too large to write as JSON prints (too large), with a warning, and
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-test('README: it opens with why ltms exists, compaction, then what it prints', () => {
-  const opening = README_TEXT().split('\n\n')[1];
-  assert.match(opening, /compact/i, 'the first paragraph does not name compaction');
+test('README: it opens with its first constraint, in bold, for both readers (his direction, S367 20:40): "Preserve potential indefinitely."; then the constraints, the architecture (which opens with compaction), the technical debt, and only then the install and the commands', () => {
+  const text = README_TEXT();
+  const opening = text.split('\n\n')[1];
+  assert.ok(opening.startsWith('**Preserve potential indefinitely.** '), `the first paragraph is not the constraint in bold: ${opening.slice(0, 60)}`);
+  const at = (h) => { const i = text.indexOf(`\n${h}\n`); assert.ok(i >= 0, `no heading ${h}`); return i; };
+  const order = ['## The constraints', '## The architecture', '## Technical debt', '## Install', '## Commands'].map(at);
+  assert.deepEqual(order, [...order].sort((a, b) => a - b), 'the sections are not in that order');
+  const architecture = text.slice(order[1]).split('\n\n')[1];
+  assert.match(architecture, /compact/i, "the architecture's first paragraph does not name compaction");
 });
 
 test('README: every heading appears once (review 4, O10)', () => {

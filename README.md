@@ -1,6 +1,28 @@
 # Long-Term Memory Structure
 [![Socket](https://socket.dev/api/badge/npm/package/long-term-memory-structure)](https://socket.dev/npm/package/long-term-memory-structure)
 
+**Preserve potential indefinitely.** Nothing ltms does destroys a record. A version of a transcript, once a pin has copied it, is never deleted or written over by ltms: a rewrite keeps the old copy beside the new one, and `ltms pin --check` reads back every version `PINS.log` records. What ltms cannot keep is what it never copied: a version is kept from the pin that copies it, so pin at the end of every session and from cron, and let `--check` tell you when pins stop. It copies what Claude Code's cleanup deletes (the transcripts and the files of their sessions), whole lines only. One pin directory is one copy on one disk: keep another.
+
+That is the design's first constraint, and the claim to test it by. Below: the facts it comes from, the architecture that keeps it, and the [technical debt](#technical-debt): every way an adversarial reading of the code found it false, each with its state in this release and the test that reproduces it.
+
+Long-Term Memory Structure is an independent project. It is not affiliated with or endorsed by Anthropic.
+
+Formerly published as `memobrain`.
+
+## The constraints
+
+Five facts about the setting decide the design. Each can be checked on a machine that runs Claude Code, and each part of ltms answers one of them.
+
+1. **The record is on disk.** Claude Code appends each session to its transcript, a `.jsonl` file under `~/.claude/projects/`. A compaction (when the context window fills, or on `/compact`) adds a boundary and a summary to the file; every record before them stays where it was.
+2. **The record is deleted.** Claude Code deletes a transcript, and its session's files, once it is older than `cleanupPeriodDays`, 30 days by default.
+3. **The record is far larger than the window.** A project's history outgrows any context window, and every token read into the window is taken from the work: an agent can afford a small index and a few passages, each found by its address.
+4. **A wrong recollection becomes a wrong action.** An agent acts on what it remembers. A summary, a model's or anyone's, is a guide to the record, never the record: before acting, the agent reads back the line it cites.
+5. **One agent, one user, one machine.** The memory serves one long-lived agent of one user, on a local disk; nothing is sent anywhere.
+
+What follows: keep every version of the record (1, 2), since a deletion cannot be undone and a copy can, and no one can say today which question a later session will ask: *preserve potential indefinitely*. Index it small, with an address back to the exact line (3). Read the line back before acting on it (4). No network, no shared store (5).
+
+## The architecture
+
 When a Claude Code session fills its context window, or on `/compact`, Claude Code compacts it: the conversation in the model's context is replaced by a summary, and the model carries on from the summary. The details, such as which commands ran, which of them failed and which files were read or changed, are no longer in front of the model. They are still on disk. Claude Code appends to a session's transcript, the `.jsonl` file under `~/.claude/projects/`; it can rewrite one only in rare cases, and `ltms pin` keeps both versions. A compaction adds a boundary record and the summary, and every record before them stays where it was. The summary itself gives the transcript's path, so the details can be read back from it. (Claude Code deletes old transcripts after 30 days by default; its `cleanupPeriodDays` setting changes that.)
 
 What compaction writes, and what each model keeps through it, measured: [Claude Code's compaction doesn't delete your history. It re-roots it.](https://long-term-memory-structure.github.io/long-term-memory-structure/compaction.html)
@@ -9,11 +31,7 @@ Long-Term Memory Structure reads that transcript, across its compactions, and pr
 
 Five more commands. `ltms index` lists a project's sessions, one line each, newest first: when each ran, its turns, calls and failures, and the addresses of its prompts, its compaction summaries and its last reply. `ltms search` finds the turns that hold every word of a query, and prints their addresses. `ltms stats` counts each transcript's turns, calls and failures. `ltms pin` keeps copies of the transcripts outside Claude Code's config directory, where its cleanup does not delete them, so the addresses still lead somewhere after it; its log is only appended to, and each line after the first holds the sha256 of the line before it. `ltms skill` prints a skill, a SKILL.md, that teaches an agent to use them. ltms reads local files only, makes no network connections and has no runtime dependencies.
 
-Long-Term Memory Structure is an independent project. It is not affiliated with or endorsed by Anthropic.
-
-Formerly published as `memobrain`.
-
-## Intent and tradeoffs
+### Intent and tradeoffs
 
 The objective of this tool is to provide support, a dependency sub-system of the operation of a SINGLE privately scoped persistent substrate longitudinally across time, with a small fixed budget cost and minimal variable costs per query. We don't assume the value of a memory fragment until we need to retrieve it, if at all in some distant future.
 
@@ -45,11 +63,51 @@ The objective of this tool is to provide support, a dependency sub-system of the
    *Costs:* the active writer must rule, at those points, on what stays hot. What was demoted is found only when someone asks for it.
    *Declined:* a background model that retires fragments on its own schedule, deciding in one step both what is kept and what is hot.
 
-## Why this exists
+### Why this exists
 
 A context window keeps nothing between sessions, and every call reads all of it again, so an agent pays again and again for everything it carries, and models do worse as it grows: context rot (Hong et al. 2025). This project is built around that budget: memory for one long-lived agent, with a small fixed cost in every session (an index of about 9,000 tokens, read from cache) and as little as possible per question: a surgical search, through a language server or a syntax tree, that reads one address (a line of a transcript, a symbol) rather than whole files.
 
 One popular approach is a shared "company brain" for a swarm of agents. This is something else: persistence for a single agent. The design and its measurements are in the report *Durable Memory on a Fixed Context Budget* (Ben Yanai 2026). This package is the first piece released: the indexes of a transcript and of a project's sessions.
+
+## Technical debt
+
+The opening paragraph is a strong claim, so it was attacked before this release. Three independent readers of ltms 0.2.0, one reading the code, one running it as a user with no access to the code, one reading the words, each tried to show it false, and every finding went to a fourth reader who tried to refute it (34 agents in all). The same was then done against this release's code. What they found, and the state of each in this release:
+
+**Where an act of ltms destroyed a record (0.2.0; repaired in 0.2.1):**
+
+| the case | what 0.2.1 does |
+|---|---|
+| A source of the cleanup's shape named like pin's temp files (`.<name>.ltms-tmp-<n>`, which `tool-results/` and the other session directories allow) was removed by the next pin's sweep of temp files: the only copy, once its source was gone | the sweep runs once `PINS.log` is read: a file a line names is a copy, never a temp |
+| A temp file left by a pin that was killed, holding the only copy of a version (its source rewritten since), was removed unread | a temp is removed only when a copy, a kept copy or its source holds its bytes, and is kept otherwise, with a `recovered` line |
+| Two pins at once (a lock removed by hand while its pin ran; a dead lock taken over by two pins; a pin in another PID namespace, which saw a live lock as dead): one wrote a rewritten file over the version the other had just logged | the lock names the boot, the PID namespace and the process's start, so a pin in another namespace counts as running; before each write a pin checks that the lock and `PINS.log` are still its own, and stops when they are not; and every copy is read before it is written over, and kept when it is not what the pin expected |
+| A source named like a kept copy (`<stem>.superseded-<sha12>.jsonl`) was pinned onto the kept copy | not pinned there (`kept-name`) |
+| A pin killed between a copy's rename and its log line, on a file that then came back to an already kept version: the `--rehash` that `--check` prescribed wrote over the only copy of the version the killed pin had renamed in | `--rehash` keeps what a copy holds beside it, a file of its own, before writing it again |
+| A pin directory that could be written but not listed: a rewritten source was renamed over its copy, nothing kept | nothing is written into a directory the pin cannot list |
+| The library's `platform: 'win32'` used on Linux: a path holding `:` made its log lines unreadable, and the next rewrite wrote over the copy | a path whose log line could not be read back is not pinned (`name-not-allowed`) |
+
+**Where pins stopped and nothing told the user (0.2.0):**
+
+| the case | in 0.2.1 |
+|---|---|
+| A `cp -al` snapshot of the pin directory (a natural second copy) gives `PINS.log` a second name: every pin refuses it, and `--check` exited 0 | `--check` exits 1, with the `find` command that names the other name |
+| `~/.claude` moved to another disk, with a symbolic link left at its path: every pin was refused | pins go on: the root `PINS.log` records leads to the same directory |
+| A file whose modification time lies past a JavaScript Date's range stopped every pin at that file | pinned like any other |
+| A transcript over 2 GiB failed every pin | read in parts |
+| A transcript larger than the memory a pin may use (in a container, or under cron with a limit) ends every pin at it, and the files after it in name order are not pinned | **open**: `--check` counts them missing or longer, and `PINS.log`'s `takeover` lines show the pins that were killed |
+| A lock left by a pin killed in another PID namespace (a container that shares the pin directory) | **open**: it counts as running, so every pin waits for it and exits 1 until it is removed by hand (the `rm` the message gives); `--check` exits 1, naming it |
+
+**What the opening's own limits mean in practice (open, by design):**
+- A pin is a snapshot: what Claude Code writes and then rewrites or deletes between two pins is never copied. A month away, with no hook run and no cron, is enough.
+- Whole lines only: a last line Claude Code never finished is not copied, and its cleanup then deletes it.
+- What is copied is the cleanup's shape: a project's `memory/`, and the other files of a session's directory, are not.
+- The `SessionEnd` hook pins its session's project only; the cron line pins every project.
+- A file is read again only when its size or its modification time changed (or with `--rehash`): a rewrite that keeps both is not seen by a plain pin.
+- A deletion by accident is as final as one on purpose; and the copies keep their sources' old modification times, so a tidy-up of the pin by age takes them first.
+
+**What remains in the code (open):**
+- A pin checks its lock before each write, but the check and the write are two acts: a pin paused between them (a stop signal, a debugger), after its lock was removed by hand or a dead lock was taken over twice, while another pin writes the same copy, can still write over that version.
+
+For an agent checking these: each case repaired has a test that fails on 0.2.0's code and passes on this release's, in `test/pin.test.mjs` (the tests named `S367 temps` and `S368`), and the README's section on `ltms pin` and its Limits say how each rule works.
 
 ## Install
 
