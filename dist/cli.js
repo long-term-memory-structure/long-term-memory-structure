@@ -2026,12 +2026,16 @@ copied (notCopied). A file is new; grown (its copy is a prefix of it);
 rewritten (anything else: the old copy is first kept by a hard link,
 <stem>.superseded-<sha12>.jsonl, or <name>.superseded-<sha12> for another
 file); or unchanged (the same size and sha256). A file whose size and mtime
-are what its last line in PINS.log records is not read again, unless
---rehash is given; --rehash also reads each copy whose source still holds
-the version its last line records, and writes it again from that source when
-it holds other bytes. pin never writes through a symbolic link inside <dir>,
-never reads PINS.log, the lock or a kept copy through one, and never waits on
-a FIFO there: one of those that is not a regular file is a failure
+are what its last line in PINS.log records is not read again, unless --rehash
+is given; --rehash also reads each copy whose source still holds the version
+its last line records, and writes it again from that source when it holds
+other bytes, those bytes first kept beside it, a file of their own (unless
+they are a .jsonl's that do not end in a new line: damage no pin wrote).
+Before pin writes over a copy it reads it, and bytes it did not expect there
+are recorded and kept. A source at a name a line gives a kept copy is not
+pinned there (kept-name). pin never writes through a symbolic link inside
+<dir>, never reads PINS.log, the lock or a kept copy through one, and never
+waits on a FIFO there: one of those that is not a regular file is a failure
 (not-a-regular-file), or, for PINS.log before a pin starts, a refusal.
 
 The pin directory <dir>:
@@ -2039,7 +2043,8 @@ The pin directory <dir>:
   PINS.log        JSON lines: a root line, then one line per change (new,
                   grown, rewritten, recovered, takeover), each holding the
                   sha256 of the line before it
-  .ltms-pin.lock  while a pin runs: its pid, host and start time
+  .ltms-pin.lock  while a pin runs: its pid, host and start time; on Linux
+                  also the boot, the PID namespace and the process's start
 Copies and PINS.log are 0600 (or the source's mode, when stricter);
 directories are 0700.
 
@@ -2071,10 +2076,14 @@ stdout: one coverage line, then one line per failure.
   lastLog         when PINS.log's last line was written
   {"k":"failure","path","rel","op","code"}: a file or directory that could
   not be read or written; op is to, lock, log, walk, read, keep, write or
-  recover, and code the error code (symlink-in-pin: a directory on the way
-  to the copy is a symbolic link, which pin does not write through;
+  recover, and code the error code (symlink-in-pin: a directory on the way to
+  the copy is a symbolic link, which pin does not write through;
   not-a-regular-file: PINS.log, the lock or a kept copy's name is a link, a
-  FIFO or another thing that is not a regular file)
+  FIFO or another thing that is not a regular file; kept-name: the source's
+  rel is a kept copy's name; name-not-allowed: on win32, a rel holding : or
+  \\ could not be read back from its line; lock-lost: the lock was removed or
+  taken by another pin, and this pin stopped; log-changed: another process
+  wrote to PINS.log, and this pin stopped)
 --list adds one line per line appended to PINS.log for a file:
   {"k":"pin","rel","how","bytes","prev","kept"}: prev is the length of the
   version before (null for a new file); kept, after a rewrite, the old one's
@@ -2090,10 +2099,14 @@ hook, set "timeout": 60 (Claude Code gives SessionEnd hooks 1.5 s by
 default); the README has the settings.json lines.
 
 A lock held by a running pin is waited for up to 30 s; then pin exits 1 with
-the holder's pid and start time, and the rm command. A lock whose pid is no
-longer running on this host is taken over. SIGINT, SIGTERM or SIGHUP stops a
-pin between two files: it removes the lock, and every file it pinned is
-whole and in PINS.log.
+the holder's pid and start time, and the rm command. A lock left before this
+host's last boot, or whose pid no longer runs on this host (or runs another
+process), is taken over; one held in another PID namespace on this host (a
+container) counts as running. Before each write, pin checks that the lock is
+still its own and PINS.log the file it read: when not, it stops before that
+write (lock-lost, log-changed), and leaves the other's lock. SIGINT, SIGTERM
+or SIGHUP stops a pin between two files: it removes the lock, and every file
+it pinned is whole and in PINS.log.
 
 --check <dir> reads every version PINS.log records back from the copy that
 holds it, checks that each line holds the sha256 of the line before it, and
@@ -2131,10 +2144,11 @@ is null when that copy is missing or cannot be read.
 Exit status: 0 when every file was pinned; 1 when a file or directory failed,
 or the lock stayed held; 2 on a usage error or a refusal. --check: 0 when the
 pin holds what PINS.log records; 1 on a mismatch, a chain break, a line that
-is not a log line, a directory under the root that could not be read, or a
-lock held for the whole wait (unlogged files, temp files, a lock left by a
-pin that stopped, and missing sources are reported, and fail nothing); 2 on
-a usage error or a directory that is not a pin.
+is not a log line, a directory under the root that could not be read, a lock
+held for the whole wait, or a PINS.log with another name, which every pin
+refuses (unlogged files, temp files, a lock left by a pin that stopped, and
+missing sources are reported, and fail nothing); 2 on a usage error or a
+directory that is not a pin.
 `;
 const PIN_VALUE_OPTIONS = ['--to', '--root', '--check'];
 const PIN_OPTION_KEY = { '--to': 'to', '--root': 'root', '--check': 'check' };
@@ -2379,12 +2393,14 @@ function printPinned(r, a, paths, root) {
     return r.interrupted !== null ? 1 : 0;
 }
 /** A pinned rel's source is there, under the root PINS.log records, as itself: a regular file at that path whose real path
- *  is that path (no symbolic link on the way to it, or at its end), so that a pin of its project with that root is not
- *  refused for leading elsewhere. Nothing of the file is read. */
+ *  is the root's real path and rel (no symbolic link on the way to it under the root, or at its end), so that a pin of
+ *  its project with that root is not refused for leading elsewhere. The root itself may be reached through a link: a
+ *  pin takes a root whose recorded path leads to the same directory (S368, the adversarial reading's B4). Nothing of the
+ *  file is read. */
 function sourceThere(root, rel) {
     const p = join(root, ...rel.split('/'));
     try {
-        return lstatSync(p).isFile() && realpathSync.native(p) === p;
+        return lstatSync(p).isFile() && realpathSync.native(p) === join(realpathSync.native(root), ...rel.split('/'));
     }
     catch {
         return false;
@@ -2464,7 +2480,9 @@ function printChecked(r) {
         const one = s.unfinished === 1;
         err(`ltms pin: ${plural(s.unfinished, 'file', 'files')} under the root ${q(s.root)} ${one ? 'ends' : 'end'} in an unfinished line, which a pin does not copy: ${one ? 'it is longer than its copy' : 'they are longer than their copies'} only by that line, and ${one ? 'is' : 'are'} not counted as longer.`);
     }
-    return damage || (s !== null && s.failed) ? 1 : 0;
+    // while PINS.log has another name every pin into this directory is refused: the pins have stopped, and a check run
+    // from cron says so by its status too (S368, the adversarial reading's B3)
+    return damage || (s !== null && s.failed) || !pinRuns ? 1 : 0;
 }
 async function pinMain(argv) {
     const a = readPinArgs(argv);

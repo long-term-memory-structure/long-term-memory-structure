@@ -14,7 +14,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, chmodSync, constants as fsConstants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync,
+import { appendFileSync, chmodSync, constants as fsConstants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync,
   rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -211,8 +211,15 @@ test("pin, modes under umask 022: copies and the log 0600, or the source's mode 
     for (const f of filesUnder(t.to)) assert.equal(modeOf(join(t.to, f)), f === strict ? 0o400 : 0o600, f);
     for (const d of [t.to, ...dirsUnder(t.to)]) assert.equal(modeOf(d), 0o700, d);
     assert.deepEqual([seen.lock.mode, seen.temp], [0o600, 0o600]);
-    assert.deepEqual(Object.keys(seen.lock.body), ['pid', 'host', 'started']);
+    // S368: on Linux the lock also names the boot, the PID namespace and this process's start time (read here from /proc)
+    const linux = process.platform === 'linux';
+    assert.deepEqual(Object.keys(seen.lock.body), ['pid', 'host', 'started', ...(linux ? ['boot', 'pidns', 'start'] : [])]);
     assert.deepEqual([seen.lock.body.pid, seen.lock.body.host], [process.pid, hostname()]);
+    if (linux) {
+      const stat = readFileSync('/proc/self/stat', 'utf8');
+      assert.deepEqual([seen.lock.body.boot, seen.lock.body.pidns, seen.lock.body.start],
+        [readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), readlinkSync('/proc/self/ns/pid'), stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]]);
+    }
     assert.match(seen.lock.body.started, ISO);
   } finally { t.clean(); }
 });
@@ -1171,7 +1178,7 @@ test('pin, a .jsonl with no new line yet, or empty, is not copied and is counted
   } finally { t.clean(); }
 });
 
-test('pin --rehash, a copy changed in place at the same size: a check finds it; a pin without --rehash leaves it; --rehash writes it again from its source, which still holds that version, with a recovered line (pin[2])', async () => {
+test('pin --rehash, a copy changed in place at the same size: a check finds it; a pin without --rehash leaves it; --rehash keeps the bytes it holds beside it (a file of its own, with its line: they could be a version a killed pin renamed in, S368) and writes it again from its source, which still holds that version, with a recovered line (pin[2])', async () => {
   const t = tree();
   try {
     await pinPaths([t.root], t.opts());
@@ -1184,10 +1191,18 @@ test('pin --rehash, a copy changed in place at the same size: a check finds it; 
     const plain = await pinPaths([t.root], t.opts());
     assert.deepEqual([plain.lines, plain.coverage.files.unchanged], [[], 10]);
     const r = await pinPaths([t.root], t.opts({ rehash: true }));
-    assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev]), [['recovered', rel, len(good), sha(good), { bytes: len(good), sha256: sha(good) }]]);
+    const aside = `${Q}/${SB}.superseded-${sha12(bad)}.jsonl`;
+    assert.deepEqual(r.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev]), [
+      ['recovered', aside, bad.length, sha(bad), null],
+      ['recovered', rel, len(good), sha(good), { bytes: len(good), sha256: sha(good) }],
+    ]);
     assert.deepEqual([r.coverage.files, r.coverage.bytesCopied], [counts({ seen: 10, unchanged: 10 }), len(good)]);
-    assert.deepEqual(r.notices, [`1 copy in '${t.to}' held other bytes than its last line in PINS.log records, and was written again from its source, which still holds that version (--rehash), with a recovered line each.`]);
+    assert.deepEqual(r.notices, [
+      `1 copy in '${t.to}' held bytes that no line in PINS.log records as its version: they are kept as '${aside}', with a recovered line each, and the copy was then written again from its source (--rehash).`,
+      `1 copy in '${t.to}' held other bytes than its last line in PINS.log records, and was written again from its source, which still holds that version (--rehash), with a recovered line each.`,
+    ]);
     assert.equal(readFileSync(t.pin(rel), 'utf8'), good);
+    assert.deepEqual(readFileSync(t.pin(aside)), bad);
     checkClean(await checkPin(t.to));
     // a copy that holds its version is left as it is by --rehash: no line
     assert.deepEqual((await pinPaths([t.root], t.opts({ rehash: true }))).lines, []);
@@ -1847,8 +1862,12 @@ test('ltms pin --check: a changed copy, a changed log line and a line that is no
     // the command it gives, run: the copy is written again from its source, and the pin checks clean
     const fix = ltms(t, ['pin', t.src(Q), '--to', t.to, '--root', t.root, '--rehash']);
     assert.deepEqual([fix.code, readFileSync(t.pin(rel), 'utf8')], [0, A3], fix.err);
+    // S368: what the copy held is kept beside it first, a file of its own with its line
+    const aside = t.pin(`${Q}/${SB}.superseded-${sha12(B3)}.jsonl`);
+    assert.equal(readFileSync(aside, 'utf8'), B3);
     assert.equal(ltms(t, ['pin', '--check', t.to]).code, 0);
     writeFileSync(t.pin(rel), A3);
+    rmSync(aside);   // the log is put back below as it was before the --rehash run, which named that file
     // a log line's time changed: the line after it no longer holds its sha256; then a line that is not a log line
     const raw = orig.toString('utf8').split('\n').filter((l) => l !== '');
     const o = JSON.parse(raw[2]); o.t = '2000-01-01T00:00:00.000Z';
@@ -2290,15 +2309,16 @@ test('pin, PINS.log made a symbolic link between the lstat and the open of an ap
     appendFileSync(t.src(`${Q}/${SB}.jsonl`), L4);
     const log = join(t.to, 'PINS.log'), victim = join(t.tmp, 'victim.log');
     const before = readFileSync(log);
-    // armed by the first file's stat (after the log was read), the next lstat of PINS.log, the append's, returns the
-    // regular file it saw, and the link is put in place before the open
+    // armed by the first file's stat (after the log was read), the next lstat of PINS.log by the append's open, returns
+    // the regular file it saw, and the link is put in place before the open (the guard's lstat before each write, S368,
+    // asks for bigints, and is passed over)
     const c = childModule(`
       const r = await pinPaths([${JSON.stringify(t.root)}], { ...${JSON.stringify(t.opts())}, onStep(step) { if (step === 'stat') globalThis.armed ??= true; } });
       process.stdout.write(JSON.stringify(r));`, { patch: `
       const lstat = fs.lstatSync;
       fs.lstatSync = function (p) {
         const s = lstat.apply(this, arguments);
-        if (globalThis.armed === true && String(p) === ${JSON.stringify(log)}) {
+        if (globalThis.armed === true && String(p) === ${JSON.stringify(log)} && arguments.length === 1) {
           globalThis.armed = false;
           fs.renameSync(${JSON.stringify(log)}, ${JSON.stringify(victim)});
           fs.symlinkSync(${JSON.stringify(victim)}, ${JSON.stringify(log)});
@@ -2385,7 +2405,7 @@ test('pin, a symbolic link at the lock: a failure, op lock, not-a-regular-file, 
   } finally { t.clean(); }
 });
 
-test("pin, a FIFO put at the lock's name while the pin runs: the pin ends, and leaves it, since it removes only a lock that holds what it wrote (final[1])", { skip: NO_FIFOS }, async () => {
+test("pin, a FIFO put at the lock's name while the pin runs: the lock no longer holds what the pin wrote, so the pin stops before its next write (lock-lost, S368), never waiting on the FIFO, and leaves it, since it removes only a lock that holds what it wrote (final[1])", { skip: NO_FIFOS }, async () => {
   const t = tree();
   try {
     const lock = lockOf(t);
@@ -2396,7 +2416,7 @@ test("pin, a FIFO put at the lock's name while the pin runs: the pin ends, and l
       } });
       process.stdout.write(JSON.stringify(r));`);
     const r = ranTo(c);
-    assert.deepEqual([r.k, r.failures, r.coverage.files.new], ['pinned', [], 10]);
+    assert.deepEqual([r.k, r.failures, r.coverage.files.new], ['pinned', [{ path: lock, rel: null, op: 'lock', code: 'lock-lost' }], 0]);
     assert.ok(isFifo(lock));
   } finally { t.clean(); }
 });
@@ -3214,7 +3234,7 @@ test('ltms pin --check, a changed copy of one of Claude Code\'s own set-aside co
   } finally { t.clean(); }
 });
 
-test('ltms pin --check, the root PINS.log records moved and linked back from its old place: no --rehash command, since a pin with that root would be refused (root-differs) (S358 closure fix [4], C14 adopted from the checker\'s f3-survivors)', { skip: NO_LINKS }, () => {
+test('ltms pin --check, the root PINS.log records moved and linked back from its old place: a pin with that root goes on (its recorded path leads to the same directory, S368, B4), so the --rehash command is given, and run as printed it clears the mismatch (S358 closure fix [4], C14 adopted from the checker\'s f3-survivors; S368)', { skip: NO_LINKS }, () => {
   const t = tree();
   try {
     assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
@@ -3224,9 +3244,11 @@ test('ltms pin --check, the root PINS.log records moved and linked back from its
     renameSync(t.root, moved);
     symlinkSync(moved, t.root);
     const r = ltms(t, ['pin', '--check', t.to]);
-    assert.deepEqual([r.code, rehashOf(r.err)], [1, null], r.err);
-    // what such a command would meet
-    assert.equal(ltms(t, ['pin', t.src(Q), '--to', t.to, '--root', t.root, '--rehash']).code, 2);
+    const command = rehashOf(r.err);
+    assert.deepEqual([r.code, command], [1, `ltms pin '${t.src(Q)}' --to '${t.to}' --root '${t.root}' --rehash`], r.err);
+    const fix = runPrinted(t, command);
+    assert.equal(fix.code, 0, fix.err);
+    assert.equal(ltms(t, ['pin', '--check', t.to]).code, 0);
   } finally { t.clean(); }
 });
 
@@ -3848,8 +3870,13 @@ test('pin --rehash, a tool result (a file copied whole) cut and changed at a byt
     assert.deepEqual([logText(t.to), readFileSync(t.pin(rel))], [log, bad]);
     chmodSync(t.src(rel), 0o600);
     const again = await pinPaths([t.src(P)], t.opts({ rehash: true }));
-    assert.deepEqual(again.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [['recovered', rel, len(good), sha(good), versionOf(good), undefined]]);
-    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to)], [good, []]);
+    // S368: a file copied whole holds no line that tells damage from a version: what the copy held is kept beside it
+    const aside = `${rel}.superseded-${sha12(bad)}`;
+    assert.deepEqual(again.lines.map((l) => [l.how, l.rel, l.bytes, l.sha256, l.prev, l.kept]), [
+      ['recovered', aside, bad.length, sha(bad), null, undefined],
+      ['recovered', rel, len(good), sha(good), versionOf(good), undefined],
+    ]);
+    assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), keptIn(t.to), readFileSync(t.pin(aside))], [good, [aside], bad]);
     checkClean(await checkPin(t.to));
   } finally { t.clean(); }
 });
@@ -4225,5 +4252,380 @@ test('S367 temps: a temp a killed pin left, whose bytes only the copy holds when
     const kept = r.lines.find((l) => l.how === 'rewritten' && l.rel === rel)?.kept;
     assert.equal(readFileSync(t.pin(kept), 'utf8'), v1, 'and the rewrite keeps the copy');
     checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+// ---- S368: the rest of the strict breaks (the adversarial reading, ADJUDICATION I.3-I.7) and the quiet stops ----------
+// Each test below was run red first on c8b9abb's build, unless it says it is a guard. The findings' letters are the
+// seats' (S367: A the code, B an operator lab, C the words).
+
+/** pinPaths in a child process that pauses at one step of one rel's write: it writes <tmp>/paused-<tag> and waits until
+ *  <tmp>/go-<tag> exists. result() resolves once the child has exited, with what pinPaths resolved to. */
+function pausedPin(t, paths, step, rel, tag, extra = {}) {
+  const paused = join(t.tmp, `paused-${tag}`), go = join(t.tmp, `go-${tag}`);
+  const code = `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { pinPaths } from ${JSON.stringify(pathToFileURL(PIN).href)};
+    const o = ${JSON.stringify(t.opts(extra))};
+    const r = await pinPaths(${JSON.stringify(paths)}, { ...o, onStep(step, rel) {
+      if (step === ${JSON.stringify(step)} && rel === ${JSON.stringify(rel)}) {
+        writeFileSync(${JSON.stringify(paused)}, String(process.pid));
+        while (!existsSync(${JSON.stringify(go)})) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      }
+    } });
+    process.stdout.write(JSON.stringify(r));`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '', errOut = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', (d) => { errOut += d; });
+  const exited = new Promise((res) => child.on('exit', (status, signal) => res({ status, signal })));
+  return {
+    child,
+    async paused(ms = 20000) {
+      for (const t0 = Date.now(); !existsSync(paused);) {
+        if (Date.now() - t0 > ms) throw new Error(`the child did not reach ${step} of ${rel}: ${errOut}`);
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    },
+    go() { writeFileSync(go, ''); },
+    async result() {
+      const e = await exited;
+      let r = null;
+      try { r = JSON.parse(out); } catch { /* the child printed no result */ }
+      return { ...e, r, stderr: errOut };
+    },
+  };
+}
+/** The bytes of every file under dir (PINS.log and the lock included), as strings. */
+const heldUnder = (dir) => filesUnder(dir).map((f) => readFileSync(join(dir, f), 'utf8'));
+const LINUX_PROC = process.platform !== 'linux' && 'reads /proc';
+const myBoot = () => readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+const myPidNs = () => readlinkSync('/proc/self/ns/pid');
+/** A process's start time, in clock ticks since boot: field 22 of /proc/<pid>/stat, read after the command's ')'. */
+const startOf = (pid) => readFileSync(`/proc/${pid}/stat`, 'utf8').split(')').pop().trim().split(' ')[19];
+const UNSHARE = (() => {
+  if (process.platform !== 'linux') return 'unshare is Linux';
+  const r = spawnSync('unshare', ['--map-current-user', '--pid', '--fork', '--mount-proc', 'true']);
+  return r.status === 0 ? false : 'unshare --pid cannot run here';
+})();
+
+test('S368 A9: a source whose mtime lies past the range of a JavaScript Date is pinned like any other, with its mtime written in full, and the files after it in rel order are pinned too', async () => {
+  const t = tree();
+  try {
+    const far = `${P}/${SA}/tool-results/a-far-mtime.txt`;   // in rel order, before the base tree's tool result
+    t.put(far, 'invented output with a far mtime\n');
+    utimesSync(t.src(far), 9e12, 9e12);
+    assert.equal(statSync(t.src(far), { bigint: true }).mtimeNs, 9_000_000_000_000_000_000_000n, 'precondition: the file system keeps that mtime');
+    // the date, by another road than the library's: 9e12 s is 104,166,666 days and 57,600 s; 712 Gregorian cycles of
+    // 400 years (146,097 days each) are taken off, the rest read by a Date, and the 284,800 years added back
+    const rest = new Date(((104_166_666 - 712 * 146_097) * 86_400 + 57_600) * 1000);
+    const iso = `+${String(rest.getUTCFullYear() + 712 * 400).padStart(6, '0')}${rest.toISOString().slice(4, 19)}.000000000Z`;
+    const r = await pinPaths([t.root], t.opts());
+    assert.equal(r.k, 'pinned');
+    assert.deepEqual(r.failures, []);
+    assert.equal(r.coverage.files.new, RELS.length + 1);
+    assert.equal(r.lines.find((l) => l.rel === far)?.mtime, iso);
+    assert.equal(readFileSync(t.pin(far), 'utf8'), 'invented output with a far mtime\n');
+    const again = await pinPaths([t.root], t.opts());
+    assert.deepEqual([again.coverage.files.unchanged, again.lines.length], [RELS.length + 1, 0], 'the next pin finds it unchanged by its size and mtime');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S368 A8: under win32 rules, a file whose path holds a colon is not pinned, since its line could not be read back; a copy pinned under linux rules is not written over, and recovery adds no line it could not read', async () => {
+  const t = tree();
+  try {
+    const rel = `${P}/${SA}/mcp-tasks/server:task-1.json`;
+    t.put(rel, '{"task":1,"state":"first version"}');
+    const r1 = await pinPaths([t.root], t.opts({ platform: 'win32' }));
+    assert.deepEqual(r1.failures.map((f) => [f.rel, f.op, f.code]), [[rel, 'write', 'name-not-allowed']]);
+    assert.equal(existsSync(t.pin(rel)), false);
+    // the same file pinned under linux rules, then rewritten and pinned under win32 rules
+    const linux = await pinPaths([t.root], t.opts());
+    assert.ok(linux.lines.some((l) => l.rel === rel && l.how === 'new'), 'precondition: pinned under linux rules');
+    writeFileSync(t.src(rel), '{"task":1,"state":"rewritten"}');
+    const r2 = await pinPaths([t.root], t.opts({ platform: 'win32' }));
+    assert.deepEqual(r2.failures.map((f) => [f.rel, f.op, f.code]), [[rel, 'write', 'name-not-allowed']]);
+    assert.deepEqual(r2.lines, [], 'no line: not one that could not be read back');
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), '{"task":1,"state":"first version"}');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test("S368 A4: a source named like a kept copy that a line names is not pinned onto it: the version kept there stays, and the file is a failure (kept-name)", async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel];
+    await pinPaths([t.src(Q)], t.opts());
+    writeFileSync(t.src(rel), L4);
+    const r2 = await pinPaths([t.src(Q)], t.opts());
+    const kRel = `${Q}/${SB}.superseded-${sha12(v1)}.jsonl`;
+    assert.equal(r2.lines.find((l) => l.rel === rel)?.kept, kRel, 'precondition: v1 kept by that name');
+    t.put(kRel, '{"type":"user","text":"edited by hand"}\n');   // a file with other bytes, put at that name under the root
+    const r3 = await pinPaths([t.src(Q)], t.opts());
+    assert.equal(readFileSync(t.pin(kRel), 'utf8'), v1, 'the kept copy still holds v1');
+    assert.deepEqual(r3.failures.map((f) => [f.rel, f.op, f.code]), [[kRel, 'write', 'kept-name']]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S368 A5: a directory of the pin that can be written but not listed is not written into: its files are failures before anything is written, and the version its copy holds stays; once it can be listed, the rewrite is pinned and the old version kept', { skip: NEEDS_PERMISSIONS || (process.platform === 'win32' && 'modes do not apply on win32') }, async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel];
+    await pinPaths([t.src(Q)], t.opts());
+    writeFileSync(t.src(rel), L4);
+    chmodSync(join(t.to, Q), 0o300);
+    let r;
+    try { r = await pinPaths([t.src(Q)], t.opts()); } finally { chmodSync(join(t.to, Q), 0o700); }
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), v1, 'the copy still holds v1');
+    assert.deepEqual(r.failures.map((f) => [f.rel, f.op, f.code]), [[rel, 'write', 'EACCES']]);
+    assert.deepEqual(r.lines, []);
+    const r2 = await pinPaths([t.src(Q)], t.opts());
+    assert.deepEqual(r2.failures, []);
+    assert.equal(readFileSync(t.pin(`${Q}/${SB}.superseded-${sha12(v1)}.jsonl`), 'utf8'), v1);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), L4);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S368 A5: the pin directory itself can be written but not listed: the run stops before any file (a failure, op to), and every copy stays as it was', { skip: NEEDS_PERMISSIONS || (process.platform === 'win32' && 'modes do not apply on win32') }, async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel];
+    await pinPaths([t.root], t.opts());
+    const before = snapshot(t.to);
+    writeFileSync(t.src(rel), L4);
+    chmodSync(t.to, 0o300);
+    let r;
+    try { r = await pinPaths([t.root], t.opts()); } finally { chmodSync(t.to, 0o700); }
+    assert.deepEqual(r.failures.map((f) => [f.path, f.op, f.code]), [[t.to, 'to', 'EACCES']]);
+    assert.deepEqual([r.lines, r.coverage.files.seen], [[], 0]);
+    assert.deepEqual(snapshot(t.to), before);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), v1);
+  } finally { t.clean(); }
+});
+
+/** The A1 sequence (seat A's e1): A, B, A pinned; C, the size of A, renamed in by a pin killed before its line; the file
+ *  back to A. */
+async function a1(t) {
+  const rel = `${P}/${SA}/workflows/state.json`;
+  const A = '{"status":"idle"}', B = '{"status":"busy, and longer"}', C = '{"status":"fail"}';
+  assert.equal(len(A), len(C), 'precondition: C is the size of A');
+  t.put(rel, A); await pinPaths([t.root], t.opts());
+  writeFileSync(t.src(rel), B); await pinPaths([t.root], t.opts());
+  writeFileSync(t.src(rel), A); await pinPaths([t.root], t.opts());
+  writeFileSync(t.src(rel), C);
+  const c = childPin(t, [t.root], 'renamed', rel, KILL);
+  assert.equal(c.signal, 'SIGKILL', c.stderr);
+  assert.equal(readFileSync(t.pin(rel), 'utf8'), C, 'precondition: C renamed in, with no line');
+  writeFileSync(t.src(rel), A);
+  return { rel, A, C };
+}
+
+test('S368 A1: a pin killed between a rename and its line, on a file that had come back to a kept version: the --rehash a check prescribes keeps the version the killed pin renamed in, and the check is then clean', async () => {
+  const t = tree();
+  try {
+    const { rel, A, C } = await a1(t);
+    const k0 = await checkPin(t.to);
+    assert.equal(k0.mismatches.length, 1, 'precondition: the check reports the copy');
+    const r = await pinPaths([t.root], t.opts({ rehash: true }));
+    assert.deepEqual(r.failures, []);
+    assert.ok(heldUnder(t.to).includes(C), 'C is held by a file of the pin');
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), A);
+    checkClean(await checkPin(t.to));
+    assert.deepEqual((await pinPaths([t.root], t.opts())).lines, [], 'a pin after it finds nothing to do');
+  } finally { t.clean(); }
+});
+
+test('S368 A1: the same, with plain pins: one leaves the copy as it is (C, unread); when the file is then rewritten, the next records C, keeps it, and names the kept copy of A that its line\'s version is held by, so the check is clean', async () => {
+  const t = tree();
+  try {
+    const { rel, C } = await a1(t);
+    const r1 = await pinPaths([t.root], t.opts());
+    assert.deepEqual([r1.failures, r1.lines.filter((l) => l.rel !== undefined)], [[], []], 'the source holds its last version: no file is written (a takeover line: the killed pin left its lock)');
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), C, 'C is left where it is');
+    const D = '{"status":"done, and much longer"}';
+    writeFileSync(t.src(rel), D);
+    const r2 = await pinPaths([t.root], t.opts());
+    assert.deepEqual(r2.failures, []);
+    assert.ok(heldUnder(t.to).includes(C), 'C is held by a file of the pin');
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), D);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S368 A1: a pin killed between a rename and its line; the file then grows from the version before: the plain pin keeps what the killed pin renamed in', async () => {
+  const t = tree();
+  try {
+    const rel = `${P}/${SA}/workflows/state.json`;
+    const A = '{"status":"idle"}', B = '{"status":"busy, and longer"}', C = '{"status":"fail"}';
+    t.put(rel, A); await pinPaths([t.root], t.opts());
+    writeFileSync(t.src(rel), B); await pinPaths([t.root], t.opts());
+    writeFileSync(t.src(rel), A); await pinPaths([t.root], t.opts());
+    writeFileSync(t.src(rel), C);
+    const c = childPin(t, [t.root], 'renamed', rel, KILL);
+    assert.equal(c.signal, 'SIGKILL', c.stderr);
+    writeFileSync(t.src(rel), `${A} `);                     // grows from A
+    const r = await pinPaths([t.root], t.opts());
+    assert.deepEqual(r.failures, []);
+    assert.ok(heldUnder(t.to).includes(C), 'C is held by a file of the pin');
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), `${A} `);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+/** A copy written by something else after the scan (at the step 'stat' of its file), before the pin writes it: for a new
+ *  file, other bytes; for a grown file, a version another pin could have written (v1 grown by another line). */
+async function afterScan(which) {
+  const t = tree();
+  try {
+    const rel = which === 'new' ? `${P}/${SA}/tool-results/b000000002.txt` : `${Q}/${SB}.jsonl`;
+    const X = which === 'new' ? '{"type":"user","text":"bytes put at the copy by another writer"}\n' : PINNED[rel] + L5;
+    await pinPaths([t.root], t.opts());
+    if (which === 'new') t.put(rel, 'a new tool output\n'); else appendFileSync(t.src(rel), L4);
+    const r = await pinPaths([t.root], t.opts({ onStep(step, r0) {
+      if (step === 'stat' && r0 === rel) { mkdirSync(dirname(t.pin(rel)), { recursive: true }); writeFileSync(t.pin(rel), X); }
+    } }));
+    assert.deepEqual(r.failures, [], which);
+    assert.ok(heldUnder(t.to).includes(X), `the other writer's bytes are held by a file of the pin (${which})`);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+}
+test('S368: a copy that holds other bytes when its write comes (written by something else after the scan) is kept before the rename: a new file', () => afterScan('new'));
+test('S368: a copy that holds other bytes when its write comes (written by something else after the scan) is kept before the rename: a grown file', () => afterScan('grown'));
+
+test('S368 C2: a lock removed by hand while its pin runs: that pin stops at its next write (lock-lost), and the version another pin wrote meanwhile stays', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.src(Q)], t.opts());
+    const V3 = L4 + L5;
+    writeFileSync(t.src(rel), L4);                          // rewritten
+    const p1 = pausedPin(t, [t.src(Q)], 'linked', rel, 'p1');
+    await p1.paused();                                      // P1 holds the lock, the old version kept, its write to come
+    unlinkSync(lockOf(t));                                  // the rm the busy message prints
+    writeFileSync(t.src(rel), V3);
+    const r2 = await pinPaths([t.src(Q)], t.opts());        // P2 runs whole and pins V3
+    assert.deepEqual([r2.k, r2.failures], ['pinned', []]);
+    writeFileSync(t.src(rel), L1);                          // the source moves on: V3 is only in the pin
+    p1.go();
+    const { r: r1, stderr } = await p1.result();
+    assert.ok(r1 !== null, stderr);
+    assert.deepEqual(r1.failures.map((f) => [f.op, f.code]), [['lock', 'lock-lost']]);
+    assert.ok(heldUnder(t.to).includes(V3), 'V3, which PINS.log records, is held');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test("S368: a lock taken by another pin while this one runs (the dead lock's double takeover, README's window): this pin stops before its first write (lock-lost) and leaves the other's lock", async () => {
+  const t = tree();
+  const other = spawn('sleep', ['30']);
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.src(Q)], t.opts());
+    writeFileSync(t.src(rel), L4);
+    const before = snapshot(t.to);
+    const p1 = pausedPin(t, [t.src(Q)], 'stat', rel, 'p1');
+    await p1.paused();
+    const body = JSON.stringify({ pid: other.pid, host: hostname(), started: '2026-11-12T21:00:00.000Z' });
+    writeFileSync(lockOf(t), body);                         // another pin's lock, in place of P1's
+    p1.go();
+    const { r: r1, stderr } = await p1.result();
+    assert.ok(r1 !== null, stderr);
+    assert.deepEqual(r1.failures.map((f) => [f.op, f.code]), [['lock', 'lock-lost']]);
+    assert.equal(readFileSync(lockOf(t), 'utf8'), body, "the other's lock is left");
+    unlinkSync(lockOf(t));
+    assert.deepEqual(snapshot(t.to), before, 'nothing was written');
+  } finally { other.kill(); t.clean(); }
+});
+
+test('S368 A2/B1: a pin in another PID namespace on the same host does not take over a live lock: it waits, then says it is busy, and names the namespace', { skip: UNSHARE }, async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    writeFileSync(t.src(rel), L4);
+    const p1 = pausedPin(t, [t.src(Q)], 'stat', rel, 'p1');
+    await p1.paused();
+    const code = `import { pinPaths } from ${JSON.stringify(pathToFileURL(PIN).href)};
+      const r = await pinPaths(${JSON.stringify([t.src(Q)])}, { ...${JSON.stringify(t.opts())}, lockWaitMs: 600 });
+      process.stdout.write(JSON.stringify(r));`;
+    const r2 = spawnSync('unshare', ['--map-current-user', '--pid', '--fork', '--mount-proc', process.execPath, '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 30000 });
+    let o = null;
+    try { o = JSON.parse(r2.stdout); } catch { /* reported below */ }
+    p1.go();
+    const { r: r1 } = await p1.result();
+    assert.equal(o?.k, 'busy', r2.stdout + r2.stderr);
+    assert.equal(o.holder.pid, p1.child.pid);
+    assert.match(o.message, /in another PID namespace on this host/);
+    assert.deepEqual([r1.k, r1.failures], ['pinned', []]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S368: a lock from this host left before its last boot is taken over at once, even when a process now runs with its pid', { skip: LINUX_PROC }, async () => {
+  const t = tree();
+  const live = spawn('sleep', ['30']);
+  try {
+    plantLock(t, { pid: live.pid, host: hostname(), started: '2026-11-01T10:00:00.000Z', boot: '00000000-0000-4000-8000-000000000000', pidns: myPidNs(), start: '1' });
+    const r = await pinPaths([t.src(Q)], t.opts({ lockWaitMs: 300 }));
+    assert.deepEqual([r.k, r.takeover?.pid], ['pinned', live.pid]);
+  } finally { live.kill(); t.clean(); }
+});
+
+test('S368: a lock whose pid now names another process (its start time differs) is taken over at once', { skip: LINUX_PROC }, async () => {
+  const t = tree();
+  const live = spawn('sleep', ['30']);
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    assert.notEqual(startOf(live.pid), '1');
+    plantLock(t, { pid: live.pid, host: hostname(), started: '2026-11-12T10:00:00.000Z', boot: myBoot(), pidns: myPidNs(), start: '1' });
+    const r = await pinPaths([t.src(Q)], t.opts({ lockWaitMs: 300 }));
+    assert.deepEqual([r.k, r.takeover?.pid], ['pinned', live.pid]);
+  } finally { live.kill(); t.clean(); }
+});
+
+test('S368 guard: a lock whose pid, boot, namespace and start time name a running process is waited for, then busy', { skip: LINUX_PROC }, async () => {
+  const t = tree();
+  const live = spawn('sleep', ['30']);
+  try {
+    await new Promise((r) => setTimeout(r, 50));
+    plantLock(t, { pid: live.pid, host: hostname(), started: '2026-11-12T10:00:00.000Z', boot: myBoot(), pidns: myPidNs(), start: startOf(live.pid) });
+    const r = await pinPaths([t.src(Q)], t.opts({ lockWaitMs: 300 }));
+    assert.deepEqual([r.k, r.holder?.pid], ['busy', live.pid]);
+  } finally { live.kill(); t.clean(); }
+});
+
+test('S368 B4: the config directory moved to another place, with a symbolic link left at its path: the root PINS.log records leads to the same directory, so pins go on, and the check walks it', { skip: NO_LINKS }, async () => {
+  const t = tree();
+  try {
+    await pinPaths([t.root], t.opts());
+    const moved = join(t.tmp, 'disk3');
+    mkdirSync(moved);
+    renameSync(t.config, join(moved, 'claude'));
+    symlinkSync(join(moved, 'claude'), t.config);
+    appendFileSync(t.src(`${Q}/${SB}.jsonl`), L4);         // written after the move
+    const r = await pinPaths([t.root], t.opts());
+    assert.equal(r.k, 'pinned', r.message);
+    assert.deepEqual([r.failures, r.coverage.files.grown], [[], 1]);
+    const k = await checkPin(t.to);
+    checkClean(k);
+    assert.deepEqual([k.staleness.missing, k.staleness.longer], [0, 0]);
+  } finally { t.clean(); }
+});
+
+test('S368 B3: ltms pin --check exits 1 while PINS.log has another name (a cp -al snapshot of the pin), since every pin into the directory is refused; with one name again, 0', async () => {
+  const t = tree();
+  try {
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 0);
+    const snap = join(t.tmp, 'snapshot');
+    mkdirSync(snap);
+    linkSync(join(t.to, 'PINS.log'), join(snap, 'PINS.log'));
+    const r = ltms(t, ['pin', '--check', t.to]);
+    assert.equal(r.code, 1, r.err);
+    assert.match(r.err, /has 2 names \(hard links to one file\): a pin refuses a log that has another name/);
+    assert.equal(ltms(t, ['pin', t.root, '--to', t.to]).code, 2, 'precondition: the pin is refused');
+    rmSync(join(snap, 'PINS.log'));
+    assert.equal(ltms(t, ['pin', '--check', t.to]).code, 0);
   } finally { t.clean(); }
 });

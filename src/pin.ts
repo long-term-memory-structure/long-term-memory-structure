@@ -17,7 +17,7 @@
 
 import {
   closeSync, constants as fsConstants, fstatSync, fsyncSync, futimesSync, linkSync, lstatSync, mkdirSync, openSync,
-  readdirSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync,
+  readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, unlinkSync, writeSync,
 } from 'node:fs';
 import type { BigIntStats, Dirent, Stats } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -35,8 +35,11 @@ export type PinHow = 'new' | 'grown' | 'rewritten' | 'recovered';
 /** One version of a file: its length in bytes, and the sha256 of those bytes (64 lower-case hex characters). */
 export interface PinVersion { bytes: number; sha256: string }
 
-/** What a pin's lock file holds: the process that holds it, the host it runs on, and when it took the lock (ISO). */
-export interface PinLockHolder { pid: number; host: string; started: string }
+/** What a pin's lock file holds: the process that holds it, the host it runs on, and when it took the lock (ISO); and,
+ *  where the platform gives them (Linux: /proc), the host's boot id, the process's PID namespace and its start time in
+ *  clock ticks since boot, which tell a lock left before the last boot, a pid now used by another process, and a pin
+ *  that runs in another PID namespace (S368). A lock written by ltms 0.2.0 or older has none of the three. */
+export interface PinLockHolder { pid: number; host: string; started: string; boot?: string; pidns?: string; start?: string }
 
 /** One line of PINS.log. Which fields a line has depends on `how`: `root` (the first line), `takeover`, a file's line
  *  (`new`, `grown`, `rewritten`, `recovered`), or a `recovered` line that names a line cut short (`torn`). */
@@ -186,6 +189,9 @@ export interface PinBusy {
   holder: PinLockHolder | null;
   /** the holder is on another host, so whether it still runs cannot be seen */
   otherHost: boolean;
+  /** the holder is on this host in another PID namespace (a container, a sandbox), so whether it still runs cannot be
+   *  seen either (S368) */
+  otherNamespace: boolean;
   /** how long the pin waited, in ms */
   waitedMs: number;
   /** the holder, its start time, and the rm command */
@@ -333,12 +339,34 @@ const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'] as const;
 const NL = Buffer.from('\n');
 
 const now = (): string => new Date().toISOString();
+const p2 = (n: bigint): string => String(n).padStart(2, '0');
+/** The civil date (year, month, day) of a count of days since 1970-01-01, in the proleptic Gregorian calendar, in BigInt
+ *  (H. Hinnant's civil_from_days), so that a file time past the range of a JavaScript Date has one too. */
+function civil(days: bigint): [bigint, bigint, bigint] {
+  const z = days + 719_468n;
+  const era = (z >= 0n ? z : z - 146_096n) / 146_097n;
+  const doe = z - era * 146_097n;
+  const yoe = (doe - doe / 1_460n + doe / 36_524n - doe / 146_096n) / 365n;
+  const doy = doe - (365n * yoe + yoe / 4n - yoe / 100n);
+  const mp = (5n * doy + 2n) / 153n;
+  const m = mp < 10n ? mp + 3n : mp - 9n;
+  return [yoe + era * 400n + (m <= 2n ? 1n : 0n), m, doy - (153n * mp + 2n) / 5n + 1n];
+}
 /** A file time, in ns since the epoch, as ISO 8601 to the nanosecond: what the fast path compares. A millisecond holds
- *  many writes (measured: 2,000 writes of one file, each followed by a stat, took 23 ms and got 2,000 distinct mtimes). */
+ *  many writes (measured: 2,000 writes of one file, each followed by a stat, took 23 ms and got 2,000 distinct mtimes).
+ *  The years 0000-9999 as a Date writes them (every line before S368 holds that form); any other year, which a file
+ *  system can store (btrfs keeps an mtime of 9e12 s), in ISO 8601's expanded form, a sign and six digits or more
+ *  (`+287014-...`): S368, the adversarial reading's A9 (a Date out of range threw, and stopped every pin at that file). */
 function isoNs(ns: bigint): string {
   let s = ns / 1_000_000_000n, f = ns % 1_000_000_000n;
   if (f < 0n) { s -= 1n; f += 1_000_000_000n; }
-  return `${new Date(Number(s) * 1000).toISOString().slice(0, 19)}.${String(f).padStart(9, '0')}Z`;
+  const frac = String(f).padStart(9, '0');
+  if (s >= -62_167_219_200n && s <= 253_402_300_799n) return `${new Date(Number(s) * 1000).toISOString().slice(0, 19)}.${frac}Z`;
+  let days = s / 86_400n, sec = s % 86_400n;
+  if (sec < 0n) { days -= 1n; sec += 86_400n; }
+  const [y, mo, d] = civil(days);
+  const year = `${y < 0n ? '-' : '+'}${String(y < 0n ? -y : y).padStart(6, '0')}`;
+  return `${year}-${p2(mo)}-${p2(d)}T${p2(sec / 3600n)}:${p2((sec % 3600n) / 60n)}:${p2(sec % 60n)}.${frac}Z`;
 }
 const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -371,28 +399,33 @@ function writeAll(fd: number, b: Uint8Array): void {
   for (let off = 0; off < b.length;) off += writeSync(fd, b, off, b.length - off);
 }
 
-/** A file's bytes, read once, to its end (it may have grown since its size was taken). */
+/** The most one read asks for: Node refuses a read of more than 2^31 - 1 bytes (S368, the adversarial reading's B5: a
+ *  transcript over 2 GiB failed every pin, read in one call). */
+const READ_MAX = 1 << 30;
+/** An open file's bytes, read to its end (it may have grown since its size was taken), at most READ_MAX bytes a read. */
+function readFd(fd: number, size: number): Buffer {
+  let buf = Buffer.allocUnsafe(Math.max(size, 0)), n = 0;
+  for (;;) {
+    if (n === buf.length) {
+      const more = Buffer.allocUnsafe(65536);
+      const r = readSync(fd, more, 0, more.length, n);
+      if (r === 0) return buf;
+      const bigger = Buffer.allocUnsafe(Math.max(buf.length * 2, n + r));
+      buf.copy(bigger, 0, 0, n);
+      more.copy(bigger, n, 0, r);
+      buf = bigger;
+      n += r;
+      continue;
+    }
+    const r = readSync(fd, buf, n, Math.min(buf.length - n, READ_MAX), n);
+    if (r === 0) return buf.subarray(0, n);
+    n += r;
+  }
+}
+/** A file's bytes, read once, to its end. */
 function readWhole(path: string, size: number): Buffer {
   const fd = openSync(path, 'r');
-  try {
-    let buf = Buffer.allocUnsafe(Math.max(size, 0)), n = 0;
-    for (;;) {
-      if (n === buf.length) {
-        const more = Buffer.allocUnsafe(65536);
-        const r = readSync(fd, more, 0, more.length, n);
-        if (r === 0) return buf;
-        const bigger = Buffer.allocUnsafe(Math.max(buf.length * 2, n + r));
-        buf.copy(bigger, 0, 0, n);
-        more.copy(bigger, n, 0, r);
-        buf = bigger;
-        n += r;
-        continue;
-      }
-      const r = readSync(fd, buf, n, buf.length - n, n);
-      if (r === 0) return buf.subarray(0, n);
-      n += r;
-    }
-  } finally { closeSync(fd); }
+  try { return readFd(fd, size); } finally { closeSync(fd); }
 }
 
 /** What a path that is not a regular file is, as lstat saw it. */
@@ -434,13 +467,16 @@ function openRegular(path: string, flags: number, mode?: number): number {
 /** A regular file's bytes, read whole, by openRegular's rules. */
 function readRegular(path: string): Buffer {
   const fd = openRegular(path, fsConstants.O_RDONLY);
-  try { return readFileSync(fd); } finally { closeSync(fd); }
+  try { return readFd(fd, fstatSync(fd).size); } finally { closeSync(fd); }
 }
-/** PINS.log read as readRegular reads it, with the link count of the very file read (fstat): another name, a hard link,
- *  is one that neither lstat nor O_NOFOLLOW sees. */
-function readLog(path: string): { bytes: Buffer; names: number } {
+/** PINS.log read as readRegular reads it, with the link count and the inode of the very file read (fstat): another name,
+ *  a hard link, is one that neither lstat nor O_NOFOLLOW sees. */
+function readLog(path: string): { bytes: Buffer; names: number; ino: bigint } {
   const fd = openRegular(path, fsConstants.O_RDONLY);
-  try { return { names: fstatSync(fd).nlink, bytes: readFileSync(fd) }; } finally { closeSync(fd); }
+  try {
+    const s = fstatSync(fd, { bigint: true });
+    return { names: Number(s.nlink), ino: s.ino, bytes: readFd(fd, Number(s.size)) };
+  } finally { closeSync(fd); }
 }
 
 /** fsync a directory, so that a rename in it survives a power loss. Not on win32, where a directory cannot be opened. */
@@ -638,14 +674,19 @@ interface PinScan {
   /** files of the pin's own shape (the sweep's, measured from the pin) */
   shaped: (rel: string) => boolean;
   temps: string[];
+  /** the directories of the pin that could not be listed: rel ('' for the pin directory) -> the error's code. What is in
+   *  one cannot be seen, so a pin writes nothing at or under it (S368, the adversarial reading's A5: a rewrite was renamed
+   *  over a copy the scan had not seen, with nothing kept) */
+  unlisted: Map<string, string>;
 }
 function scanPin(to: string): PinScan {
-  const scan: PinScan = { files: new Map(), shaped: shapeOf(to), temps: [] };
+  const scan: PinScan = { files: new Map(), shaped: shapeOf(to), temps: [], unlisted: new Map() };
   const stack = [to];
   while (stack.length) {
     const d = stack.pop()!;
     let entries: Dirent[];
-    try { entries = readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    try { entries = readdirSync(d, { withFileTypes: true }); }
+    catch (e) { if (codeOf(e) !== 'ENOENT') scan.unlisted.set(relative(to, d).split(sep).join('/'), codeOf(e)); continue; }
     for (const e of entries) {
       const abs = join(d, e.name);
       // every directory, .git too: the copy of a file pinned by its own path under a source's .git/ is under one, and a
@@ -681,11 +722,17 @@ interface LogState {
   byRel: Map<string, FileState>;
   /** every rel a line names, as its rel or as its kept copy */
   named: Set<string>;
+  /** the rels lines name as a kept copy (`kept`): names a source's copy is never written at */
+  keptRels: Set<string>;
   lastT: string | null;
   /** bytes after the last new line: a line cut short */
   torn: Buffer | null;
   /** lines that are not log lines (a cut line that a recovered line names is taken out) */
   unreadable: number[];
+  /** the log's length in bytes as this run knows it (read, and appended since), and the inode it read: a pin stops when
+   *  PINS.log is not that file at that length any more (another process wrote to it, or put another file at its name) */
+  end: number;
+  ino: bigint | null;
 }
 const FILE_HOWS = new Set(['new', 'grown', 'rewritten', 'recovered']);
 const isVersion = (v: unknown): v is PinVersion =>
@@ -720,15 +767,15 @@ function take(st: LogState, b: Buffer, platform: string): PinLogLine | null {
   if (l.rel !== undefined && FILE_HOWS.has(l.how)) {
     st.byRel.set(l.rel, { bytes: l.bytes!, sha256: l.sha256!, mtime: typeof l.mtime === 'string' ? l.mtime : null });
     st.named.add(l.rel);
-    if (l.kept !== undefined) st.named.add(l.kept);
+    if (l.kept !== undefined) { st.named.add(l.kept); st.keptRels.add(l.kept); }
   }
   if (l.torn !== undefined) st.unreadable = st.unreadable.filter((k) => k !== l.torn!.line);
   st.lastT = l.t;
   return l;
 }
 
-function parseLog(path: string, buf: Buffer, platform: string): LogState {
-  const st: LogState = { path, lines: 0, raw: [], parsed: [], root: null, byRel: new Map(), named: new Set(), lastT: null, torn: null, unreadable: [] };
+function parseLog(path: string, buf: Buffer, platform: string, ino: bigint | null = null): LogState {
+  const st: LogState = { path, lines: 0, raw: [], parsed: [], root: null, byRel: new Map(), named: new Set(), keptRels: new Set(), lastT: null, torn: null, unreadable: [], end: buf.length, ino };
   let start = 0;
   for (let nl = buf.indexOf(0x0a); nl >= 0; nl = buf.indexOf(0x0a, start)) {
     take(st, buf.subarray(start, nl), platform);
@@ -745,7 +792,8 @@ class LogWriteError extends Error {
 
 class Log {
   private fd: number | null = null;
-  constructor(readonly st: LogState, private readonly written: PinLogLine[], private readonly platform: string) {}
+  /** guard: called before each write, it throws when this pin may no longer write (LockLost) */
+  constructor(readonly st: LogState, private readonly written: PinLogLine[], private readonly platform: string, private readonly guard: () => void = () => {}) {}
   /** The log, opened to append, only as a regular file: never through a symbolic link put at its name (openRegular). */
   private open(): number {
     if (this.fd === null) this.fd = openRegular(this.st.path, fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT, FILE_MODE);
@@ -753,10 +801,12 @@ class Log {
   }
   /** Appends one line, chained to the line before it, and fsyncs it. */
   append(fields: Omit<PinLogLine, 'chain'>): PinLogLine {
+    this.guard();
     const line = { ...fields, chain: this.st.raw.length ? sha256(this.st.raw[this.st.raw.length - 1]) : null } as PinLogLine;
     const b = Buffer.from(JSON.stringify(line), 'utf8');
     try { const fd = this.open(); writeAll(fd, Buffer.concat([b, NL])); fsyncSync(fd); }
     catch (e) { throw new LogWriteError(e); }
+    this.st.end += b.length + 1;
     take(this.st, b, this.platform);
     this.written.push(line);
     return line;
@@ -765,8 +815,10 @@ class Log {
   closeTorn(): void {
     const torn = this.st.torn;
     if (torn === null) return;
+    this.guard();
     try { const fd = this.open(); writeAll(fd, NL); fsyncSync(fd); }
     catch (e) { throw new LogWriteError(e); }
+    this.st.end += 1;
     this.st.torn = null;
     take(this.st, torn, this.platform);
     this.append({ t: now(), how: 'recovered', torn: { line: this.st.lines, bytes: torn.length } });
@@ -785,7 +837,8 @@ function createLog(to: string, root: string, written: PinLogLine[], platform: st
   try { linkSync(tmp, path); } finally { unlinkSync(tmp); }
   fsyncDir(to, platform);
   written.push(line);
-  return parseLog(path, Buffer.concat([b, NL]), platform);   // the bytes just written: nothing is read back at that name
+  // the bytes just written: nothing is read back at that name; the inode is the one linked
+  return parseLog(path, Buffer.concat([b, NL]), platform, lstatSync(path, { bigint: true }).ino);
 }
 
 // ---- the lock ----------------------------------------------------------------------------------------------------
@@ -796,22 +849,73 @@ const heldHere = new Set<string>();
 interface Held { path: string; body: string; released: boolean }
 
 function holderIn(raw: string): PinLockHolder | null {
-  try { const o = JSON.parse(raw); return isHolder(o) ? { pid: o.pid, host: o.host, started: o.started } : null; } catch { return null; }
+  try {
+    const o: unknown = JSON.parse(raw);
+    if (!isHolder(o)) return null;
+    const h: PinLockHolder = { pid: o.pid, host: o.host, started: o.started };
+    const fields = o as unknown as Record<string, unknown>;
+    for (const k of ['boot', 'pidns', 'start'] as const) { const v = fields[k]; if (typeof v === 'string') h[k] = v; }
+    return h;
+  } catch { return null; }
 }
 /** process.kill(pid, 0): ESRCH means no such process; anything else (EPERM: another user's) means it runs. */
 function running(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (e) { return codeOf(e) !== 'ESRCH'; }
 }
+/** This host's boot id and this process's PID namespace, where /proc gives them (Linux), read once; else null. */
+let selfRead: { boot: string | null; pidns: string | null } | undefined;
+function self(): { boot: string | null; pidns: string | null } {
+  if (selfRead === undefined) {
+    let boot: string | null = null, pidns: string | null = null;
+    try { boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() || null; } catch { /* not Linux, or no /proc */ }
+    try { pidns = readlinkSync('/proc/self/ns/pid'); } catch { /* not Linux, or no /proc */ }
+    selfRead = { boot, pidns };
+  }
+  return selfRead;
+}
+/** A process's start time, in clock ticks since boot (field 22 of /proc/<pid>/stat, counted after the command's ')',
+ *  which may hold spaces), or null where it cannot be read. */
+function startOf(pid: number | 'self'): string | null {
+  try { const s = readFileSync(`/proc/${pid}/stat`, 'utf8'); return s.slice(s.lastIndexOf(')') + 2).split(' ')[19] ?? null; }
+  catch { return null; }
+}
 
-function busy(path: string, holder: PinLockHolder | null, otherHost: boolean, waitedMs: number): PinBusy {
+/** What a lock tells of its holder: `dead` (taken over), or why it counts as running: `running` (its process runs on this
+ *  host), `other-host`, `other-namespace` (on this host, in another PID namespace: its pid names nothing here), or
+ *  `unreadable` (not a pin's lock). Dead: on this host, left before its last boot (another boot id), or its pid runs no
+ *  process, or another one (another start time), or this process's own pid when this process did not take it. A lock
+ *  with no boot id, namespace or start time (ltms 0.2.0 or older) is read by its pid alone, as before. */
+type LockSeen = 'dead' | 'running' | 'other-host' | 'other-namespace' | 'unreadable';
+function lockSeen(path: string, holder: PinLockHolder | null): LockSeen {
+  if (holder === null) return 'unreadable';
+  if (holder.host !== hostname()) return 'other-host';
+  const me = self();
+  if (holder.boot !== undefined && me.boot !== null && holder.boot !== me.boot) return 'dead';
+  if (holder.pidns !== undefined && me.pidns !== null && holder.pidns !== me.pidns) return 'other-namespace';
+  if (holder.pid === process.pid) return heldHere.has(path) ? 'running' : 'dead';
+  if (!running(holder.pid)) return 'dead';
+  if (holder.start !== undefined) { const s = startOf(holder.pid); if (s !== null && s !== holder.start) return 'dead'; }
+  return 'running';
+}
+
+function busy(path: string, holder: PinLockHolder | null, seen: LockSeen, waitedMs: number): PinBusy {
   const waited = `${(waitedMs / 1000).toFixed(1)} s`;
   const who = holder === null
     ? `could not be read as a pin's lock (a pid, a host and a start time), so which process holds it cannot be told; it was still there after ${waited}`
-    : otherHost
+    : seen === 'other-host'
       ? `is held by pid ${holder.pid} on another host, ${holder.host}, since ${holder.started}; whether that process still runs cannot be seen from this host, so it counts as running, and it still held the lock after ${waited}`
-      : `is held by pid ${holder.pid} on this host, since ${holder.started}; a process with that pid is running, and it still held the lock after ${waited}`;
-  return { k: 'busy', lock: path, holder, otherHost, waitedMs,
+      : seen === 'other-namespace'
+        ? `is held by pid ${holder.pid} in another PID namespace on this host (a container or a sandbox: ${holder.pidns}), since ${holder.started}; whether that process still runs cannot be seen from here, so it counts as running, and it still held the lock after ${waited}`
+        : `is held by pid ${holder.pid} on this host, since ${holder.started}; a process with that pid is running, and it still held the lock after ${waited}`;
+  return { k: 'busy', lock: path, holder, otherHost: seen === 'other-host', otherNamespace: seen === 'other-namespace', waitedMs,
     message: `the lock '${path}' ${who}. If no pin is running, remove the lock: rm ${quoted(path)}` };
+}
+
+/** The lock this pin took no longer holds what it wrote into it (removed, or another pin's), or PINS.log is no longer the
+ *  file this pin read at the length it knows (another process wrote to it): the pin stops before its next write (S368,
+ *  the adversarial reading's C2, A2 and B1: two pins at once, each deciding from what it read at its start). */
+class LockLost extends Error {
+  constructor(readonly what: 'lock' | 'log', readonly path: string) { super(what === 'lock' ? 'the lock is not this pin\'s any more' : 'PINS.log changed under this pin'); }
 }
 
 type Acquired = { k: 'held'; held: Held; takeover: PinLockHolder | null } | PinBusy | { k: 'failed'; failure: PinFailure }
@@ -825,7 +929,9 @@ interface Stop { signal: NodeJS.Signals | null }
  *  stops the wait (`stopped`). */
 async function acquire(to: string, waitMs: number, stop: Stop): Promise<Acquired> {
   const path = join(to, LOCK), tmp = join(to, tempName(LOCK));
-  const body = JSON.stringify({ pid: process.pid, host: hostname(), started: now() });
+  const me = self(), start = startOf('self');
+  const body = JSON.stringify({ pid: process.pid, host: hostname(), started: now(),
+    ...(me.boot === null ? {} : { boot: me.boot }), ...(me.pidns === null ? {} : { pidns: me.pidns }), ...(start === null ? {} : { start }) });
   const t0 = Date.now();
   let takeover: PinLockHolder | null = null;
   const failed = (e: unknown): Acquired => ({ k: 'failed', failure: { path, rel: null, op: 'lock', code: codeOf(e) } });
@@ -852,19 +958,21 @@ async function acquire(to: string, waitMs: number, stop: Stop): Promise<Acquired
       let raw: string;
       try { raw = readRegular(path).toString('utf8'); } catch (e) { if (codeOf(e) === 'ENOENT') continue; return failed(e); }
       const holder = holderIn(raw);
-      const here = holder !== null && holder.host === hostname();
       // a lock naming this pid that this process did not take was left by an earlier process with the same pid
-      if (!lockLive(path, holder)) {
+      const seen = lockSeen(path, holder);
+      if (seen === 'dead') {
         let again: string | null = null;
         try { again = readRegular(path).toString('utf8'); } catch { /* removed meanwhile, or no longer a regular file */ }
         if (again === raw) {
+          // two pins that find the same dead lock at once can both remove it, the second one the first one's new lock:
+          // the one whose lock is not at the name any more stops before its next write (LockLost)
           try { unlinkSync(path); } catch (e) { if (codeOf(e) !== 'ENOENT') return failed(e); }
           takeover = holder;
         }
         continue;
       }
       const waited = Date.now() - t0;
-      if (waited >= waitMs) return busy(path, holder, holder !== null && !here, waited);
+      if (waited >= waitMs) return busy(path, holder, seen, waited);
       await sleep(Math.min(LOCK_POLL_MS, waitMs - waited));
       if (stop.signal !== null) return { k: 'stopped' };
     }
@@ -873,11 +981,20 @@ async function acquire(to: string, waitMs: number, stop: Stop): Promise<Acquired
   }
 }
 
-/** Whether the lock at path names a pin that may be running: one on another host, one whose lock cannot be read, or
- *  one whose pid runs on this host (this process's own pid only when this process took the lock). */
-function lockLive(path: string, holder: PinLockHolder | null): boolean {
-  if (holder === null || holder.host !== hostname()) return true;
-  return holder.pid === process.pid ? heldHere.has(path) : running(holder.pid);
+/** Whether the lock at path names a pin that may be running (lockSeen: anything but `dead`). */
+const lockLive = (path: string, holder: PinLockHolder | null): boolean => lockSeen(path, holder) !== 'dead';
+
+/** Throws LockLost unless the lock still holds what this pin wrote into it and PINS.log is the file this pin read, at the
+ *  length it knows: called before each write that could replace or remove a file of the pin, and before each line. */
+function guard(h: Held, st: LogState): void {
+  let now: string | null = null;
+  try { now = readRegular(h.path).toString('utf8'); } catch { /* removed, or no longer a regular file */ }
+  if (now !== h.body) throw new LockLost('lock', h.path);
+  // PINS.log removed, or another regular file or this one at another length; what is not a regular file at its name is
+  // left to the append, which opens only a regular file (a failure, op log, with the code of the refusal)
+  let s: BigIntStats | null = null;
+  try { s = lstatSync(st.path, { bigint: true }); } catch { /* removed */ }
+  if (s === null || (s.isFile() && (Number(s.size) !== st.end || (st.ino !== null && s.ino !== st.ino)))) throw new LockLost('log', st.path);
 }
 
 /** Removes the lock, only while it still holds what this pin wrote into it: something else put at its name (read only as
@@ -936,7 +1053,11 @@ function prepare(paths: readonly string[], o: PinOptions | undefined, platform: 
       const what = buf.length === 0 ? 'is empty' : nl < 0 ? 'holds no whole line' : 'opens with another line';
       return refuse('log-unreadable', `'${logPath}' ${what}, not the line that records the root its copies are measured from, so pin cannot tell which root that is.`);
     }
-    if (relative(folded(first.root!, platform), folded(root, platform)) !== '') {
+    // the root it records, or the directory that path leads to now: Claude Code's config directory moved to another
+    // disk with a symbolic link left at its path is the same root (S368, the adversarial reading's B4: every pin was
+    // refused, and the command the refusal gave was refused too)
+    if (relative(folded(first.root!, platform), folded(root, platform)) !== ''
+      && relative(folded(realOrNearest(first.root!), platform), folded(root, platform)) !== '') {
       return { ...refuse('root-differs', `'${logPath}' records the root '${first.root}', and this pin's root is ${shown(rootGiven, root)}: every rel in the pin is measured from the root it records.`), recordedRoot: first.root! };
     }
   } else if (toStat !== null) {
@@ -963,6 +1084,63 @@ interface Env {
   failures: PinFailure[];
   /** each directory of a copy looked at, and the symbolic link on the way to it from the pin directory, or null */
   linkTo: Map<string, string | null>;
+  /** throws LockLost unless this pin may still write (guard) */
+  guard: () => void;
+  /** the directories of the pin the scan could not list (PinScan.unlisted) */
+  unlisted: Map<string, string>;
+  /** the rels keepAside kept bytes at, in order */
+  keptAside: string[];
+}
+
+/** The first directory at or above rel's copy that the scan could not list, with the error's code; or null. */
+function unlistedOver(e: Env, rel: string): { path: string; code: string } | null {
+  if (e.unlisted.size === 0) return null;
+  const parts = rel.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    const d = parts.slice(0, i).join('/'), code = e.unlisted.get(d);
+    if (code !== undefined) return { path: d === '' ? e.to : under(e.to, d), code };
+  }
+  return null;
+}
+
+/** The kept copy of version v of rel (keptRel), when the pin holds one that holds v exactly; else null. A recovered line
+ *  that records what a copy holds instead of v names it, so that a check reads v there. */
+function heldKept(e: Env, rel: string, v: FileState): string | null {
+  const k = keptRel(rel, v.sha256);
+  try { const b = readRegular(under(e.to, k)); return b.length === v.bytes && sha256(b) === v.sha256 ? k : null; }
+  catch (err) { if (!isFsError(err)) throw err; return null; }
+}
+
+/** Keeps bytes b, which the copy at rel holds and which no line records as rel's version, before anything is written over
+ *  them: linked to the kept name of their own bytes (keptRel; never over another file), a file of the pin of its own,
+ *  with a recovered line that records it (prev null) unless a line names it already. Null, with a failure, when that
+ *  name holds other bytes or the link fails: then nothing may be written over the copy (S368: --rehash wrote a copy
+ *  again from its source, and lost what it held, the adversarial reading's A1). */
+function keepAside(e: Env, rel: string, b: Buffer): string | null {
+  const sha = sha256(b), k = keptRel(rel, sha), kAbs = under(e.to, k);
+  const fail = (code: unknown): null => {
+    if (typeof code !== 'string' && !isFsError(code)) throw code;
+    e.failures.push({ path: kAbs, rel: k, op: 'keep', code: typeof code === 'string' ? code : codeOf(code) });
+    return null;
+  };
+  if (!safeRel(k, e.platform)) return fail('name-not-allowed');
+  e.guard();
+  try { linkSync(under(e.to, rel), kAbs); }
+  catch (err) {
+    if (codeOf(err) !== 'EEXIST') return fail(err);
+    let there: Buffer;
+    try { there = readRegular(kAbs); } catch (err2) { return fail(err2); }
+    if (sha256(there) !== sha) return fail('kept-copy-differs');
+  }
+  try { fsyncDir(dirname(kAbs), e.platform); } catch (err) { return fail(err); }
+  if (!e.log.st.named.has(k)) {
+    let mtime: string | null = null;
+    try { mtime = isoNs(lstatSync(kAbs, { bigint: true }).mtimeNs); } catch { /* linked a moment ago */ }
+    e.log.append({ t: now(), rel: k, how: 'recovered', bytes: b.length, sha256: sha, prev: null, ...(mtime === null ? {} : { mtime }) });
+  }
+  e.present.add(k);
+  if (!e.keptAside.includes(k)) e.keptAside.push(k);
+  return k;
 }
 /** One file's outcome. `again`: its copy was written again from its source, which still holds the version its last line
  *  records, because the copy was missing, or (with rehash) held other bytes. `lost`: its copy was missing and its
@@ -1002,6 +1180,15 @@ function pinOne(rel: string, src: string, e: Env): Outcome {
     return { how: 'failed', partial: false, bytes: 0, again: null, lost: false };
   };
   const unchanged = (partial: boolean): Outcome => ({ how: 'unchanged', partial, bytes: 0, again: null, lost: false });
+
+  // a rel whose line could not be read back under this platform's rules (on win32, one holding ':' or '\') is never
+  // written: its copy would stand with no line, and the next pin would write over it as new (S368, A8)
+  if (!safeRel(rel, e.platform)) return fail('write', src, 'name-not-allowed');
+  // a name a line gives a kept copy is never a source's copy: written there, the version kept by it would be gone (S368, A4)
+  if (last === undefined && e.log.st.keptRels.has(rel)) return fail('write', dst, 'kept-name');
+  // a directory of the pin that could not be listed: what is in it cannot be seen, so nothing is written into it (S368, A5)
+  const blind = unlistedOver(e, rel);
+  if (blind !== null) return fail('write', blind.path, blind.code);
 
   let st: BigIntStats;
   try { st = lstatSync(src, { bigint: true }); } catch (err) { return fail('read', src, err); }
@@ -1061,34 +1248,71 @@ function pinOne(rel: string, src: string, e: Env): Outcome {
     again = present ? 'damaged' : 'missing';
   } else if (cut > last.bytes && prefix === last.sha256) how = 'grown';
   else how = 'rewritten';
+  // what the copy holds now, read before anything is written over it: the run believes it holds the version its last
+  // line records (a copy the scan saw), or that there is none (a new file, a copy missing from the pin). A copy that is
+  // not what the run believes is recorded by a recovered line and decided against again (a rewrite then keeps it); with
+  // --rehash, a damaged copy written again from its source is kept aside first. So no pin writes over a file it has not
+  // read, nor over bytes it has not kept or found held (S368: before, only a rewrite read the copy, and a pin that decided
+  // from a stale state, a killed pin's unlogged rename, or a copy the scan had not seen was written over: the adversarial
+  // reading's A1, A2, B1, C2, A5). What is not a regular file at the copy's name holds no version: it is written over as
+  // before, unless it is the copy the scan saw and a rewrite must keep (a failure, op keep, not-a-regular-file)
+  let disk: BigIntStats | null = null;
+  try { disk = lstatSync(dst, { bigint: true }); }
+  catch (err) { if (codeOf(err) !== 'ENOENT') { if (!isFsError(err)) throw err; return fail('write', dst, err); } }
+  if (disk !== null && !disk.isFile()) {
+    if (how === 'rewritten' && present) return fail('keep', dst, 'not-a-regular-file');
+    disk = null;
+  }
+  if (how === 'rewritten' && present && disk === null) return fail('keep', dst, 'ENOENT');
+  const believed: FileState | null = present && last !== undefined ? last : null;
+  let old: Buffer | null = null;
+  if (disk !== null) {
+    try { old = readRegular(dst); } catch (err) { if (!isFsError(err)) throw err; return fail('keep', dst, err); }
+  }
   // a copy missing from the pin cannot be kept: when its source has been rewritten since, its version is lost
-  const lost = how === 'rewritten' && !present;
+  const lost = how === 'rewritten' && disk === null;
 
   // a rewrite keeps the old copy first, by a link named by the sha12 of its bytes on disk
   let kept: string | undefined;
-  if (how === 'rewritten' && present) {
-    let old: Buffer;
-    try { old = readRegular(dst); } catch (err) { if (!isFsError(err)) throw err; return fail('keep', dst, err); }
-    let oldSha = sha256(old);
-    if (e.rehash && startsWith(old, last!) && damageAfter(old, last!, rel)) {
+  if (old !== null) {
+    // a grown file's copy is the version its last line records when it is the bytes the source starts with: the decision
+    // hashed that prefix, so a compare proves it, and the copy need not be hashed (measured: a grown 100 MB transcript)
+    const asPrefix = how === 'grown' && believed !== null && old.length === believed.bytes && prefix === believed.sha256 && buf.subarray(0, old.length).equals(old);
+    let oldSha = asPrefix ? believed!.sha256 : sha256(old);
+    if (e.rehash && believed !== null && startsWith(old, believed) && damageAfter(old, believed, rel)) {
       // its version, then bytes no pin wrote (recovery left it to this run): cut back to that version first, which the
       // rewrite then keeps; the rules for a rewrite apply to the source's bytes, never to that damage
-      try { cutBack(dst, old, last!, e.platform); } catch (err) { if (!isFsError(err)) throw err; return fail('write', dst, err); }
-      old = old.subarray(0, last!.bytes);
-      oldSha = last!.sha256;
+      e.guard();
+      try { cutBack(dst, old, believed, e.platform); } catch (err) { if (!isFsError(err)) throw err; return fail('write', dst, err); }
+      old = old.subarray(0, believed.bytes);
+      oldSha = believed.sha256;
     }
-    if (old.length !== last!.bytes || oldSha !== last!.sha256) {
-      // the copy does not hold what its last line says: a recovered line records what it holds, and the decision is
-      // made again against that
-      let copyMtime: string | null = null;
-      try { copyMtime = isoNs(lstatSync(dst, { bigint: true }).mtimeNs); } catch { /* read a moment ago */ }
-      e.log.append({ t: now(), rel, how: 'recovered', bytes: old.length, sha256: oldSha, prev, ...(copyMtime === null ? {} : { mtime: copyMtime }) });
-      prev = { bytes: old.length, sha256: oldSha };
-      if (old.length === cut && oldSha === sha) return unchanged(partial);
-      if (old.length < cut && buf.subarray(0, old.length).equals(old)) how = 'grown';
+    if (believed === null || old.length !== believed.bytes || oldSha !== believed.sha256) {
+      if (e.rehash && believed !== null && (again === 'damaged' || how === 'grown')) {
+        // with --rehash, recovery left this copy to the run (its source holds the version its last line records, at its
+        // start): the run writes it from the source, and what the copy holds instead is kept aside first, a file of its
+        // own (it can be a version a killed pin renamed in); except a .jsonl's bytes that do not end in a new line, which
+        // no pin writes (it copies whole lines): damage, never a version
+        const cutInLine = rel.endsWith('.jsonl') && old.length > 0 && old[old.length - 1] !== 0x0a;
+        if (!cutInLine && keepAside(e, rel, old) === null) return { how: 'failed', partial: false, bytes: 0, again: null, lost: false };
+      } else {
+        // the copy does not hold what the run believes: a recovered line records what it holds (naming the kept copy of
+        // the version its last line records, when one holds it), and the decision is made again against that
+        let copyMtime: string | null = null;
+        try { copyMtime = isoNs(lstatSync(dst, { bigint: true }).mtimeNs); } catch { /* read a moment ago */ }
+        const lastKept = last === undefined ? null : heldKept(e, rel, last);
+        e.log.append({ t: now(), rel, how: 'recovered', bytes: old.length, sha256: oldSha, prev: last === undefined ? null : { bytes: last.bytes, sha256: last.sha256 },
+          ...(lastKept === null ? {} : { kept: lastKept }), ...(copyMtime === null ? {} : { mtime: copyMtime }) });
+        e.present.add(rel);
+        prev = { bytes: old.length, sha256: oldSha };
+        if (old.length === cut && oldSha === sha) return unchanged(partial);
+        how = old.length < cut && buf.subarray(0, old.length).equals(old) ? 'grown' : 'rewritten';
+        again = null;
+      }
     }
     if (how === 'rewritten') {
       const k = keptRel(rel, oldSha), kAbs = under(e.to, k);
+      e.guard();
       try { linkSync(dst, kAbs); }
       catch (err) {
         if (codeOf(err) !== 'EEXIST') { if (!isFsError(err)) throw err; return fail('keep', kAbs, err); }
@@ -1118,6 +1342,7 @@ function pinOne(rel: string, src: string, e: Env): Outcome {
       fsyncSync(fd);
     } finally { closeSync(fd); }
     e.onStep?.('temp-written', rel);
+    e.guard();
     renameOver(tmp, dst, e.platform, () => e.onStep?.('rename-retry', rel));
     tmpMade = false;
     fsyncDir(dir, e.platform);
@@ -1247,13 +1472,15 @@ function recover(e: Env, scan: PinScan, sources: ReadonlyMap<string, string>, un
     const src = sources.get(rel);
     // pinned from src by this run; or, its source out of the walk's sight, left as it is
     if (e.rehash && !keptWaits && (src === undefined ? atOrUnder(rel, unread) : leftToTheRun(b, last, rel, src))) continue;
+    // the kept copy of the version its last line records, waiting or named by an earlier line, when it holds that version
     let kept: string | undefined;
-    if (keptWaits) { const kb = read(k); if (kb !== null && sha256(kb) === last.sha256) kept = k; }
+    if (scan.files.has(k)) { const kb = read(k); if (kb !== null && kb.length === last.bytes && sha256(kb) === last.sha256) kept = k; }
     e.log.append({ t: now(), rel, how: 'recovered', bytes: b.length, sha256: bSha, prev: { bytes: last.bytes, sha256: last.sha256 }, ...(kept === undefined ? {} : { kept }), mtime: f.mtime });
     n++;
   }
   for (const rel of [...scan.files.keys()].sort()) {
-    if (st.named.has(rel) || !scan.shaped(rel)) continue;
+    // a rel whose line could not be read back under this platform's rules gets none (S368, A8)
+    if (st.named.has(rel) || !scan.shaped(rel) || !safeRel(rel, e.platform)) continue;
     const b = read(rel);
     if (b === null) continue;
     e.log.append({ t: now(), rel, how: 'recovered', bytes: b.length, sha256: sha256(b), prev: null, mtime: scan.files.get(rel)!.mtime });
@@ -1279,6 +1506,7 @@ function settleTemps(e: Env, scan: PinScan, root: string): { removed: number; ke
     // a waiting pin's lock temp file, its pid no longer running (scanPin): the lock's, never a copy (a file directly
     // under the root is never of the sweep's shape), so removed as before
     if (dirname(abs) === e.to && LOCK_TEMP.test(basename(abs))) {
+      e.guard();
       try { unlinkSync(abs); out.removed++; } catch (err) { fail(abs, null, 'recover', err); }
       continue;
     }
@@ -1303,10 +1531,14 @@ function settleTemps(e: Env, scan: PinScan, root: string): { removed: number; ke
       held = where.some(holdsT);
     }
     if (held) {
+      e.guard();
       try { unlinkSync(abs); out.removed++; } catch (err) { fail(abs, null, 'recover', err); }
       continue;
     }
     const sha = sha256(t), k = keptRel(target ?? rel, sha), kAbs = under(e.to, k);
+    // a kept name whose line could not be read back under this platform's rules: the temp is left as it is (S368, A8)
+    if (!safeRel(k, e.platform)) { fail(abs, null, 'keep', 'name-not-allowed'); continue; }
+    e.guard();
     try { linkSync(abs, kAbs); }
     catch (err) {
       if (codeOf(err) !== 'EEXIST') { fail(kAbs, k, 'keep', err); continue; }
@@ -1391,20 +1623,30 @@ export async function pinPaths(paths: readonly string[], options: PinOptions): P
     held = got.held;
     takeover = got.takeover;
     const scan = scanPin(to);
+    // a pin directory that can be written but not listed: no copy in it can be seen, so none is written (S368, A5)
+    const blindTo = scan.unlisted.get('');
+    if (blindTo !== undefined) {
+      failures.push({ path: to, rel: null, op: 'to', code: blindTo });
+      notices.push(`the pin directory '${to}' could not be listed (${blindTo}), so what it holds cannot be seen, and nothing was written into it. See its mode and owner: ls -ld ${quoted(to)}`);
+      return done();
+    }
     const logPath = join(to, LOG);
     try {
       // read again under the lock, as a regular file: a link or a FIFO put at its name since the refusals were checked
       // is a failure, op log, not-a-regular-file
-      let buf: Buffer | null = null;
-      try { buf = readRegular(logPath); } catch (err) { if (codeOf(err) !== 'ENOENT') throw err; }
-      state = buf === null ? createLog(to, root, lines, platform) : parseLog(logPath, buf, platform);
+      let read: { bytes: Buffer; ino: bigint } | null = null;
+      try { read = readLog(logPath); } catch (err) { if (codeOf(err) !== 'ENOENT') throw err; }
+      state = read === null ? createLog(to, root, lines, platform) : parseLog(logPath, read.bytes, platform, read.ino);
     } catch (err) {
       if (!isFsError(err)) throw err;
       failures.push({ path: logPath, rel: null, op: 'log', code: codeOf(err) });
       return done();
     }
-    const log = new Log(state, lines, platform);
-    const e: Env = { to, platform, rehash: options.rehash === true, onStep: options.onStep, log, present: new Set(scan.files.keys()), failures, linkTo: new Map() };
+    const heldNow = held, stateNow = state;
+    const check = (): void => guard(heldNow, stateNow);
+    const log = new Log(state, lines, platform, check);
+    const e: Env = { to, platform, rehash: options.rehash === true, onStep: options.onStep, log, present: new Set(scan.files.keys()), failures, linkTo: new Map(),
+      guard: check, unlisted: scan.unlisted, keptAside: [] };
     try {
       if (state.torn !== null) {
         log.closeTorn();
@@ -1442,15 +1684,26 @@ export async function pinPaths(paths: readonly string[], options: PinOptions): P
         bytesCopied += o.bytes;
         k++;
       }
+      const aside = e.keptAside.length;
+      if (aside) notices.push(`${aside} ${plural(aside, 'copy', 'copies')} in '${to}' held bytes that no line in PINS.log records as ${plural(aside, 'its version', 'their versions')}: they are kept as ${e.keptAside.map((k) => `'${k}'`).join(', ')}, with a recovered line each, and the ${plural(aside, 'copy was', 'copies were')} then written again from ${plural(aside, 'its source', 'their sources')} (--rehash).`);
       if (restored) notices.push(`${restored} ${plural(restored, 'copy was', 'copies were')} missing from '${to}' and written again from ${plural(restored, 'its source', 'their sources')}, with a recovered line each.`);
       if (repaired) notices.push(`${repaired} ${plural(repaired, 'copy', 'copies')} in '${to}' held other bytes than ${plural(repaired, 'its', 'their')} last line in PINS.log records, and ${plural(repaired, 'was', 'were')} written again from ${plural(repaired, 'its source', 'their sources')}, which still ${plural(repaired, 'holds', 'hold')} that version (--rehash), with a recovered line each.`);
       if (lost) notices.push(`${lost} ${plural(lost, 'copy was', 'copies were')} missing from '${to}' while ${plural(lost, 'its source', 'their sources')} had been rewritten: the ${plural(lost, 'version its', 'versions their')} last line in PINS.log ${plural(lost, 'records is', 'record are')} lost, and a check of the pin reports ${plural(lost, 'it', 'them')} at ${plural(lost, 'that line', 'those lines')}.`);
       if (stop.signal !== null) notices.push(`stopped by ${stop.signal} after ${k} of ${rels.length} files; each file pinned so far is whole and has its line.`);
       kept = keptSourceGone(state, w, e.present, root);
     } catch (err) {
-      if (!(err instanceof LogWriteError)) throw err;
-      failures.push({ path: logPath, rel: null, op: 'log', code: codeOf(err.reason) });
-      notices.push(`'${logPath}' could not be written (${codeOf(err.reason)}), so the pin stopped there; the next pin records what this one left without a line.`);
+      if (err instanceof LockLost) {
+        // S368: two pins at once (a lock removed by hand, a dead lock taken over twice, an old pin that took over a live
+        // lock): this one stops before its next write, and the other one's lock is left
+        failures.push({ path: err.path, rel: null, op: err.what, code: err.what === 'lock' ? 'lock-lost' : 'log-changed' });
+        notices.push(err.what === 'lock'
+          ? `the lock '${err.path}' no longer holds what this pin wrote into it (it was removed, or another pin took it), so this pin stopped before its next write; each file it pinned before is whole and has its line.`
+          : `'${err.path}' changed under this pin (another process wrote to it, or put another file at its name), so this pin stopped before its next write; each file it pinned before is whole and has its line.`);
+      } else {
+        if (!(err instanceof LogWriteError)) throw err;
+        failures.push({ path: logPath, rel: null, op: 'log', code: codeOf(err.reason) });
+        notices.push(`'${logPath}' could not be written (${codeOf(err.reason)}), so the pin stopped there; the next pin records what this one left without a line.`);
+      }
     } finally { log.close(); }
     return done();
   } finally {
@@ -1526,9 +1779,10 @@ export async function checkPin(dir: string, options: PinCheckOptions = {}): Prom
     let raw: string;
     try { raw = readRegular(lockPath).toString('utf8'); } catch { break; }
     const holder = holderIn(raw);
-    if (!lockLive(lockPath, holder)) break;   // a pin that stopped without removing it: reported below
+    const seen = lockSeen(lockPath, holder);
+    if (seen === 'dead') break;   // a pin that stopped without removing it: reported below
     const waited = Date.now() - t0;
-    if (waited >= lockWait) return busy(lockPath, holder, holder !== null && holder.host !== hostname(), waited);
+    if (waited >= lockWait) return busy(lockPath, holder, seen, waited);
     await sleep(Math.min(LOCK_POLL_MS, lockWait - waited));
   }
   let log: { bytes: Buffer; names: number };
