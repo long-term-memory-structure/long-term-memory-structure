@@ -87,7 +87,7 @@ const fixtures = () => readdirSync(FIX).filter((f) => f.endsWith('.jsonl')).sort
 
 // ---- 1. the library ----------------------------------------------------------------------------------------
 
-test('sieve: on every fixture, every word of its strings (as written and decoded) as a query: never ruled out where found, and the counts are the search\'s, in all kinds and in each kind', () => {
+test('sieve: on every fixture, every word of its strings (as written and decoded) as a query: never ruled out where found, and the counts are the search\'s, in all kinds; and, for one word of each fixture, in each kind', () => {
   let queries = 0, found = 0;
   for (const name of fixtures()) {
     const text = readFileSync(join(FIX, name), 'utf8');
@@ -118,10 +118,11 @@ test('sieve: on every fixture, substrings of its strings\' readings (1 to 7 code
         const term = r.slice(i, i + 1 + (i % 7)).trim();
         if (!term || seen.has(term)) continue;
         seen.add(term);
-        const q = S.parseSearchQuery(term, { mode: 'substring', segmenter: SEG });
+        // quoted, so a slice with a space is one term, read across the reading's spaces [S367 G5, C3]
+        const q = S.parseSearchQuery(`"${term}"`, { mode: 'substring', segmenter: SEG });
         if (!q.terms.length) continue;
         queries++;
-        if (agree(t, s, q, S.SEARCH_KINDS, `${name} --substring '${term}'`)) found++;
+        if (agree(t, s, q, S.SEARCH_KINDS, `${name} --substring '"${term}"'`)) found++;
       }
     }
   }
@@ -244,11 +245,18 @@ function corpus() {
   for (const f of ['demo.jsonl', 'compacted.jsonl', 'journal.jsonl', 'empty.jsonl', 'errors.jsonl', 'cycle.jsonl', 'labels.jsonl', 'edges.jsonl', 'content.jsonl']) copyFileSync(join(FIX, f), join(d, f));
   writeFileSync(join(d, 'a.jsonl'), sessionWith([['zqvalpha one', 'two'], ['three', `zqvbeta ${cp(0x5e9, 0x5dc, 0x5d5, 0x5dd)}`]]));
   writeFileSync(join(d, 'b.jsonl'), sessionWith([['four', 'zqvalpha five']]));
+  // words only in an attachment record and only in a meta record, on the turn's path [S367 G5, C2]
+  writeFileSync(join(d, 'c.jsonl'), sessionWith([['six', 'seven']], { after: (k) => (k === 0 ? [
+    { type: 'attachment', attachment: { type: 'hook_additional_context', content: ['zqvattach eight'] } },
+    { type: 'user', isMeta: true, message: { role: 'user', content: 'zqvmetaonly nine' } },
+  ] : []) }));
   return settle(d);
 }
-const QUERIES = [['zqvalpha'], ['zqvbeta'], ['zqvabsent'], ['--substring', 'qvalph'], ['--kind', 'all', 'the'], ['--kind', 'input', 'zqvalpha'], ['"zqvalpha one"'], [cp(0x5e9, 0x5dc, 0x5d5, 0x5dd)]];
+const QUERIES = [['zqvalpha'], ['zqvbeta'], ['zqvabsent'], ['--substring', 'qvalph'], ['--kind', 'all', 'the'], ['--kind', 'input', 'zqvalpha'], ['"zqvalpha one"'], [cp(0x5e9, 0x5dc, 0x5d5, 0x5dd)],
+  // the kinds left out by default, named [S367 G5, C2]; a --substring phrase across a space [C3]
+  ['--kind', 'all', 'zqvattach'], ['--kind', 'attachment', 'zqvattach'], ['--kind', 'meta', 'zqvmetaonly'], ['--kind', 'all', 'zqvmetaonly'], ['--substring', '"zqvalpha one"']];
 
-test('command: the cache is off unless asked: no directory is made, and the output is 0.2.0\'s', () => {
+test('command: the cache is off unless asked: no directory is made, and nothing is said of sieves', () => {
   const d = corpus(), cache = tmp();
   try {
     const r = ltms(['search', 'zqvalpha', d], { cache });
@@ -262,14 +270,16 @@ test('command: --cache prints what a search without it prints, cold and warm, fo
   const d = corpus(), cache = tmp();
   try {
     for (const q of QUERIES) {
-      const args = ['search', '--max', '0', ...q, d];
-      const plain = same(ltms(args, { cache }));
-      const cold = ltms(['search', '--cache', '--max', '0', ...q, d], { cache });
-      const warm = ltms(['search', '--cache', '--max', '0', ...q, d], { cache });
+      const args = ['search', '--max', '0', ...q, d], own = tmp();   // a cache of its own: cold for every query [S367 G5, C11]
+      const plain = same(ltms(args, { cache: own }));
+      const cold = ltms(['search', '--cache', '--max', '0', ...q, d], { cache: own });
+      const warm = ltms(['search', '--cache', '--max', '0', ...q, d], { cache: own });
+      rm(own);
       assert.deepEqual(same(cold), plain, `cold: ${q}`);
       assert.deepEqual(same(warm), plain, `warm: ${q}`);
       assert.match(warm.err, / The sieves in .* answered \d+ of the \d+ files read without opening them, and 0 were kept \(--no-cache opens every file\)\./, `warm: ${q}`);
     }
+    ltms(['search', '--cache', 'zqvabsent', d], { cache });
     const absent = ltms(['search', '--cache', 'zqvabsent', d], { cache });
     const read = JSON.parse(absent.out.split('\n')[0]).files.read;
     assert.equal(read, readdirSync(d).length);
@@ -735,4 +745,85 @@ test('command G4 [B11]: a temp file this search did not make is never removed, e
     assert.ok(temps.length >= 10, `the other writer's files: ${temps.length}`);
     assert.equal(kept(r), 0);
   } finally { rm(d); rm(cache); rm(p); }
+});
+
+// ---- 7. G5 (S367): each promise its test (REPAIRS.md); each test named for the mutant it kills ------------------------
+
+test('command G5 [C5]: the cache\'s fence, four ways: sieves/ others can write to, ltms/ a symbolic link, sieves/ a symbolic link, and a cache of another user: a notice each, and no sieve', () => {
+  for (const [what, setUp, node] of [
+    ['sieves/ mode 0777', (c) => { mkdirSync(join(c, 'ltms', 'sieves'), { recursive: true, mode: 0o700 }); chmodSync(join(c, 'ltms', 'sieves'), 0o777); }],
+    ['ltms/ a symbolic link', (c, o) => { mkdirSync(join(o, 'real', 'sieves'), { recursive: true, mode: 0o700 }); chmodSync(join(o, 'real'), 0o700); symlinkSync(join(o, 'real'), join(c, 'ltms')); }],
+    ['sieves/ a symbolic link', (c, o) => { mkdirSync(join(c, 'ltms'), { mode: 0o700 }); mkdirSync(join(o, 'real'), { mode: 0o700 }); symlinkSync(join(o, 'real'), join(c, 'ltms', 'sieves')); }],
+    ['another user', () => {}, (p) => { writeFileSync(join(p, 'uid.mjs'), 'const u = process.getuid(); process.getuid = () => u + 1;\n'); return ['--import', pathToFileURL(join(p, 'uid.mjs')).href]; }],
+  ]) {
+    const d = corpus(), cache = tmp(), other = tmp(), p = tmp();
+    try {
+      setUp(cache, other);
+      const r = ltms(['search', '--cache', 'zqvalpha', d], { cache, node: node ? node(p) : [] });
+      assert.equal(r.code, 0, `${what}: ${r.err}`);
+      assert.match(r.err, /notice: no sieve is kept or used: /, what);
+      assert.deepEqual([...sieveFiles(cache), ...readdirSync(other, { recursive: true }).filter((n) => String(n).endsWith('.sieve'))], [], `${what}: no sieve anywhere`);
+    } finally { rm(d); rm(cache); rm(other); rm(p); }
+  }
+});
+
+test('command G5 [C6]: the directories are made 0700 and the sieves 0600, whatever the umask', () => {
+  const d = corpus(), cache = tmp(), p = tmp();
+  try {
+    writeFileSync(join(p, 'umask.mjs'), 'process.umask(0);\n');
+    const r = ltms(['search', '--cache', 'zqvabsent', d], { cache, node: ['--import', pathToFileURL(join(p, 'umask.mjs')).href] });
+    assert.ok(kept(r) >= 10, r.err);
+    const mode = (x) => statSync(x).mode & 0o777;
+    assert.deepEqual([mode(join(cache, 'ltms')), mode(join(cache, 'ltms', 'sieves'))], [0o700, 0o700], 'ltms/ and sieves/');
+    const files = sieveFiles(cache);
+    assert.deepEqual(files.filter((f) => mode(join(cache, 'ltms', 'sieves', f)) !== 0o600), [], `of ${files.length} sieves, these are not 0600`);
+  } finally { rm(d); rm(cache); rm(p); }
+});
+
+test('command G5 [C9]: --no-cache=1 is refused (it takes no value); LTMS_CACHE=0 makes no directory and says nothing of sieves', () => {
+  const d = corpus(), cache = tmp();
+  try {
+    const r = ltms(['search', '--no-cache=1', 'zqvalpha', d], { cache });
+    assert.equal(r.code, 2);
+    assert.match(r.err, /--no-cache takes no value; '--no-cache=1' gives it one/);
+    const z = ltms(['search', 'zqvalpha', d], { cache, env: { LTMS_CACHE: '0' } });
+    assert.equal(z.code, 0);
+    assert.deepEqual(readdirSync(cache), [], 'no directory made');
+    assert.doesNotMatch(z.err, /The sieves in|no sieve is kept|LTMS_CACHE is/);   // (paths here hold the word: ltms-sieve-)
+  } finally { rm(d); rm(cache); }
+});
+
+test('command G5 [C9]: a file that changed while it was read gets no sieve (its key before the read is not its key after)', () => {
+  const d = corpus(), cache = tmp(), p = tmp();
+  try {
+    // each transcript gets one more line the moment it has been read
+    writeFileSync(join(p, 'grow.mjs'), [
+      "import fs from 'node:fs';", "import { syncBuiltinESMExports } from 'node:module';",
+      'const read = fs.readFileSync, done = new Set();',
+      "fs.readFileSync = (path, ...a) => { const r = read(path, ...a); if (typeof path === 'string' && path.endsWith('.jsonl') && !done.has(path)) { done.add(path); fs.appendFileSync(path, '{}\\n'); } return r; };",
+      'syncBuiltinESMExports();'].join('\n') + '\n');
+    const r = ltms(['search', '--cache', 'zqvabsent', d], { cache, node: ['--import', pathToFileURL(join(p, 'grow.mjs')).href] });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(kept(r), 0, 'none kept');
+    assert.deepEqual(sieveFiles(cache), []);
+  } finally { rm(d); rm(cache); rm(p); }
+});
+
+test('sieve G5 [C10]: a sieve of 2,000 words rules out all but under 0.5 % of 4,000 words it does not hold (the filters\' size, and the ANY entry asked first)', () => {
+  let seed = 5;
+  const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 4294967296; };
+  const word = () => 'zq' + Array.from({ length: 8 }, () => 'abcdefghijklmnopqrstuvwxyz'[Math.floor(rnd() * 26)]).join('');
+  const held = new Set();
+  while (held.size < 2000) held.add(word());
+  const list = [...held];
+  const s = S.sieveTranscript(P.parseTranscript(sessionWith([[list.slice(0, 700).join(' '), list.slice(700, 1400).join(' ')], ['x', list.slice(1400).join(' ')]])), SEG);
+  let asked = 0, may = 0;
+  while (asked < 4000) {
+    const w = word();
+    if (held.has(w)) continue;
+    asked++;
+    if (S.sieveMayHold(s, S.parseSearchQuery(w, { segmenter: SEG }))) may++;
+  }
+  assert.ok(may < 20, `${may} of ${asked} absent words may be held`);
+  assert.ok(list.every((w) => S.sieveMayHold(s, S.parseSearchQuery(w, { segmenter: SEG }))), 'every held word may be');
 });
