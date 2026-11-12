@@ -4629,3 +4629,24 @@ test('S368 B3: ltms pin --check exits 1 while PINS.log has another name (a cp -a
     assert.equal(ltms(t, ['pin', '--check', t.to]).code, 0);
   } finally { t.clean(); }
 });
+
+test('S368: PINS.log written by another process while a pin runs (its lock still its own): the pin stops before its next write (log-changed, op log), and writes no line chained to a log it no longer knows', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.src(Q)], t.opts());
+    writeFileSync(t.src(rel), L4);
+    const p1 = pausedPin(t, [t.src(Q)], 'stat', rel, 'p1');
+    await p1.paused();
+    const log = join(t.to, 'PINS.log');
+    const other = JSON.stringify({ t: '2026-11-12T22:00:00.000Z', how: 'takeover', lock: { pid: 1, host: 'elsewhere', started: '2026-11-12T21:59:00.000Z' }, chain: sha(logText(t.to).trimEnd().split('\n').at(-1)) });
+    appendFileSync(log, other + '\n');                      // a line another process wrote
+    p1.go();
+    const { r: r1, stderr } = await p1.result();
+    assert.ok(r1 !== null, stderr);
+    assert.deepEqual(r1.failures, [{ path: log, rel: null, op: 'log', code: 'log-changed' }]);
+    assert.deepEqual(r1.lines, []);
+    assert.equal(logText(t.to).trimEnd().split('\n').at(-1), other, 'nothing appended after the other line');
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), PINNED[rel], 'the copy is as it was');
+  } finally { t.clean(); }
+});
