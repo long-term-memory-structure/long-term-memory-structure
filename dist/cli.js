@@ -21,7 +21,8 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getHeapStatistics } from 'node:v8';
 import { parseTranscript, repairedLivePath, turnsOf, inputChannel } from './parser.js';
-import { checkSearchSupport, parseSearchQuery, searchTranscript, SEARCH_DEFAULT_KINDS, SEARCH_GAP_SCRIPTS, SEARCH_KINDS } from './search.js';
+import { checkSearchSupport, parseSearchQuery, searchTranscript, sieveMayHold, sieveResult, sieveTranscript, SEARCH_DEFAULT_KINDS, SEARCH_GAP_SCRIPTS, SEARCH_KINDS } from './search.js';
+import { openSieveCache, sieveKey } from './sieve-cache.js';
 import { indexTranscript } from './session.js';
 import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
 const USAGE = `Usage:
@@ -795,7 +796,7 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{
 const timeOf = (v) => (v !== null && ISO_TIME.test(v) ? Date.parse(v) : NaN);
 const isoOrWithheld = (v) => (v === null ? null : Number.isNaN(timeOf(v)) ? WITHHELD : v);
 const KINDS_TEXT = `${SEARCH_KINDS.join(', ')}, or all`;
-const SEARCH_OPTIONS = '--kind <list>, --substring, --max <n>, --skip <n>, --count and --oldest';
+const SEARCH_OPTIONS = '--kind <list>, --substring, --max <n>, --skip <n>, --count, --oldest, --cache and --no-cache';
 /** For the scripts whose words take attached letters: a word, and a longer word holding it that words mode does not
  *  find (Hebrew: house, and the house; Arabic: book, and the book; Korean: school, and at school). */
 const CLITIC_EXAMPLE = {
@@ -859,6 +860,10 @@ past the end of this field where that string is no longer than at.
                 next gives it, to print the ones after those printed
 --count         print the coverage line only
 --oldest        oldest sessions first
+--cache         keep a sieve of each file read, and answer from the sieves
+                kept where they can (below); LTMS_CACHE=1 in the
+                environment does the same for every search
+--no-cache      no sieve, whatever LTMS_CACHE says: every file is read
 
 What is folded, in the query and in the text: case, accents and other
 marks (Hebrew and Arabic points too), compatibility forms (full-width
@@ -875,6 +880,19 @@ Time, measured on one machine: 0.40 to 0.46 s for 18.9 MB of transcripts
 that rate 6 GB would take 1.5 to 2.5 minutes, around the Bash tool's
 default timeout of 2 minutes: search the project's own folder, or give the
 command a longer timeout.
+
+The sieves (--cache, or LTMS_CACHE=1; experimental): each file read under
+a directory given gets a sieve, kept in $XDG_CACHE_HOME/ltms/sieves (else
+~/.cache/ltms/sieves): the counts the coverage line takes from it, and
+which words and which runs of up to 3 characters its text holds, each by
+kind, as bits. No text. A later search answers a file from its sieve,
+without opening it, when the sieve shows that some term is in no kind
+searched; any other file is read as without one. So the output is the
+same, the time aside. A sieve is used only while its file is unchanged
+(the same size, times and inode); a file that changed while it was read
+gets none. The first search with --cache reads every file and is slower
+(it builds the sieves); rm -r ~/.cache/ltms removes them. Files named on
+the command line are always read.
 
 The coverage line:
   k             "coverage"
@@ -1050,7 +1068,8 @@ function readSearchArgs(args) {
     const usage = (m) => { err(`ltms search: ${m}`); return 2; };
     const positional = [];
     const kinds = new Set();
-    let kindsGiven = false, substring = false, count = false, oldest = false, max = 20, skip = 0, ended = false;
+    let kindsGiven = false, substring = false, count = false, oldest = false, cache = process.env.LTMS_CACHE === '1', max = 20, skip = 0, ended = false;
+    let cacheFlag = null;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (!ended && a === '--') {
@@ -1118,7 +1137,13 @@ function readSearchArgs(args) {
             oldest = true;
             continue;
         }
-        if (name === '--substring' || name === '--count' || name === '--oldest')
+        if (a === '--cache' || a === '--no-cache') {
+            if (cacheFlag !== null && cacheFlag !== (a === '--cache'))
+                return usage('--cache and --no-cache are both given: give one.');
+            cacheFlag = a === '--cache';
+            continue;
+        }
+        if (name === '--substring' || name === '--count' || name === '--oldest' || name === '--cache' || name === '--no-cache')
             return usage(`${name} takes no value; '${a}' gives it one.`);
         return usage(`unknown option '${a}'. The options are ${SEARCH_OPTIONS}; put -- before a query or a path that starts with '-'.`);
     }
@@ -1136,7 +1161,9 @@ function readSearchArgs(args) {
         err(noPathMessage('search', query));
         return 2;
     }
-    return { query, paths, kinds: kindsGiven ? kinds : new Set(SEARCH_DEFAULT_KINDS), kindsGiven, substring, max, skip, count, oldest, queryIsPath: queryNamesPath(query) };
+    if (cacheFlag !== null)
+        cache = cacheFlag;
+    return { query, paths, kinds: kindsGiven ? kinds : new Set(SEARCH_DEFAULT_KINDS), kindsGiven, substring, max, skip, count, oldest, cache, queryIsPath: queryNamesPath(query) };
 }
 /** The notices about the query, before the scan: terms dropped, an unclosed quote, the scripts whose words this search
  *  can miss (with the --substring command), and a Segmenter without dictionaries. */
@@ -1510,24 +1537,79 @@ function searchRun(args) {
         for (const [k, v] of Object.entries(c.gapScripts))
             gap[k] = (gap[k] ?? 0) + v;
     };
-    for (const f of walk.files) {
-        let size;
+    // the sieves (search.ts, section 10): for a file found under a directory, unchanged since its sieve was kept
+    const kindList = [...s.kinds];
+    let cache = null;
+    const sieves = { answered: 0, kept: 0 };
+    if (s.cache) {
+        let version = '';
         try {
-            size = statSync(f.path).size;
+            version = readVersion();
+        }
+        catch { /* no version: no cache */ }
+        const c = version ? openSieveCache(version) : { why: 'the ltms version could not be read' };
+        if ('why' in c)
+            err(`ltms search: notice: no sieve is kept or used: ${c.why}. Every file is read, as with --no-cache.`);
+        else
+            cache = c;
+    }
+    /** One file's result, counted: from its search, or from its sieve. */
+    const account = (f, r, flags, t) => {
+        const noTurn = r.counts.turns === 0;
+        if (r.fileKind !== 'transcript' || noTurn)
+            sum.notConversation++;
+        if (f.named) {
+            if (t)
+                for (const w of fileWarnings('search', f.path, t, noTurn, 0))
+                    err(w);
+        }
+        else {
+            walked.read++;
+            if (r.fileKind === 'journal')
+                walked.journal++;
+            else if (r.fileKind === 'empty')
+                walked.empty++;
+            else if (r.fileKind === 'unknown')
+                walked.unknown++;
+            else if (noTurn)
+                walked.noTurn++;
+            const kinds = [flags.problems ? 'lines that could not be read' : '', flags.cycle ? 'records on a parentUuid cycle' : '',
+                flags.guessed ? 'responses read from parent links' : ''].filter((x) => x);
+            if (kinds.length)
+                walked.warned.push({ path: f.path, kinds });
+        }
+        add(r.counts);
+        if (r.turns.length) {
+            sum.hitFiles++;
+            held.push({ path: f.path, prefix: prefixOf(f.path), last: r.last, order: held.length, turns: r.turns });
+        }
+    };
+    for (const f of walk.files) {
+        let st;
+        try {
+            st = statSync(f.path, { bigint: true });
         }
         catch (e) {
             err(cannotRead('search', f.path, e));
             failed++;
             continue;
         }
+        const size = Number(st.size);
         if (size > limit) {
             err(tooLarge(wk, f.path, size, limit));
             failed++;
             continue;
         }
-        let text;
+        const kept = cache && !f.named ? cache.read(st) : null;
+        if (kept && !sieveMayHold(kept.sieve, q, kindList)) {
+            account(f, sieveResult(kept.sieve, q, kindList), kept.flags, null);
+            sieves.answered++;
+            continue;
+        }
+        let bytes, text;
         try {
-            text = readFileSync(f.path, 'utf8');
+            bytes = readFileSync(f.path);
+            text = bytes.toString('utf8');
         }
         catch (e) {
             err(cannotRead('search', f.path, e));
@@ -1536,32 +1618,20 @@ function searchRun(args) {
         }
         try {
             const t = parseTranscript(text);
-            const r = searchTranscript(t, q, { kinds: [...s.kinds], prefix: prefixOf(f.path) });
-            const noTurn = r.counts.turns === 0;
-            if (t.fileKind !== 'transcript' || noTurn)
-                sum.notConversation++;
-            if (f.named)
-                for (const w of fileWarnings('search', f.path, t, noTurn, 0))
-                    err(w);
-            else {
-                walked.read++;
-                if (t.fileKind === 'journal')
-                    walked.journal++;
-                else if (t.fileKind === 'empty')
-                    walked.empty++;
-                else if (t.fileKind === 'unknown')
-                    walked.unknown++;
-                else if (noTurn)
-                    walked.noTurn++;
-                const kinds = [t.problems.length ? 'lines that could not be read' : '', t.fileKind === 'transcript' && cycleRecords(t) ? 'records on a parentUuid cycle' : '',
-                    t.stats.requestKeyGuessed ? 'responses read from parent links' : ''].filter((x) => x);
-                if (kinds.length)
-                    walked.warned.push({ path: f.path, kinds });
-            }
-            add(r.counts);
-            if (r.turns.length) {
-                sum.hitFiles++;
-                held.push({ path: f.path, prefix: prefixOf(f.path), last: r.last, order: held.length, turns: r.turns });
+            const r = searchTranscript(t, q, { kinds: kindList, prefix: prefixOf(f.path) });
+            const flags = { problems: t.problems.length > 0, cycle: t.fileKind === 'transcript' && cycleRecords(t) > 0, guessed: !!t.stats.requestKeyGuessed };
+            account(f, r, flags, t);
+            // keep its sieve when there was none for the file as it stands, and the file did not change while it was read
+            if (cache && !f.named && !kept && bytes.length === size) {
+                let after = null;
+                try {
+                    after = statSync(f.path, { bigint: true });
+                }
+                catch { /* gone: keep nothing */ }
+                if (after && sieveKey(after) === sieveKey(st)) {
+                    cache.write(st, sieveTranscript(t, q.segmenter), flags);
+                    sieves.kept++;
+                }
             }
         }
         catch (e) {
@@ -1633,6 +1703,10 @@ function searchRun(args) {
             close += `, ${left} left: --skip ${skipped + shown} shows the next ${s.max === 0 ? left : Math.min(left, s.max)}`;
     }
     close += '.';
+    if (cache)
+        close += ` The sieves in ${cache.dir} answered ${sieves.answered} of the ${plural(read, 'file', 'files')} read without opening ${sieves.answered === 1 ? 'it' : 'them'}, and ${sieves.kept} ${sieves.kept === 1 ? 'was' : 'were'} kept (--no-cache opens every file).`;
+    if (cache?.writeError)
+        close += ` A sieve could not be written (${cache.writeError}); the search is complete without it.`;
     if (sum.hitTurns === 0 && sum.turns > 0) {
         const ways = [];
         if (q.terms.length > 1)

@@ -791,15 +791,10 @@ function fieldsOf(rec, out, notes) {
     }
 }
 // ---- 9. A transcript ------------------------------------------------------------------
-/** Search one transcript: its text, or the parser's Transcript of it. Turns holding every term of the query, in path
- *  order, with one entry per record and kind holding a term; the file's counts; its latest timestamp. A query with no
- *  terms matches nothing. */
-export function searchTranscript(input, query, options = {}) {
-    const t = typeof input === 'string' ? parseTranscript(input) : input;
-    const kinds = new Set(options.kinds ?? SEARCH_DEFAULT_KINDS);
-    const pre = options.prefix ? options.prefix + ':' : '';
-    const c = compile(query);
-    const nTerms = query.terms.length;
+/** A file's turns, each turn's records (its prompt first, then the call and result nodes of its calls, then its path
+ *  records, sorted by line), and the counts of what is not searched that do not depend on the records' text (the
+ *  record walk adds the others). searchTranscript and sieveTranscript both read a file through this one function. */
+function turnRecordsOf(t) {
     const path = repairedLivePath(t).path;
     const turns = turnsOf(t, path);
     // a turn's records: its prompt first, then the call and result nodes of its calls, then its path records
@@ -836,6 +831,18 @@ export function searchTranscript(input, query, options = {}) {
         sidecars: t.sidecars.length, images: 0, spilled: 0, replays: t.stats.replayedCopies, beforeFirstTurn,
         unreadableLines: t.stats.unparseable, kindsOff: 0,
     };
+    return { turns, records, ns };
+}
+/** Search one transcript: its text, or the parser's Transcript of it. Turns holding every term of the query, in path
+ *  order, with one entry per record and kind holding a term; the file's counts; its latest timestamp. A query with no
+ *  terms matches nothing. */
+export function searchTranscript(input, query, options = {}) {
+    const t = typeof input === 'string' ? parseTranscript(input) : input;
+    const kinds = new Set(options.kinds ?? SEARCH_DEFAULT_KINDS);
+    const pre = options.prefix ? options.prefix + ':' : '';
+    const c = compile(query);
+    const nTerms = query.terms.length;
+    const { turns, records, ns } = turnRecordsOf(t);
     const byKind = {};
     for (const k of SEARCH_KINDS)
         if (kinds.has(k))
@@ -917,5 +924,363 @@ export function searchTranscript(input, query, options = {}) {
         counts: { parsed: t.records.length, turns: turns.length, searched, notSearched: ns, hits: { turns: hits.length, records: hitRecords, byKind }, gapScripts: gap },
         last: t.stats.lastTimestamp,
         fileKind: t.fileKind,
+    };
+}
+// ---- 10. The sieve: what a search can know about a file without reading it again -------------
+// A sieve holds, for one transcript, the counts a search adds up for it whatever the query (by the kinds searched),
+// and what can be asked of its text without the text: which tokens it holds (words mode), and which 1- to
+// 3-code-unit grams --substring's reading of it holds, each tagged with the kind of the text it came from. It holds
+// no text: bits and counts. Neither test has false negatives: when the sieve says some term's tokens (or grams) are
+// not all in any one kind searched, no field of that kind holds the term, so no turn holds every term, and the file's
+// counts are the sieve's. When it says they may be, the file is read and searched as without a sieve. So a search with
+// sieves prints what one without them prints.
+//   words   a Bloom filter over (kind, token), the tokens tokensOf reads from each form of each field.
+//   ascii   for each kind, one bit per possible gram of the 37 symbols --substring's reading of ASCII text is made of
+//           (a-z, 0-9 and the space): exact, no false positives.
+//   grams   a Bloom filter over (kind, gram) for every other gram (one holding a code unit outside those 37).
+// Each entry of the two Bloom filters is also kept once with the tag ANY (any kind), which is asked first.
+/** The sieve's format. Any change to what it holds, or to how the search reads text (the tokens, --substring's
+ *  reading, which fields are of which kind, the gap scripts' letters), must change it: a sieve of another format is
+ *  never used. */
+export const SEARCH_SIEVE_FORMAT = 1;
+const BLOOM_K = 7, BLOOM_BITS_PER_ENTRY = 10; // about 0.8 % false positives: a false positive only costs a read
+/** The tag of an entry kept for every kind at once, beside its kind's own: checked first, so a term absent from the file
+ *  is ruled out at one filter's rate of false positives, not at that rate times the kinds searched. */
+const ANY = 9;
+/** The 37 symbols of --substring's reading of ASCII text, and their grams: 37 + 37^2 + 37^3 bits, per kind. */
+const SYMBOLS = 37, SIEVE_ASCII_GRAMS_RAW = SYMBOLS + SYMBOLS * SYMBOLS + SYMBOLS * SYMBOLS * SYMBOLS;
+/** The bits one kind takes in `ascii`: SIEVE_ASCII_GRAMS_RAW rounded up to whole bytes. */
+export const SEARCH_SIEVE_ASCII_GRAMS = Math.ceil(SIEVE_ASCII_GRAMS_RAW / 8) * 8;
+/** A code unit's symbol: the space 0, 0-9 1 to 10, a-z 11 to 36; -1 for any other. */
+const symbolOf = (c) => (c === 32 ? 0 : c >= 48 && c <= 57 ? c - 47 : c >= 97 && c <= 122 ? c - 86 : -1);
+const asciiGram1 = (a) => a;
+const asciiGram2 = (a, b) => SYMBOLS + a * SYMBOLS + b;
+const asciiGram3 = (a, b, c) => SYMBOLS + SYMBOLS * SYMBOLS + (a * SYMBOLS + b) * SYMBOLS + c;
+// 32-bit hashes, streamed so a token can be hashed while it is scanned. An entry is the kind's index, then a
+// separator, then its code units: FNV-1a, finished by a mixer. The Bloom filter's probes come from the hash and a
+// second mix of it (double hashing).
+const FNV = 0x811c9dc5;
+const fnv = (h, c) => Math.imul(h ^ c, 0x01000193);
+function fmix(h) {
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b);
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35);
+    h ^= h >>> 16;
+    return h >>> 0;
+}
+/** The hash of a words-mode entry: the kind, ':', the token. */
+function wordHash(kind, token) {
+    let h = fnv(fnv(FNV, 48 + kind), 58);
+    for (let i = 0; i < token.length; i++)
+        h = fnv(h, token.charCodeAt(i));
+    return fmix(h);
+}
+/** The hash of a gram entry: the kind, the gram's length, its code units (b and c only as n reaches them). */
+function gramHash(kind, n, a, b, c) {
+    let h = fnv(fnv(fnv(FNV, 48 + kind), 48 + n), a);
+    if (n > 1)
+        h = fnv(h, b);
+    if (n > 2)
+        h = fnv(h, c);
+    return fmix(h);
+}
+/** A set of 32-bit hashes (open addressing in a typed array; 0 is stored as 1, which can only add a false positive). */
+class HashSet32 {
+    table = new Uint32Array(1 << 10);
+    size = 0;
+    add(h) {
+        if (h === 0)
+            h = 1;
+        let t = this.table, mask = t.length - 1, i = h & mask;
+        while (t[i] !== 0) {
+            if (t[i] === h)
+                return;
+            i = (i + 1) & mask;
+        }
+        t[i] = h;
+        if (++this.size * 2 > t.length) {
+            const old = t;
+            t = this.table = new Uint32Array(old.length * 2);
+            mask = t.length - 1;
+            for (const x of old)
+                if (x !== 0) {
+                    let j = x & mask;
+                    while (t[j] !== 0)
+                        j = (j + 1) & mask;
+                    t[j] = x;
+                }
+        }
+    }
+}
+function probes(h) { if (h === 0)
+    h = 1; return [h, (fmix(h ^ 0x9e3779b9) | 1) >>> 0]; }
+function bloomOf(set) {
+    const m = Math.max(64, Math.ceil((set.size * BLOOM_BITS_PER_ENTRY) / 8) * 8);
+    const bits = new Uint8Array(m / 8);
+    for (const h of set.table) {
+        if (h === 0)
+            continue;
+        const [a, b] = probes(h);
+        for (let i = 0; i < BLOOM_K; i++) {
+            const j = ((a + Math.imul(i, b)) >>> 0) % m;
+            bits[j >> 3] |= 1 << (j & 7);
+        }
+    }
+    return { m, k: BLOOM_K, bits };
+}
+function bloomHas(f, h) {
+    const [a, b] = probes(h);
+    for (let i = 0; i < f.k; i++) {
+        const j = ((a + Math.imul(i, b)) >>> 0) % f.m;
+        if (!(f.bits[j >> 3] & (1 << (j & 7))))
+            return false;
+    }
+    return true;
+}
+const setBit = (bits, j) => { bits[j >> 3] |= 1 << (j & 7); };
+const hasBit = (bits, j) => (bits[j >> 3] & (1 << (j & 7))) !== 0;
+/** The gap scripts' letters, by code point: the index in SEARCH_GAP_SCRIPTS's keys, or -1 (computed once per code
+ *  point, with the same regexes countLetters uses). */
+const gapIndexCache = new Map();
+function gapIndexOf(c, scripts) {
+    let g = gapIndexCache.get(c);
+    if (g === undefined) {
+        const ch = String.fromCodePoint(c);
+        g = -1;
+        for (let s = 0; s < scripts.length; s++) {
+            const r = gapLetters(scripts[s]);
+            r.lastIndex = 0;
+            if (r.test(ch)) {
+                g = s;
+                break;
+            }
+        }
+        gapIndexCache.set(c, g);
+    }
+    return g;
+}
+/** The sieve of one transcript (its text, or the parser's Transcript of it), its words read with `segmenter`. */
+export function sieveTranscript(input, segmenter) {
+    const t = typeof input === 'string' ? parseTranscript(input) : input;
+    const { turns, records, ns } = turnRecordsOf(t);
+    const segment = segmenter === 'icu';
+    const scripts = Object.keys(SEARCH_GAP_SCRIPTS);
+    const letters = scripts.map(() => SEARCH_KINDS.map(() => 0));
+    const masks = new Map();
+    const words = new HashSet32(), grams = new HashSet32();
+    const ascii = new Uint8Array((SEARCH_SIEVE_ASCII_GRAMS * SEARCH_KINDS.length) / 8);
+    // One form's reading, streamed: its code units in order, each with the grams it ends (a gram never crosses a field's
+    // form). Its pieces are joined by one space, as substringText joins them: `space` is owed before the next piece.
+    let kind = 0, base = 0, count = 0, u1 = 0, u2 = 0, s1 = -1, s2 = -1, any = false;
+    const startForm = (k) => { kind = k; base = k * SEARCH_SIEVE_ASCII_GRAMS; count = 0; any = false; };
+    const push = (u) => {
+        const s0 = symbolOf(u);
+        if (s0 >= 0)
+            setBit(ascii, base + asciiGram1(s0));
+        else {
+            grams.add(gramHash(kind, 1, u, 0, 0));
+            grams.add(gramHash(ANY, 1, u, 0, 0));
+        }
+        if (count >= 1) {
+            if (s0 >= 0 && s1 >= 0)
+                setBit(ascii, base + asciiGram2(s1, s0));
+            else {
+                grams.add(gramHash(kind, 2, u1, u, 0));
+                grams.add(gramHash(ANY, 2, u1, u, 0));
+            }
+        }
+        if (count >= 2) {
+            if (s0 >= 0 && s1 >= 0 && s2 >= 0)
+                setBit(ascii, base + asciiGram3(s2, s1, s0));
+            else {
+                grams.add(gramHash(kind, 3, u2, u1, u));
+                grams.add(gramHash(ANY, 3, u2, u1, u));
+            }
+        }
+        u2 = u1;
+        u1 = u;
+        s2 = s1;
+        s1 = s0;
+        count++;
+    };
+    /** An ASCII stretch [a, b) of x (no code unit above 127): tokensOf's ASCII path (runs of A-Z, a-z and 0-9,
+     *  lower-cased) into `words`, hashed as scanned, and those runs into the reading. */
+    const asciiStretch = (x, a, b) => {
+        let h = 0, ha = 0, inRun = false;
+        for (let i = a; i <= b; i++) {
+            let c = i < b ? x.charCodeAt(i) : 32;
+            if ((c >= 48 && c <= 57) || (c >= 97 && c <= 122) || (c >= 65 && c <= 90)) {
+                if (c <= 90 && c >= 65)
+                    c += 32;
+                if (!inRun) {
+                    h = fnv(fnv(FNV, 48 + kind), 58);
+                    ha = fnv(fnv(FNV, 48 + ANY), 58);
+                    inRun = true;
+                    if (any)
+                        push(32);
+                    any = true;
+                }
+                h = fnv(h, c);
+                ha = fnv(ha, c);
+                push(c);
+            }
+            else if (inRun) {
+                words.add(fmix(h));
+                words.add(fmix(ha));
+                inRun = false;
+            }
+        }
+    };
+    /** Any other line: its tokens by tokensOf, its reading by substringText (a run of letters never crosses a new
+     *  line, so a line's tokens and reading are the field's on that line). */
+    const otherLine = (line) => {
+        for (const tk of tokensOf(line, segment)) {
+            words.add(wordHash(kind, tk.token));
+            words.add(wordHash(ANY, tk.token));
+        }
+        const r = substringText(line).text;
+        if (!r)
+            return;
+        if (any)
+            push(32);
+        any = true;
+        for (let i = 0; i < r.length; i++)
+            push(r.charCodeAt(i));
+    };
+    const form = (k, x) => {
+        startForm(k);
+        if (!NON_ASCII.test(x)) {
+            asciiStretch(x, 0, x.length);
+            return;
+        }
+        for (let a = 0; a <= x.length;) {
+            let b = x.indexOf(NL, a);
+            if (b < 0)
+                b = x.length;
+            let plain = true;
+            for (let i = a; i < b; i++)
+                if (x.charCodeAt(i) > 127) {
+                    plain = false;
+                    break;
+                }
+            if (plain)
+                asciiStretch(x, a, b);
+            else
+                otherLine(x.slice(a, b));
+            a = b + 1;
+        }
+    };
+    for (const list of records)
+        for (const n of list) {
+            const rec = n.record;
+            const fields = [], notes = { images: 0, redacted: 0, spilled: false };
+            fieldsOf(rec, fields, notes);
+            ns.images += notes.images;
+            ns.redactedThinking += notes.redacted;
+            if (notes.spilled)
+                ns.spilled++;
+            if ('toolUseResult' in rec)
+                ns.toolUseResult++;
+            if (rec.wireToolInputs !== undefined)
+                ns.wireInputs++;
+            let mask = 0;
+            for (const f of fields) {
+                const k = SEARCH_KINDS.indexOf(f.kind);
+                mask |= 1 << k;
+                // the forms searchField reads: the text as written, and with its JSON escapes decoded when it holds one
+                const forms = [f.text];
+                if (f.text.includes(BS) && HAS_ESCAPE.test(f.text))
+                    forms.push(decodeEscapes(f.text).text);
+                // searchTranscript counts a gap script's letters in the last form: one pass, by code point
+                const lettersIn = forms[forms.length - 1];
+                if (NON_ASCII.test(lettersIn)) {
+                    for (let i = 0; i < lettersIn.length;) {
+                        const c = lettersIn.codePointAt(i);
+                        i += c > 0xffff ? 2 : 1;
+                        if (c < 0x80)
+                            continue;
+                        const g = gapIndexOf(c, scripts);
+                        if (g >= 0)
+                            letters[g][k]++;
+                    }
+                }
+                for (const x of forms)
+                    form(k, x);
+            }
+            masks.set(mask, (masks.get(mask) ?? 0) + 1);
+        }
+    const gapLettersOut = {};
+    scripts.forEach((s, i) => { gapLettersOut[s] = letters[i]; });
+    return {
+        format: SEARCH_SIEVE_FORMAT, segmenter, fileKind: t.fileKind, last: t.stats.lastTimestamp,
+        parsed: t.records.length, turns: turns.length, notSearched: ns,
+        masks: [...masks].sort((x, y) => x[0] - y[0]), gapLetters: gapLettersOut,
+        words: bloomOf(words), ascii, grams: bloomOf(grams),
+    };
+}
+/** Whether the sieve may hold a gram of `x` at i, of length n, in kind k (or, k ANY, in any of `ks`). */
+function gramMay(s, k, x, i, n, ks) {
+    const a = symbolOf(x.charCodeAt(i)), b = n > 1 ? symbolOf(x.charCodeAt(i + 1)) : 0, c = n > 2 ? symbolOf(x.charCodeAt(i + 2)) : 0;
+    if (a >= 0 && b >= 0 && c >= 0) {
+        const g = n === 1 ? asciiGram1(a) : n === 2 ? asciiGram2(a, b) : asciiGram3(a, b, c);
+        return k === ANY ? ks.some((kk) => hasBit(s.ascii, kk * SEARCH_SIEVE_ASCII_GRAMS + g)) : hasBit(s.ascii, k * SEARCH_SIEVE_ASCII_GRAMS + g);
+    }
+    return bloomHas(s.grams, gramHash(k, n, x.charCodeAt(i), n > 1 ? x.charCodeAt(i + 1) : 0, n > 2 ? x.charCodeAt(i + 2) : 0));
+}
+/** Whether the sieve may hold every token (words mode) or gram (--substring) of a term in kind k (or ANY). */
+function termMay(s, mode, term, k, ks) {
+    if (mode === 'words')
+        return term.tokens.every((tk) => bloomHas(s.words, wordHash(k, tk)));
+    const x = term.tokens[0], n = Math.min(3, x.length);
+    for (let i = 0; i + n <= x.length; i++)
+        if (!gramMay(s, k, x, i, n, ks))
+            return false;
+    return true;
+}
+/** False only when no turn of the sieve's file can hold every term of the query in the kinds searched: some term's
+ *  tokens (words mode) or grams (--substring) are not all in any one kind searched. True when the sieve cannot tell:
+ *  then the file must be read. A sieve of another format, or a words-mode query read with another segmenter, always
+ *  answers true. */
+export function sieveMayHold(s, query, kinds = SEARCH_DEFAULT_KINDS) {
+    if (s.format !== SEARCH_SIEVE_FORMAT || (query.mode === 'words' && s.segmenter !== query.segmenter))
+        return true;
+    if (!query.terms.length)
+        return false;
+    const ks = SEARCH_KINDS.map((k, i) => (kinds.includes(k) ? i : -1)).filter((i) => i >= 0);
+    for (const term of query.terms) {
+        // any kind first: a term absent from the file is ruled out here, at one filter's rate of false positives
+        if (!termMay(s, query.mode, term, ANY, ks))
+            return false;
+        if (!ks.some((k) => termMay(s, query.mode, term, k, ks)))
+            return false;
+    }
+    return true;
+}
+/** The SearchResult a search returns for the sieve's file when sieveMayHold is false: no turn, and the file's counts
+ *  for these kinds and this query's gap scripts. */
+export function sieveResult(s, query, kinds = SEARCH_DEFAULT_KINDS) {
+    let on = 0;
+    SEARCH_KINDS.forEach((k, i) => { if (kinds.includes(k))
+        on |= 1 << i; });
+    let searched = 0, kindsOff = 0;
+    for (const [mask, n] of s.masks) {
+        if (mask === 0 || (mask & on))
+            searched += n;
+        else
+            kindsOff += n;
+    }
+    const byKind = {};
+    for (const k of SEARCH_KINDS)
+        if (kinds.includes(k))
+            byKind[k] = 0;
+    const gap = {};
+    for (const x of query.gapScripts)
+        gap[x] = SEARCH_KINDS.reduce((sum, k, i) => sum + (kinds.includes(k) ? s.gapLetters[x][i] : 0), 0);
+    return {
+        turns: [],
+        counts: { parsed: s.parsed, turns: s.turns, searched, notSearched: { ...s.notSearched, kindsOff }, hits: { turns: 0, records: 0, byKind }, gapScripts: gap },
+        last: s.last,
+        fileKind: s.fileKind,
     };
 }

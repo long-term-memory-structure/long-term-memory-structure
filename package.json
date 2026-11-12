@@ -42,7 +42,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
-    "test": "node --test test/cli.test.mjs test/package-paths.test.mjs test/library-docs.test.mjs test/library.test.mjs test/search.test.mjs test/index.test.mjs test/skill.test.mjs test/pin.test.mjs test/bashverb-limit.test.mjs"
+    "test": "node --test test/cli.test.mjs test/package-paths.test.mjs test/library-docs.test.mjs test/library.test.mjs test/search.test.mjs test/index.test.mjs test/skill.test.mjs test/pin.test.mjs test/bashverb-limit.test.mjs test/sieve.test.mjs"
   },
   "keywords": [
     "claude-code",

@@ -31,7 +31,7 @@ for (const turn of turnsOf(t, repairedLivePath(t).path)) {
 
 ## `long-term-memory-structure`
 
-The entry point `.` (`dist/index.js`) exports 74 symbols: the parser's 47 (12 functions, a constant and 34 types), search's 23 (5 functions, 3 constants and 15 types) and the session index's 4 (a function and 3 types). Below, in five groups: the functions; what they return; the records as Claude Code writes them, which the library returns as they are; the search; and the session index.
+The entry point `.` (`dist/index.js`) exports 81 symbols: the parser's 47 (12 functions, a constant and 34 types), search's 30 (8 functions, 5 constants and 17 types) and the session index's 4 (a function and 3 types). Below, in five groups: the functions; what they return; the records as Claude Code writes them, which the library returns as they are; the search; and the session index.
 
 ### The functions
 
@@ -754,6 +754,75 @@ whatever kinds are searched.
 | `ok` | false when the search cannot run on this runtime; `missing` then says why | never absent |
 | `segmenter` | `icu` when `Intl.Segmenter` splits a known Thai string and a known Chinese string, built from code points, into their known words; else `no-dictionary` | `null` when not `ok` |
 | `missing` | what is missing: `Intl`, `unicode property escapes` or `String.prototype.normalize` | `null` when `ok` |
+
+**The sieve (experimental: it may change or go in any release).** What `ltms search --cache` keeps of a transcript
+between searches, so that a later search can pass over a file that cannot hold its terms without reading it again. A
+sieve holds the counts a search adds up for the file whatever the query (by the kinds searched), and what can be asked
+of its text without the text: which tokens it holds (words mode), and which 1- to 3-code-unit grams `--substring`'s
+reading of it holds, each tagged with the kind of the text it came from. It holds no text: bits and counts. Neither test
+has false negatives, so a search that passes over the files `sieveMayHold` rules out, counting each from
+`sieveResult`, returns what it returns when it reads every file. The words are read with a segmenter, and a sieve
+answers a words-mode query only when it was read with the same.
+
+```js
+const s = sieveTranscript(t, checkSearchSupport().segmenter);          // keep s; later, for a query q:
+const r = sieveMayHold(s, q) ? searchTranscript(t, q) : sieveResult(s, q);
+```
+
+#### `sieveTranscript(input, segmenter)`
+
+`sieveTranscript(input: string | Transcript, segmenter: SearchSegmenter): SearchSieve`: the file's
+[`SearchSieve`](#searchsieve), its words read with `segmenter`. It reads the same records `searchTranscript` reads, by
+the same kinds, in both forms of a string that holds JSON escapes.
+
+#### `sieveMayHold(sieve, query, kinds?)`
+
+`sieveMayHold(sieve: SearchSieve, query: SearchQuery, kinds?: readonly SearchKind[]): boolean`. `false` only when no
+turn of the sieve's file can hold every term of the query in the kinds searched (default `SEARCH_DEFAULT_KINDS`): some
+term's tokens (words mode) or grams (`--substring`) are not all in any one kind searched. `true` when the sieve cannot
+tell, and then the file must be read: also for a sieve of another format, and for a words-mode query read with another
+segmenter. A false positive only costs a read (the filters are sized for about 0.8 %).
+
+#### `sieveResult(sieve, query, kinds?)`
+
+`sieveResult(sieve: SearchSieve, query: SearchQuery, kinds?: readonly SearchKind[]): SearchResult`: what
+`searchTranscript` returns for the sieve's file when `sieveMayHold` is `false`: no turns, and the file's counts for these
+kinds and this query's gap scripts.
+
+#### `SEARCH_SIEVE_FORMAT`
+
+The sieve's format, a number. Any change to what a sieve holds, or to how the search reads text, changes it; a sieve of
+another format is never used.
+
+#### `SEARCH_SIEVE_ASCII_GRAMS`
+
+The bits one kind takes in a sieve's `ascii`: one per possible 1-, 2- and 3-gram of the 37 symbols `--substring`'s
+reading of ASCII text is made of (a-z, 0-9 and the space), rounded up to whole bytes.
+
+#### `SearchSieve`
+
+| member | meaning | when absent, null or empty |
+|---|---|---|
+| `format` | `SEARCH_SIEVE_FORMAT` when it was built | never absent |
+| `segmenter` | the [`SearchSegmenter`](#searchsegmenter) its words were read with | never absent |
+| `fileKind` | the parser's [`FileKind`](#filekind) | never absent |
+| `last` | the file's latest timestamp, as [`SearchResult`](#searchresult) gives it | `null` as there |
+| `parsed` | the records the parser read | `0` for an empty file |
+| `turns` | the input turns | `0` for a file with none |
+| `notSearched` | the [`SearchNotSearched`](#searchnotsearched) counts that do not depend on the kinds searched | its `kindsOff` is always `0`: `sieveResult` counts it from `masks` |
+| `masks` | the turn records by the set of kinds their text is of: `[set, records]` pairs, bit i of a set standing for `SEARCH_KINDS[i]`, ascending | `[]` for a file with no turn; a set `0` counts records holding no text |
+| `gapLetters` | for each script of the search's gap scripts, its letters in the text of each kind, in `SEARCH_KINDS` order | every count `0` when the file holds none |
+| `words` | a [`SearchBloom`](#searchbloom) over (kind, token) | its bits all `0` for a file with no text |
+| `ascii` | `SEARCH_SIEVE_ASCII_GRAMS` bits per kind, in `SEARCH_KINDS` order: the 1- to 3-grams of the reading made only of the 37 symbols, exact | all `0` for a file with no text |
+| `grams` | a [`SearchBloom`](#searchbloom) over (kind, gram) for every other gram | its bits all `0` when every gram is in `ascii` |
+
+#### `SearchBloom`
+
+| member | meaning | when absent, null or empty |
+|---|---|---|
+| `m` | its bits: a multiple of 8, at least 64 | never absent |
+| `k` | the probes per entry | never absent |
+| `bits` | `m / 8` bytes | never absent |
 
 ### The session index
 
