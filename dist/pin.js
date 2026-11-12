@@ -113,10 +113,12 @@ function writeAll(fd, b) {
     for (let off = 0; off < b.length;)
         off += writeSync(fd, b, off, b.length - off);
 }
-/** The most one read asks for: Node refuses a read of more than 2^31 - 1 bytes (S368, the adversarial reading's B5: a
- *  transcript over 2 GiB failed every pin, read in one call). */
-const READ_MAX = 1 << 30;
-/** An open file's bytes, read to its end (it may have grown since its size was taken), at most READ_MAX bytes a read. */
+/** The largest file pin reads: Node's Buffer indexOf and lastIndexOf take a 32-bit offset (measured, node 24: on a 2.4 GB
+ *  buffer, lastIndexOf found its last new line at -1,883,242,454), and fs.writeSync refuses a length over 2^31 - 1. A
+ *  larger file is a failure, ERR_FS_FILE_TOO_LARGE, before anything is read (as 0.2.0 failed on it), and --check counts
+ *  it (PinStaleness.tooLarge). S368: a first repair read such a file in parts, and wrote a copy cut at a wrapped offset. */
+const PIN_MAX_BYTES = 2 ** 31 - 1;
+/** An open file's bytes, read to its end (it may have grown since its size was taken). */
 function readFd(fd, size) {
     let buf = Buffer.allocUnsafe(Math.max(size, 0)), n = 0;
     for (;;) {
@@ -132,7 +134,7 @@ function readFd(fd, size) {
             n += r;
             continue;
         }
-        const r = readSync(fd, buf, n, Math.min(buf.length - n, READ_MAX), n);
+        const r = readSync(fd, buf, n, buf.length - n, n);
         if (r === 0)
             return buf.subarray(0, n);
         n += r;
@@ -1113,6 +1115,8 @@ function pinOne(rel, src, e) {
         return fail('read', src, 'not-a-file');
     e.onStep?.('stat', rel);
     const size = Number(st.size), mtime = isoNs(st.mtimeNs);
+    if (size > PIN_MAX_BYTES)
+        return fail('read', src, 'ERR_FS_FILE_TOO_LARGE');
     // the fast path: the size and the mtime (to the ns) its last line records, and the copy in place
     if (!e.rehash && last !== undefined && present && size === last.bytes && mtime === last.mtime)
         return unchanged(false);
@@ -2039,8 +2043,13 @@ export async function checkPin(dir, options = {}) {
     if (rootGiven !== undefined) {
         const root = realOrNearest(rootGiven);
         const w = walk([{ given: rootGiven, resolved: resolve(rootGiven), real: root }], root);
-        let missing = 0, longer = 0, unfinished = 0;
+        let missing = 0, longer = 0, unfinished = 0, tooLarge = 0;
         for (const [rel, abs] of w.files) {
+            try {
+                if (lstatSync(abs).size > PIN_MAX_BYTES)
+                    tooLarge++;
+            }
+            catch { /* gone since the walk */ }
             const copy = scan.files.get(rel);
             // a .jsonl with no new line yet is not copied by a pin (notCopied), so it is not missing from the pin
             if (copy === undefined) {
@@ -2067,7 +2076,7 @@ export async function checkPin(dir, options = {}) {
         }
         const pinnedProjects = new Set([...st.named].map((r) => r.split('/')[0]));
         const projectsNotPinned = [...w.projects].filter((pr) => !pinnedProjects.has(pr)).length;
-        staleness = { root, fromLog: options?.root === undefined, sources: w.files.size, missing, longer, unfinished, projectsNotPinned, failed: w.failures.length };
+        staleness = { root, fromLog: options?.root === undefined, sources: w.files.size, missing, longer, unfinished, projectsNotPinned, failed: w.failures.length, tooLarge };
     }
     return { k: 'checked', dir: d, root: st.root?.root ?? null, lines: st.lines, logNames: log.names, versions: fileLines.length, files, mismatches,
         chainBreaks, unreadableLines, unlogged, temps: scan.temps.filter((a) => !st.named.has(relative(d, a).split(sep).join('/'))).length, lastLog: st.lastT, staleness, lock, notices, ms: Date.now() - t0 };

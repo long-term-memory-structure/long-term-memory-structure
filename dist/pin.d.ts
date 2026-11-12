@@ -235,6 +235,9 @@ export interface PinStaleness {
     unfinished: number;
     /** project directories under the root of which the pin holds nothing */
     projectsNotPinned: number;
+    /** of the sources, those larger than a pin reads (PIN_MAX_BYTES, 2 GiB): every pin fails on each, so the pin falls
+     *  behind them for good (also counted in missing or longer) */
+    tooLarge: number;
     /** directories under the root (or the root itself) that could not be read */
     failed: number;
 }
