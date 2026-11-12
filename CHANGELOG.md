@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased (0.2.1)
+## 0.2.1 (2026-11-13)
 
 - **The README opens with the design's first constraint, "Preserve potential indefinitely."**, for both its readers, people and agents evaluating the package; then the five facts the design answers (the record is on disk; it is deleted after `cleanupPeriodDays`; it is far larger than a context window; a wrong recollection becomes a wrong action; one agent, one user, one machine), the architecture, and the **technical debt**: every way an adversarial reading of 0.2.0 found the opening false, each with its state in this release. The commands follow.
 - **`ltms pin`: the seven ways in which an act of pin destroyed a record in 0.2.0 are repaired**, each found by that reading (three readers, each finding sent to a fourth that tried to refute it) and each with a test that fails on 0.2.0's code:

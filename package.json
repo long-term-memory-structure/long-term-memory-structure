@@ -1,6 +1,6 @@
 {
   "name": "long-term-memory-structure",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "The record layer of long-term memory for Claude Code agents: index, search and pin session transcripts across compactions, without printing their content; pinned copies outlast the 30-day cleanup. No network, no dependencies.",
   "type": "module",
   "main": "./dist/index.js",
