@@ -5149,3 +5149,32 @@ test('S369 temps: a temp a killed pin left (a rewrite to a shorter version), bes
     checkClean(await checkPin(t.to));
   } finally { t.clean(); }
 });
+
+test('S369: a decision that writes nothing leaves the pin\'s directories as it found them: a new project\'s transcript with no whole line yet (notCopied) leaves no directory for it in the pin, though its temp was made there while it was read', async () => {
+  const t = tree();
+  try {
+    const R = '-home-u-gamma', rel = `${R}/${SA}.jsonl`;
+    t.put(rel, '{"type":"user","text":"no new line yet');
+    const r = await pinPaths([t.src(R)], t.opts());
+    assert.deepEqual([r.failures, r.coverage.files.notCopied], [[], 1]);
+    assert.equal(existsSync(join(t.to, R)), false, 'no directory left for the project');
+  } finally { t.clean(); }
+});
+
+test('S369: a pin whose lock is lost before a file is read stops before the copy\'s temp is made, so before it reads the file (lock-lost; no step read), and nothing is written', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.src(Q)], t.opts());
+    writeFileSync(t.src(rel), L4);
+    const before = snapshot(t.to);
+    const body = JSON.stringify({ pid: 2147483646, host: hostname(), started: '2026-11-13T03:00:00.000Z' });
+    const steps = [];
+    const r = await pinPaths([t.src(Q)], t.opts({ onStep(step, at) { steps.push(`${step} ${at}`); if (step === 'stat' && at === rel) writeFileSync(lockOf(t), body); } }));
+    assert.deepEqual(r.failures.map((f) => [f.op, f.code]), [['lock', 'lock-lost']]);
+    assert.deepEqual(steps, [`stat ${rel}`], 'no read: the guard comes before the temp');
+    assert.equal(readFileSync(lockOf(t), 'utf8'), body, "the other's lock is left");
+    unlinkSync(lockOf(t));
+    assert.deepEqual(snapshot(t.to), before, 'nothing was written');
+  } finally { t.clean(); }
+});
