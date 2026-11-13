@@ -5243,7 +5243,7 @@ test('S369 (the closure check\'s V4): an error closing the copy\'s temp, or cutt
       const patch = `
         const temps = new Set(); const os = fs.openSync, cs = fs.closeSync, ft = fs.ftruncateSync;
         const eio = (sc) => { const e = new Error('EIO: i/o error, ' + sc); e.code = 'EIO'; e.syscall = sc; e.errno = -5; return e; };
-        fs.openSync = function (p) { const fd = os.apply(this, arguments); if (String(p).includes(${tempOf}) && !/\\d1$/.test(String(p))) temps.add(fd); return fd; };
+        fs.openSync = function (p) { const fd = os.apply(this, arguments); if (String(p).includes(${tempOf}) && String(p).endsWith('.ltms-tmp-' + process.pid)) temps.add(fd); return fd; };   // the copy's temp exactly (the cut back's ends in the pid and 1; a pattern for that matched pids ending in 1)
         fs.closeSync = function (fd) { const hit = temps.delete(fd); cs.apply(this, arguments); if (hit && ${JSON.stringify(what)} === 'close') throw eio('close'); };
         fs.ftruncateSync = function (fd) { if (temps.has(fd) && ${JSON.stringify(what)} === 'ftruncate') throw eio('ftruncate'); return ft.apply(this, arguments); };`;
       const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.root)}], ${JSON.stringify(t.opts())}); process.stdout.write(JSON.stringify(r));`, { patch }));
