@@ -52,10 +52,10 @@ export interface PinLogLine {
     /** the sha256 of the bytes of the line before this one (without its new line); null on the first line */
     chain: string | null;
 }
-/** The steps of one file's write, in order, as onStep sees them: `stat` (before the read), `read` (the source read and
- *  hashed, nothing of the pin read or written for it yet), `linked` (an old copy kept), `temp-written` (the temp file
- *  written from the source read again, fsynced and closed), `renamed` (the temp renamed over the copy, and its directory
- *  fsynced), `logged` (the line appended and fsynced); `rename-retry` before each retry on win32. */
+/** The steps of one file's write, in order, as onStep sees them: `stat` (before the read), `read` (the source read,
+ *  hashed and written to the copy's temp file as it was read; the copy not read yet), `linked` (an old copy kept),
+ *  `temp-written` (the temp given its mtime, fsynced and closed), `renamed` (the temp renamed over the copy, and its
+ *  directory fsynced), `logged` (the line appended and fsynced); `rename-retry` before each retry on win32. */
 export type PinStep = 'stat' | 'read' | 'linked' | 'temp-written' | 'renamed' | 'logged' | 'rename-retry';
 /** pinPaths's options. Relative paths resolve against the current directory. */
 export interface PinOptions {
@@ -76,9 +76,9 @@ export interface PinOptions {
     platform?: string;
     /** called at each step of each file's write (the tests use it to stop a pin at a chosen step) */
     onStep?: (step: PinStep, rel: string) => void;
-    /** the size of each read and write of a file's bytes, in bytes (a whole number from 1 to 2^30; default 1 MiB). No file
-     *  is held whole, so the memory a pin needs does not grow with the files it pins (the tests use small sizes, so that
-     *  each read crosses many) */
+    /** the size of each read and write of a file's bytes, in bytes (a whole number from 1 to 2^26, 64 MiB; default 1 MiB):
+     *  a pin holds at most this much of a file at once, so the memory it needs for a file's bytes does not grow with the
+     *  file's size (the tests use small sizes, so that each read crosses many) */
     chunkBytes?: number;
 }
 /** One run's counts. `seen` = new + grown + rewritten + unchanged + notCopied + failed. */
