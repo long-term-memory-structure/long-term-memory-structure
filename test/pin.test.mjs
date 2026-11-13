@@ -5058,6 +5058,25 @@ test('S369: chunkBytes sets the size of each read of a file\'s bytes: at 1, a pi
   } finally { t.clean(); }
 });
 
+test('S369: a temp that cannot be written on the second read (ENOSPC; a file rewritten at the same size, read first without a temp) is a write failure of the copy, not a read one: the copy stays as it was, and no temp is left', () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel];
+    ranTo(childModule(`await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts())}); process.stdout.write("{}");`));
+    const v2 = v1.replace('first prompt', 'other prompt');
+    assert.equal(len(v2), len(v1));
+    writeFileSync(t.src(rel), v2);
+    const patch = `
+      const temps = new Set(); const os = fs.openSync, ws = fs.writeSync;
+      fs.openSync = function (p) { const fd = os.apply(this, arguments); if (String(p).endsWith(${JSON.stringify(`.${SB}.jsonl.ltms-tmp-`)} + process.pid)) temps.add(fd); return fd; };
+      fs.writeSync = function (fd) { if (temps.has(fd)) { const e = new Error('ENOSPC: no space left on device, write'); e.code = 'ENOSPC'; e.syscall = 'write'; e.errno = -28; throw e; } return ws.apply(this, arguments); };`;
+    const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts())}); process.stdout.write(JSON.stringify(r));`, { patch }));
+    assert.deepEqual(r.failures, [{ path: t.pin(rel), rel, op: 'write', code: 'ENOSPC' }]);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), v1);
+    assert.deepEqual(readdirSync(join(t.to, Q)).filter((n) => n.includes('.ltms-tmp-')), [], 'no temp left');
+  } finally { t.clean(); }
+});
+
 test('S369: a temp that cannot be written (ENOSPC while the source is copied into it) is a write failure of the copy, as in 0.2.1, not a read one: the copy and its line stay as they were, and no temp is left', () => {
   const t = tree();
   try {
