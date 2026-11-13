@@ -114,6 +114,11 @@ function writeAll(fd, b) {
     for (let off = 0; off < b.length;)
         off += writeSync(fd, b, off, b.length - off);
 }
+/** Writes all of b at position at of the open file fd. */
+function writeAt(fd, b, at) {
+    for (let off = 0; off < b.length;)
+        off += writeSync(fd, b, off, b.length - off, at + off);
+}
 /** The largest file a pin addresses: a position in a file is a JavaScript number, exact up to 2^53 - 1. A larger file is a
  *  failure, ERR_FS_FILE_TOO_LARGE, before anything is read, and --check counts it (PinStaleness.tooLarge). Until 0.2.1 a
  *  pin read each file whole, into one Buffer, and the limit was 2^31 - 1: Node's Buffer indexOf and lastIndexOf take a
@@ -1206,46 +1211,83 @@ function pinOne(rel, src, e) {
             pre = d.size;
     }
     catch { /* none: looked at again below */ }
-    // The source is read once, in chunks, each chunk hashed and written to the copy's temp file as it is read: the copy is
-    // made of the very bytes the decision hashed, as in 0.2.1, which held them in memory instead. (S369: a first version
-    // read the source again to write the copy, and so lost what a source held when it was deleted or replaced between the
-    // two reads, and never pinned a file replaced more often than that: the re-check's A1, B2, C2.) The temp is cut back
-    // to the cut, and removed again, with any directory made for it, when the decision writes nothing. It is a write into
-    // the pin: a pin whose lock is lost stops before it (and again before the rename, below: a copy can take long)
-    const dir = dirname(dst), tmp = join(dir, tempName(basename(dst)));
-    e.guard();
-    let made, fd;
+    // The source is opened once, and every read of it in this run goes through that one descriptor, so a rename over it,
+    // or its deletion, cannot change what this pin reads or writes (S369: a first version opened it again to write the
+    // copy, and lost what a source held when it was deleted or replaced between the reads, and never pinned a file
+    // replaced more often than that: the re-check's A1, B2, C2). When a write is likely (a new file, or one whose size is
+    // not the size its last line records), each chunk is also written to the copy's temp as it is read, so the copy is
+    // made of the very bytes the decision hashed; otherwise (a file touched, or read with --rehash) the source is only read,
+    // and the temp is written by a second read through the same descriptor when the decision is to write, its bytes
+    // checked against the first read's (the closure check's V3: writing every file read into a temp failed ENOSPC on a
+    // full disk where 0.2.1 found the file unchanged). A source written in place while it is read (its ctime moved) is
+    // read again up to the cut and compared, so a copy torn between two versions is never kept: one read more, then a
+    // failure, source-changed (the closure check's V1). The temp is cut back to the cut, and removed again, with any
+    // directory made for it, when nothing is renamed in. It is a write into the pin: a pin whose lock is lost stops before
+    // it (and again before the rename, below: a copy can take long)
+    let sfd;
     try {
-        made = mkdirSync(dir, { recursive: true, mode: DIR_MODE });
-        fd = openSync(tmp, 'wx', FILE_MODE & Number(st.mode)); // 0600, or the source's mode when it is stricter
+        sfd = openSync(src, 'r');
     }
     catch (err) {
         if (!isFsError(err))
             throw err;
-        unmake(dir, made);
-        return fail('write', dst, err);
+        return fail('read', src, err);
     }
-    let open = true, renamed = false;
+    const dir = dirname(dst), tmp = join(dir, tempName(basename(dst)));
+    let made, fd = null, open = false, renamed = false;
+    /** Makes the copy's temp, after the guard; throws as mkdirSync and openSync throw. */
+    const makeTemp = () => {
+        e.guard();
+        made = mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+        fd = openSync(tmp, 'wx', FILE_MODE & Number(st.mode)); // 0600, or the source's mode when it is stricter
+        open = true;
+        return fd;
+    };
     try {
-        let p;
-        try {
-            const sfd = openSync(src, 'r');
+        const sinking = last === undefined || size !== last.bytes;
+        if (sinking) {
             try {
-                p = pass(sfd, e.chunk, { marks: [...(last === undefined ? [] : [last.bytes]), ...(pre === null ? [] : [pre])], sink: (b) => writeAll(fd, b) });
+                makeTemp();
             }
-            finally {
-                closeSync(sfd);
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+                return fail('write', dst, err);
             }
         }
-        catch (err) {
-            if (!isFsError(err))
-                throw err;
-            // the source's open or read fails the read; the temp's write (ENOSPC, say) fails the copy's write
-            return err.syscall === 'write' ? fail('write', dst, err) : fail('read', src, err);
+        const jsonl = rel.endsWith('.jsonl');
+        const marks = [...(last === undefined ? [] : [last.bytes]), ...(pre === null ? [] : [pre])];
+        let p = null;
+        for (let attempt = 0; attempt < 2 && p === null; attempt++) {
+            let q, moved;
+            try {
+                if (fd !== null && attempt > 0)
+                    ftruncateSync(fd, 0);
+                const t = fd;
+                const c0 = fstatSync(sfd, { bigint: true }).ctimeNs;
+                q = pass(sfd, e.chunk, { marks, ...(t === null ? {} : { sink: (b, at) => writeAt(t, b, at) }) });
+                moved = fstatSync(sfd, { bigint: true }).ctimeNs !== c0;
+                if (moved) {
+                    // written while it was read: the bytes up to the cut, read again, must hash as they did, or the read is torn
+                    const n = jsonl ? q.cut : q.bytes, again = pass(sfd, e.chunk, { limit: n });
+                    if (again.bytes === n && again.sha256 === (jsonl ? q.cutSha256 : q.sha256))
+                        moved = false;
+                }
+            }
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+                // the source's read fails the read; the temp's write or cut (ENOSPC, EIO) fails the copy's write
+                const sc = err.syscall;
+                return sc === 'write' || sc === 'ftruncate' ? fail('write', dst, err) : fail('read', src, err);
+            }
+            if (!moved)
+                p = q;
         }
+        if (p === null)
+            return fail('read', src, 'source-changed');
         e.onStep?.('read', rel);
         // a .jsonl is cut at its last new line; one with none yet (or empty) has nothing whole to pin, and is not copied
-        const jsonl = rel.endsWith('.jsonl');
         const cut = jsonl ? p.cut : p.bytes;
         const partial = jsonl && cut < p.bytes;
         if (jsonl && cut === 0) {
@@ -1274,8 +1316,16 @@ function pinOne(rel, src, e) {
             }
             return { how: 'notCopied', partial, bytes: 0, again: null, lost: false };
         }
-        if (cut < p.bytes)
-            ftruncateSync(fd, cut); // the temp holds the bytes up to the cut, and no more
+        if (fd !== null && cut < p.bytes) { // the temp holds the bytes up to the cut, and no more
+            try {
+                ftruncateSync(fd, cut);
+            }
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+                return fail('write', dst, err);
+            }
+        }
         // the sha256 of the bytes up to the cut, and of the prefix the old copy claims, from the one pass
         const sha = jsonl ? p.cutSha256 : p.sha256;
         const prefix = last !== undefined && last.bytes <= cut ? p.at.get(last.bytes) ?? null : null;
@@ -1420,13 +1470,40 @@ function pinOne(rel, src, e) {
                 e.onStep?.('linked', rel);
             }
         }
-        // the write: the temp, holding the bytes up to the cut, given the source's mtime and fsynced; renamed over the copy;
-        // the directory fsynced
+        // the write. A source only read so far (no temp yet) is read again through the same descriptor into a new temp, up
+        // to the cut, and those bytes must hash as the decision's did: when they do not, it was written in place between the
+        // two reads, and nothing is written (a failure, source-changed; the next pin pins it as it is then). Then the temp,
+        // holding the bytes up to the cut, is given the source's mtime and fsynced; renamed over the copy; the directory
+        // fsynced. The descriptor is let go before its close is asked for: a close that fails has still released it
+        let w;
+        if (fd === null) {
+            try {
+                w = makeTemp();
+            }
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+                return fail('write', dst, err);
+            }
+            let again;
+            try {
+                again = pass(sfd, e.chunk, { limit: cut, sink: (b, at) => writeAt(w, b, at) });
+            }
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+                return err.syscall === 'write' ? fail('write', dst, err) : fail('read', src, err);
+            }
+            if (again.bytes !== cut || again.sha256 !== sha)
+                return fail('read', src, 'source-changed');
+        }
+        else
+            w = fd;
         try {
-            futimesSync(fd, Number(st.atimeNs) / 1e9, Number(st.mtimeNs) / 1e9); // seconds as a double: within a µs
-            fsyncSync(fd);
-            closeSync(fd);
+            futimesSync(w, Number(st.atimeNs) / 1e9, Number(st.mtimeNs) / 1e9); // seconds as a double: within a µs
+            fsyncSync(w);
             open = false;
+            closeSync(w);
             e.onStep?.('temp-written', rel);
             e.guard();
             renameOver(tmp, dst, e.platform, () => e.onStep?.('rename-retry', rel));
@@ -1445,11 +1522,21 @@ function pinOne(rel, src, e) {
         return how === 'recovered' ? { how: 'unchanged', partial, bytes: cut, again, lost } : { how, partial, bytes: cut, again: null, lost };
     }
     finally {
-        // nothing renamed in: the temp goes, and the directories made for it while they are empty (an error thrown on, a
-        // stop, a decision that writes nothing). A pin killed before this leaves the temp, which the next one settles
-        if (open)
-            closeSync(fd);
-        if (!renamed) {
+        // the source let go; nothing renamed in: the temp goes, and the directories made for it while they are empty (an
+        // error thrown on, a stop, a decision that writes nothing). A pin killed before this leaves the temp, which the next
+        // one settles. A failed close here has still released its descriptor, and is not thrown on (the closure check's V4)
+        try {
+            closeSync(sfd);
+        }
+        catch { /* released */ }
+        if (open && fd !== null) {
+            open = false;
+            try {
+                closeSync(fd);
+            }
+            catch { /* released */ }
+        }
+        if (fd !== null && !renamed) {
             try {
                 unlinkSync(tmp);
             }

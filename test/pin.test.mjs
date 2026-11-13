@@ -5178,3 +5178,110 @@ test('S369: a pin whose lock is lost before a file is read stops before the copy
     assert.deepEqual(snapshot(t.to), before, 'nothing was written');
   } finally { t.clean(); }
 });
+
+// ---- S369, the closure check: one descriptor per source; a temp only when a write is likely; a torn read read again
+
+test('S369 (the closure check\'s V3): a file touched (its bytes the same) and --rehash over an unchanged pin make no temp file, so a pin with no room for one still finds them unchanged (the first one-read version wrote every file read into a temp, and failed ENOSPC)', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.root], t.opts());
+    utimesSync(t.src(rel), new Date(), new Date(Date.now() + 5000));   // touched: another mtime, the same bytes
+    const patch = 'globalThis.temps = []; const os = fs.openSync; fs.openSync = function (p) { if (String(p).includes(".ltms-tmp-") && !String(p).includes(".ltms-pin.lock")) globalThis.temps.push(String(p)); return os.apply(this, arguments); };';
+    for (const extra of [{}, { rehash: true }]) {
+      const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.root)}], ${JSON.stringify(t.opts(extra))}); process.stdout.write(JSON.stringify({ r, temps: globalThis.temps }));`, { patch }));
+      assert.deepEqual([r.r.failures, r.r.lines.filter((l) => l.rel !== undefined), r.temps], [[], [], []], JSON.stringify(extra));
+    }
+  } finally { t.clean(); }
+});
+
+test('S369 (the closure check\'s V1): a source written in place while a pin reads it (its ctime moves) is read again: a read torn between two versions is never kept; read whole the second time, that version is pinned; torn twice, the file fails (source-changed) and nothing is written', async () => {
+  for (const times of [1, 2]) {
+    const t = tree();
+    try {
+      const rel = `${Q}/${SB}.jsonl`, src = t.src(rel);
+      await pinPaths([t.src(Q)], t.opts());
+      const ver = (tag) => Array.from({ length: 40 }, (_, i) => `{"type":"user","text":"${tag} ${String(i).padStart(3, '0')}"}\n`).join('');
+      const v2 = PINNED[rel] + ver('two'), v3 = ver('six') + L1, v4 = ver('ten') + L2;
+      writeFileSync(src, v2);
+      // after the first read call at position 0 of each listed count, the source is rewritten in place (O_TRUNC, the same
+      // file), as by another process: the rest of that pass reads the new version
+      const at0 = times === 1 ? [1] : [1, 3], next = times === 1 ? [v3] : [v3, v4];
+      const patch = `
+        let fdSrc = null, k = 0; const os = fs.openSync, rs = fs.readSync, wf = fs.writeFileSync;
+        const at0 = ${JSON.stringify(at0)}, next = ${JSON.stringify(next)};
+        fs.openSync = function (p) { const fd = os.apply(this, arguments); if (String(p) === ${JSON.stringify(src)}) fdSrc = fd; return fd; };
+        fs.readSync = function (fd, buf, off, len, pos) {
+          const n = rs.apply(this, arguments);
+          if (fd === fdSrc && pos === 0) { k++; const i = at0.indexOf(k); if (i >= 0) wf(${JSON.stringify(src)}, next[i]); }
+          return n;
+        };`;
+      const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts({ chunkBytes: 64 }))}); process.stdout.write(JSON.stringify(r));`, { patch }));
+      if (times === 1) {
+        assert.deepEqual(r.failures, []);
+        assert.deepEqual(r.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256]), [[rel, 'rewritten', len(v3), sha(v3)]]);
+        assert.equal(readFileSync(t.pin(rel), 'utf8'), v3, 'the copy is one version, whole');
+      } else {
+        assert.deepEqual(r.failures, [{ path: src, rel, op: 'read', code: 'source-changed' }]);
+        assert.deepEqual([r.lines, readFileSync(t.pin(rel), 'utf8')], [[], PINNED[rel]]);
+        assert.deepEqual(readdirSync(join(t.to, Q)).filter((n) => n.includes('.ltms-tmp-')), [], 'no temp left');
+      }
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('S369 (the closure check\'s V4): an error closing the copy\'s temp, or cutting it back to its last new line, is a failure of that file (op write), the run goes on to the next file, and no temp is left (the first one-read version ended the whole run, and a failed close left the temp)', () => {
+  for (const what of ['close', 'ftruncate']) {
+    const t = tree();
+    try {
+      const rel = `${Q}/${SB}.jsonl`, other = `${P}/${SA}.jsonl`;
+      ranTo(childModule(`await pinPaths([${JSON.stringify(t.root)}], ${JSON.stringify(t.opts())}); process.stdout.write("{}");`));
+      appendFileSync(t.src(rel), L4 + (what === 'ftruncate' ? '{"type":"assis' : ''));   // grown; for ftruncate, a line not finished
+      appendFileSync(t.src(other), L5);
+      const tempOf = JSON.stringify(`.${SB}.jsonl.ltms-tmp-`);
+      const patch = `
+        const temps = new Set(); const os = fs.openSync, cs = fs.closeSync, ft = fs.ftruncateSync;
+        const eio = (sc) => { const e = new Error('EIO: i/o error, ' + sc); e.code = 'EIO'; e.syscall = sc; e.errno = -5; return e; };
+        fs.openSync = function (p) { const fd = os.apply(this, arguments); if (String(p).includes(${tempOf}) && !/\\d1$/.test(String(p))) temps.add(fd); return fd; };
+        fs.closeSync = function (fd) { const hit = temps.delete(fd); cs.apply(this, arguments); if (hit && ${JSON.stringify(what)} === 'close') throw eio('close'); };
+        fs.ftruncateSync = function (fd) { if (temps.has(fd) && ${JSON.stringify(what)} === 'ftruncate') throw eio('ftruncate'); return ft.apply(this, arguments); };`;
+      const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.root)}], ${JSON.stringify(t.opts())}); process.stdout.write(JSON.stringify(r));`, { patch }));
+      assert.deepEqual(r.failures, [{ path: t.pin(rel), rel, op: 'write', code: 'EIO' }], what);
+      assert.deepEqual(r.lines.filter((l) => l.rel !== undefined).map((l) => [l.rel, l.how]), [[other, 'grown']], `${what}: the run went on`);
+      assert.deepEqual(readdirSync(join(t.to, Q)).filter((n) => n.includes('.ltms-tmp-')), [], `${what}: no temp left`);
+      assert.equal(readFileSync(t.pin(rel), 'utf8'), PINNED[rel]);
+    } finally { t.clean(); }
+  }
+});
+
+test('S369: a file rewritten at the same size is read first without a temp; the temp is written by a second read through the same descriptor, its bytes checked: written in place between the two reads, it fails (source-changed) and is pinned by the next pin; renamed over meanwhile, the version read is pinned', async () => {
+  for (const change of ['in place', 'renamed over']) {
+    const t = tree();
+    try {
+      const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel], k = `${Q}/${SB}.superseded-${sha12(v1)}.jsonl`;
+      await pinPaths([t.src(Q)], t.opts());
+      const v2 = v1.replace('first prompt', 'other prompt');   // the same size, other bytes
+      assert.equal(len(v2), len(v1));
+      writeFileSync(t.src(rel), v2);
+      const act = () => {
+        if (change === 'in place') writeFileSync(t.src(rel), v2.replace('other', 'third'));
+        else { writeFileSync(join(t.tmp, 'n.jsonl'), L5); renameSync(join(t.tmp, 'n.jsonl'), t.src(rel)); }
+      };
+      const r = await pinPaths([t.src(Q)], t.opts({ onStep(step, at) { if (step === 'read' && at === rel) act(); } }));
+      if (change === 'in place') {
+        assert.deepEqual(r.failures, [{ path: t.src(rel), rel, op: 'read', code: 'source-changed' }]);
+        assert.equal(readFileSync(t.pin(rel), 'utf8'), v1, 'the copy as it was (its old version kept beside it by the link)');
+        const n = await pinPaths([t.src(Q)], t.opts());
+        assert.deepEqual(n.failures, []);
+        assert.deepEqual(n.lines.map((l) => [l.rel, l.how]), [[k, 'recovered'], [rel, 'rewritten']]);
+        assert.equal(readFileSync(t.pin(rel), 'utf8'), v2.replace('other', 'third'));
+      } else {
+        assert.deepEqual(r.failures, []);
+        assert.deepEqual(r.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256]), [[rel, 'rewritten', len(v2), sha(v2)]]);
+        assert.equal(readFileSync(t.pin(rel), 'utf8'), v2);
+      }
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
