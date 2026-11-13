@@ -5053,3 +5053,70 @@ test('S369: a temp that cannot be written (ENOSPC while the source is copied int
     assert.deepEqual([r.lines, snapshot(t.to)], [[], before]);
   } finally { t.clean(); }
 });
+
+test('S369: a copy written by something else at its file\'s step stat, holding a longer prefix of its source than its line records, is recorded (recovered) and then grown from (the pass marks the copy\'s size); written at the step read, after that mark, it is kept as a rewrite instead: nothing is lost either way', async () => {
+  for (const when of ['stat', 'read']) {
+    const t = tree();
+    try {
+      const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel], v2 = v1 + L4, v3 = v1 + L4 + L5;
+      await pinPaths([t.src(Q)], t.opts());
+      writeFileSync(t.src(rel), v3);
+      const r = await pinPaths([t.src(Q)], t.opts({ onStep(step, at) { if (step === when && at === rel) writeFileSync(t.pin(rel), v2); } }));
+      assert.deepEqual(r.failures, [], when);
+      const k = `${Q}/${SB}.superseded-${sha12(v2)}.jsonl`;
+      assert.deepEqual(r.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256, l.kept]), [[rel, 'recovered', len(v2), sha(v2), undefined],
+        when === 'stat' ? [rel, 'grown', len(v3), sha(v3), undefined] : [rel, 'rewritten', len(v3), sha(v3), k]], when);
+      assert.equal(readFileSync(t.pin(rel), 'utf8'), v3);
+      if (when === 'read') assert.equal(readFileSync(t.pin(k), 'utf8'), v2);
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('S369: --rehash cutting a copy back to its version reads it again and checks it: a copy changed meanwhile is not written over (copy-changed); and a copy changed at a byte inside its version, then bytes no pin wrote, is not cut back (it does not start with its version) but written again from its source', () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel], copy = t.pin(rel);
+    ranTo(childModule(`await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts())});`.concat(' process.stdout.write("{}");')));
+    appendFileSync(copy, 'zz');                                      // its version, then bytes no pin wrote: --rehash cuts it back
+    const tmpName = `.${SB}.jsonl.ltms-tmp-`;
+    // once the source is read (step read), the first temp made for the copy is the cut back's; the copy's next open to read
+    // is the cut back's read of it: its first byte is changed there, as by another process
+    const patch = `
+      const os = fs.openSync, ws = fs.writeSync, cs = fs.closeSync; let next = false, done = false;
+      fs.openSync = function (p, flags) {
+        const fd = os.apply(this, arguments);
+        if (globalThis.armed && !done && String(p).includes(${JSON.stringify(tmpName)})) next = true;
+        else if (next && !done && String(p) === ${JSON.stringify(copy)} && typeof flags === 'number' && (flags & 3) === 0) {
+          done = true; const w = os(${JSON.stringify(copy)}, 'r+'); ws(w, Buffer.from('X'), 0, 1, 0); cs(w);
+        }
+        return fd;
+      };`;
+    const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], { ...${JSON.stringify(t.opts({ rehash: true }))}, onStep(step, at) { if (step === 'read' && at === ${JSON.stringify(rel)}) globalThis.armed = true; } });
+      process.stdout.write(JSON.stringify(r));`, { patch }));
+    assert.deepEqual(r.failures, [{ path: copy, rel, op: 'write', code: 'copy-changed' }]);
+    assert.equal(readFileSync(copy, 'utf8'), 'X' + v1.slice(1) + 'zz', 'not written over');
+    assert.deepEqual(readdirSync(dirname(copy)).filter((n) => n.includes('.ltms-tmp-')), [], 'no temp left');
+    // that copy (a byte changed inside its version, then zz): --rehash writes it again from its source, keeping nothing
+    const n = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts({ rehash: true }))}); process.stdout.write(JSON.stringify(r));`));
+    assert.deepEqual(n.failures, []);
+    assert.equal(readFileSync(copy, 'utf8'), v1);
+  } finally { t.clean(); }
+});
+
+test('S369 temps: a temp a killed pin left (a rewrite to a shorter version), beside a copy that is longer but does not start with it, its source rewritten since, is kept, not removed: a holder must hold the temp\'s bytes, not as many bytes', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, k = `${Q}/${SB}.superseded-${sha12(L5)}.jsonl`;
+    await pinPaths([t.src(Q)], t.opts());
+    writeFileSync(t.src(rel), L5);                                   // a rewrite to fewer bytes than the copy holds
+    const c = childPin(t, [t.src(Q)], 'temp-written', rel, KILL);
+    assert.equal(c.signal, 'SIGKILL', c.stderr);
+    writeFileSync(t.src(rel), L4 + L4);                              // the source moves on: L5 is in the temp only
+    const r = await pinPaths([t.src(Q)], t.opts());
+    assert.deepEqual(r.failures, []);
+    assert.equal(readFileSync(t.pin(k), 'utf8'), L5);
+    assert.ok(r.lines.some((l) => l.rel === k && l.how === 'recovered'), 'the temp is kept, with a recovered line');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
