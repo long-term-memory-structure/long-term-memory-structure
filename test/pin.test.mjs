@@ -15,7 +15,7 @@ import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, chmodSync, constants as fsConstants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync,
-  rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+  rmSync, statSync, symlinkSync, truncateSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -35,6 +35,9 @@ process.umask(0o022);
 const AS_ROOT = typeof process.getuid === 'function' && process.getuid() === 0;
 const NEEDS_PERMISSIONS = AS_ROOT && 'root is not stopped by file permissions';
 
+// LTMS_TEST_CHUNK=<n> runs every pin of a tree's opts() with reads and writes of n bytes (PinOptions.chunkBytes), so that
+// each read crosses many chunk boundaries: the streamed read and write (S369) is held to the same tests at each size
+const CHUNK_OPT = process.env.LTMS_TEST_CHUNK ? { chunkBytes: Number(process.env.LTMS_TEST_CHUNK) } : {};
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 const sha12 = (b) => sha(b).slice(0, 12);
 const len = (s) => Buffer.byteLength(s);
@@ -96,7 +99,7 @@ function tree() {
   return {
     tmp, config, root, to, src, put,
     pin: (rel) => join(to, ...rel.split('/')),
-    opts: (extra = {}) => ({ to, configDir: config, ...extra }),
+    opts: (extra = {}) => ({ to, configDir: config, ...CHUNK_OPT, ...extra }),
     clean: () => { openTree(tmp); rmSync(tmp, { recursive: true, force: true }); },
   };
 }
@@ -4677,47 +4680,69 @@ test('S368 A1, a version of another size: a pin killed between a rename and its 
   } finally { t.clean(); }
 });
 
-/** A patch (childModule's) under which lstat gives one path a size of 2^31 bytes, one more than a pin reads: the file
- *  itself stays small, so no test writes 2 GiB (measured on Box B instead, S368: a 2.3 GB transcript). */
-const tooLargeAt = (p) => `
+/** A patch (childModule's, or a module preloaded by --import) under which lstat gives one path a size of 2^bits bytes:
+ *  the file itself stays small, so no test writes gigabytes (the real ones are measured on Box B: S368, a 2.3 GB
+ *  transcript; S369, the streamed pin). */
+const sizeAt = (p, bits) => `
   const lstat = fs.lstatSync;
   fs.lstatSync = function (path, o) {
     const s = lstat.apply(this, arguments);
-    if (String(path) === ${JSON.stringify(p)}) s.size = o && o.bigint ? 2n ** 31n : 2 ** 31;
+    if (String(path) === ${JSON.stringify(p)}) s.size = o && o.bigint ? 2n ** ${bits}n : 2 ** ${bits};
     return s;
   };`;
+/** The same patch as a module of its own, for the command (node --import). */
+function sizePatch(t, p, bits) {
+  const patch = join(t.tmp, `size-${bits}.mjs`);
+  writeFileSync(patch, `import fs from 'node:fs';\nimport { syncBuiltinESMExports } from 'node:module';\n${sizeAt(p, bits)}\nsyncBuiltinESMExports();\n`);
+  return patch;
+}
 
-test('S368 B5: a source larger than a pin reads (2 GiB) is a failure before anything is read (ERR_FS_FILE_TOO_LARGE), as in 0.2.0, and its copy stays as it was (a first repair read it in parts, and wrote a copy cut at a wrapped offset)', async () => {
+test('S369 B5: a source of 2 GiB or more (lstat gives it 2^31 bytes here) is pinned like any other, since no file is read whole (until 0.2.1 every pin failed on it, ERR_FS_FILE_TOO_LARGE)', async () => {
   const t = tree();
   try {
     const rel = `${Q}/${SB}.jsonl`;
     await pinPaths([t.src(Q)], t.opts());
     appendFileSync(t.src(rel), L4);
-    const log = logText(t.to);
-    const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts())}); process.stdout.write(JSON.stringify(r));`, { patch: tooLargeAt(t.src(rel)) }));
-    assert.deepEqual(r.failures, [{ path: t.src(rel), rel, op: 'read', code: 'ERR_FS_FILE_TOO_LARGE' }]);
-    assert.deepEqual([r.lines, logText(t.to), readFileSync(t.pin(rel), 'utf8')], [[], log, PINNED[rel]]);
+    const want = PINNED[rel] + L4;
+    const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts())}); process.stdout.write(JSON.stringify(r));`, { patch: sizeAt(t.src(rel), 31) }));
+    assert.deepEqual(r.failures, []);
+    assert.deepEqual(r.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256]), [[rel, 'grown', len(want), sha(want)]]);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), want);
+    checkClean(await checkPin(t.to));
   } finally { t.clean(); }
 });
 
-test('S368 B5: --check counts the sources larger than a pin reads (staleness.tooLarge), and ltms pin --check exits 1 on one, saying every pin fails on it', async () => {
+test('S369 B5: --check counts no source of 2 GiB or more as too large (staleness.tooLarge 0), and ltms pin --check exits 0 on one (until 0.2.1 it counted it, and exited 1)', async () => {
   const t = tree();
   try {
     const rel = `${Q}/${SB}.jsonl`;
     await pinPaths([t.root], t.opts());
-    const k = ranTo(childModule(`const k = await checkPin(${JSON.stringify(t.to)}); process.stdout.write(JSON.stringify(k));`, { patch: tooLargeAt(t.src(rel)) }));
+    const k = ranTo(childModule(`const k = await checkPin(${JSON.stringify(t.to)}); process.stdout.write(JSON.stringify(k));`, { patch: sizeAt(t.src(rel), 31) }));
+    assert.equal(k.staleness.tooLarge, 0);
+    const c = spawnSync(process.execPath, ['--import', pathToFileURL(sizePatch(t, t.src(rel), 31)).href, CLI, 'pin', '--check', t.to], { encoding: 'utf8', timeout: 60000, cwd: t.tmp,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: t.config } });
+    assert.equal(c.status, 0, c.stderr);
+    assert.equal(rowsOf(c.stdout)[0].staleness.tooLarge, 0);
+  } finally { t.clean(); }
+});
+
+test('S369: a source larger than a pin can address (lstat gives it 2^53 bytes, past the positions a JavaScript number holds exactly) is a failure before anything is read (ERR_FS_FILE_TOO_LARGE), its copy as it was; --check counts it (tooLarge) and exits 1, saying why', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    await pinPaths([t.root], t.opts());
+    appendFileSync(t.src(rel), L4);
+    const log = logText(t.to);
+    const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts())}); process.stdout.write(JSON.stringify(r));`, { patch: sizeAt(t.src(rel), 53) }));
+    assert.deepEqual(r.failures, [{ path: t.src(rel), rel, op: 'read', code: 'ERR_FS_FILE_TOO_LARGE' }]);
+    assert.deepEqual([r.lines, logText(t.to), readFileSync(t.pin(rel), 'utf8')], [[], log, PINNED[rel]]);
+    const k = ranTo(childModule(`const k = await checkPin(${JSON.stringify(t.to)}); process.stdout.write(JSON.stringify(k));`, { patch: sizeAt(t.src(rel), 53) }));
     assert.equal(k.staleness.tooLarge, 1);
-    const clean = await checkPin(t.to);
-    assert.equal(clean.staleness.tooLarge, 0);
-    // the command, the same patch preloaded (node --import)
-    const patch = join(t.tmp, 'too-large.mjs');
-    writeFileSync(patch, `import fs from 'node:fs';\nimport { syncBuiltinESMExports } from 'node:module';\n${tooLargeAt(t.src(rel))}\nsyncBuiltinESMExports();\n`);
-    const c = spawnSync(process.execPath, ['--import', pathToFileURL(patch).href, CLI, 'pin', '--check', t.to], { encoding: 'utf8', timeout: 60000, cwd: t.tmp,
+    const c = spawnSync(process.execPath, ['--import', pathToFileURL(sizePatch(t, t.src(rel), 53)).href, CLI, 'pin', '--check', t.to], { encoding: 'utf8', timeout: 60000, cwd: t.tmp,
       env: { ...process.env, CLAUDE_CONFIG_DIR: t.config } });
     assert.equal(c.status, 1, c.stderr);
     assert.equal(rowsOf(c.stdout)[0].staleness.tooLarge, 1);
-    assert.match(c.stderr, new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is larger than a pin reads \\(2 GiB\\): every pin fails on it \\(ERR_FS_FILE_TOO_LARGE\\), and no copy of its later lines is kept\\.$`, 'm'));
-    assert.equal(ltms(t, ['pin', '--check', t.to]).code, 0, 'without the patch: 0');
+    assert.match(c.stderr, new RegExp(`^ltms pin: 1 file under the root '${escapeRe(t.root)}' is larger than a pin can address \\(2\\^53 - 1 bytes\\): every pin fails on it \\(ERR_FS_FILE_TOO_LARGE\\), and no copy of its later lines is kept\\.$`, 'm'));
   } finally { t.clean(); }
 });
 
@@ -4756,3 +4781,239 @@ test('S368 (re-check A1): --rehash, a .jsonl copy holding its version and then b
     assert.equal(readFileSync(t.pin(rel), 'utf8'), damaged, 'the copy is not cut back');
   } finally { other.kill(); t.clean(); }
 });
+
+// ---- S369: the streamed read and write ---------------------------------------------------------------------------
+// Until 0.2.1 a pin read each file whole: a source of 2 GiB or more could not be pinned at all (B5), and one larger than
+// the memory a pin could use ended every pin at it. Each file is now read and written in chunks (PinOptions.chunkBytes),
+// so the memory a pin needs does not grow with the file. The tests below measure that growth in a child (its own peak
+// resident memory, VmHWM in /proc/self/status, before and after one pinPaths call; not process.resourceUsage().maxRSS,
+// which on Linux carries the PARENT's peak across exec: measured, it read 0 growth for 0.2.1's whole reads under this
+// test process) on a transcript of BIG_MB MiB, for each path that read a file whole: a new file, a grown one, a
+// rewritten one, --rehash over a copy with damage after its version, a temp a killed pin left, and recovery of a copy
+// cut short. Each is red on 0.2.1's code (measured, S369: new 38.1 MiB, grown 39.4, rewritten 69.5; this code at the
+// default chunk 6.5, 7.2, 7.2, and as much for 8 or 96 MiB files). Run at the default chunk, whatever LTMS_TEST_CHUNK.
+
+const BIG_MB = 32, GROWTH_MB = 16;
+/** A transcript of about mb MiB: lines of about 1 KiB, each told apart by tag and its number. */
+const bigText = (mb, tag) => Array.from({ length: mb * 1024 }, (_, i) => `{"type":"user","text":"${tag} ${i} ${'x'.repeat(990)}"}\n`).join('');
+/** One pinPaths call in a child: how much its peak resident memory grew across the call (KiB), and its result. */
+function pinPeak(t, paths, extra = {}) {
+  return ranTo(childModule(`
+    const hwm = () => Number(/VmHWM:\\s+(\\d+) kB/.exec(fs.readFileSync('/proc/self/status', 'utf8'))[1]);
+    const before = hwm();
+    const r = await pinPaths(${JSON.stringify(paths)}, ${JSON.stringify(t.opts({ chunkBytes: 1 << 20, ...extra }))});
+    process.stdout.write(JSON.stringify({ grewKiB: hwm() - before, r }));`, { ms: 120000 }));
+}
+const underGrowth = (m, what) => assert.ok(m.grewKiB < GROWTH_MB * 1024, `${what}: the peak grew by ${(m.grewKiB / 1024).toFixed(1)} MiB, over ${GROWTH_MB} MiB`);
+
+test(`S369 memory: a first pin of a ${BIG_MB} MiB transcript grows a pin's peak memory by less than ${GROWTH_MB} MiB (until 0.2.1, by the whole file)`, { skip: LINUX_PROC }, () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, body = bigText(BIG_MB, 'v1');
+    writeFileSync(t.src(rel), body);
+    const m = pinPeak(t, [t.src(Q)]);
+    assert.deepEqual(m.r.failures, []);
+    assert.deepEqual(m.r.lines.filter((l) => l.rel === rel).map((l) => [l.how, l.bytes, l.sha256]), [['new', len(body), sha(body)]]);
+    assert.equal(sha(readFileSync(t.pin(rel))), sha(body));
+    underGrowth(m, 'new');
+  } finally { t.clean(); }
+});
+
+test(`S369 memory: pins of a grown and of a rewritten ${BIG_MB} MiB transcript each grow a pin's peak memory by less than ${GROWTH_MB} MiB (until 0.2.1, by the file, and by the copy too for a rewrite)`, { skip: LINUX_PROC }, async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = bigText(BIG_MB, 'v1');
+    writeFileSync(t.src(rel), v1);
+    assert.deepEqual(pinPeak(t, [t.src(Q)]).r.failures, []);
+    const v2 = v1 + L4;
+    appendFileSync(t.src(rel), L4);
+    const g = pinPeak(t, [t.src(Q)]);
+    assert.deepEqual(g.r.failures, []);
+    assert.deepEqual(g.r.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256]), [[rel, 'grown', len(v2), sha(v2)]]);
+    underGrowth(g, 'grown');
+    const v3 = bigText(BIG_MB, 'v3');
+    writeFileSync(t.src(rel), v3);
+    const w = pinPeak(t, [t.src(Q)]);
+    assert.deepEqual(w.r.failures, []);
+    assert.deepEqual(w.r.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256, l.kept]), [[rel, 'rewritten', len(v3), sha(v3), `${Q}/${SB}.superseded-${sha12(v2)}.jsonl`]]);
+    assert.equal(sha(readFileSync(t.pin(rel))), sha(v3));
+    assert.equal(sha(readFileSync(t.pin(`${Q}/${SB}.superseded-${sha12(v2)}.jsonl`))), sha(v2));
+    underGrowth(w, 'rewritten');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test(`S369 memory: --rehash over a ${BIG_MB} MiB copy with damage after its version (cut back, then written again) grows a pin's peak memory by less than ${GROWTH_MB} MiB (until 0.2.1, by the source and the copy)`, { skip: LINUX_PROC }, async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = bigText(BIG_MB, 'v1');
+    writeFileSync(t.src(rel), v1);
+    assert.deepEqual(pinPeak(t, [t.src(Q)]).r.failures, []);
+    appendFileSync(t.pin(rel), '{"type":"assistant","te');          // bytes no pin wrote, after its version
+    const m = pinPeak(t, [t.src(Q)], { rehash: true });
+    assert.deepEqual(m.r.failures, []);
+    assert.equal(sha(readFileSync(t.pin(rel))), sha(v1));
+    underGrowth(m, 'rehash');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test(`S369 memory: a ${BIG_MB} MiB temp a killed pin left, settled by the next pin (kept: no copy holds it), and recovery of a copy cut short, each grow a pin's peak memory by less than ${GROWTH_MB} MiB (until 0.2.1, by the temp and the files it is compared with)`, { skip: LINUX_PROC }, async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = bigText(BIG_MB, 'v1');
+    writeFileSync(t.src(rel), v1);
+    assert.deepEqual(pinPeak(t, [t.src(Q)]).r.failures, []);
+    appendFileSync(t.src(rel), L4);
+    const c = childPin(t, [t.src(Q)], 'temp-written', rel, KILL, { chunkBytes: 1 << 20 });   // dies with v1 + L4 whole in its temp
+    assert.equal(c.signal, 'SIGKILL', c.stderr);
+    const k = `${Q}/${SB}.superseded-${sha12(v1 + L4)}.jsonl`;
+    const s = pinPeak(t, [t.src(Q)]);
+    assert.deepEqual(s.r.failures, []);
+    assert.deepEqual(s.r.lines.filter((l) => l.rel !== undefined).map((l) => [l.rel, l.how, l.bytes]), [[k, 'recovered', len(v1 + L4)], [rel, 'grown', len(v1 + L4)]]);   // after the killed pin's takeover line
+    underGrowth(s, 'a killed pin\'s temp');
+    // a copy cut short by hand: recovery records what it holds, and the pin writes the source's version again
+    const half = readFileSync(t.pin(rel)).subarray(0, len(v1) >> 1);
+    writeFileSync(t.pin(rel), half);
+    const r = pinPeak(t, [t.src(Q)]);
+    assert.deepEqual(r.r.failures, []);
+    assert.deepEqual(r.r.lines.map((l) => [l.rel, l.how, l.bytes]), [[rel, 'recovered', half.length], [rel, 'grown', len(v1 + L4)]]);
+    assert.equal(sha(readFileSync(t.pin(rel))), sha(v1 + L4));
+    underGrowth(r, 'recovery');
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+/** A transcript whose new lines fall at every place in a chunk of each size tried below: lines of 1 to 29 bytes. */
+const ragged = (tag, n) => Array.from({ length: n }, (_, i) => `${tag}${'.'.repeat(i % 29)}\n`).join('');
+/** The bytes a pin copies of a .jsonl: up to its last new line. */
+const whole = (s) => s.slice(0, s.lastIndexOf('\n') + 1);
+
+test('S369 chunks: at every chunk size (1 to 64 bytes), a transcript and a tool result are pinned new, unchanged with a line not finished, grown, and rewritten exactly as their bytes say (new lines and the lengths lines record falling at every place in a chunk)', async () => {
+  for (const chunkBytes of [1, 2, 3, 5, 7, 8, 13, 64]) {
+    const t = tree();
+    try {
+      const rel = `${Q}/${SB}.jsonl`, txt = `${P}/${SA}/tool-results/b000000001.txt`;
+      const at = (r) => r.lines.filter((l) => l.rel === rel || l.rel === txt).map((l) => [l.rel, l.how, l.bytes, l.sha256]);
+      const pin = async () => { const r = await pinPaths([t.root], t.opts({ chunkBytes })); assert.deepEqual(r.failures, [], `chunk ${chunkBytes}`); return r; };
+      const v1 = ragged('a', 40), t1 = 'tool output with no new line at its end';
+      writeFileSync(t.src(rel), v1);
+      writeFileSync(t.src(txt), t1);
+      await pinPaths([t.root], t.opts({ chunkBytes: 4096 }));   // the base tree's other files, at another size
+      let r = await pin();
+      assert.deepEqual(at(r), [], `chunk ${chunkBytes}: as pinned`);
+      appendFileSync(t.src(rel), '{"type":"assis');                // a line not finished: nothing whole to add
+      r = await pin();
+      assert.deepEqual([at(r), r.coverage.partial >= 1], [[], true], `chunk ${chunkBytes}: unfinished`);
+      const v2 = v1 + '{"type":"assis' + ragged('b', 31), t2 = t1 + ragged('c', 9);
+      writeFileSync(t.src(rel), v2 + 'tail with no new line');
+      writeFileSync(t.src(txt), t2);
+      r = await pin();
+      assert.deepEqual(at(r), [[txt, 'grown', len(t2), sha(t2)], [rel, 'grown', len(whole(v2)), sha(whole(v2))]].sort(), `chunk ${chunkBytes}: grown`);
+      assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), readFileSync(t.pin(txt), 'utf8')], [whole(v2), t2]);
+      const v3 = ragged('d', 37), t3 = ragged('e', 5);
+      writeFileSync(t.src(rel), v3);
+      writeFileSync(t.src(txt), t3);
+      r = await pin();
+      assert.deepEqual(at(r), [[txt, 'rewritten', len(t3), sha(t3)], [rel, 'rewritten', len(v3), sha(v3)]].sort(), `chunk ${chunkBytes}: rewritten`);
+      assert.deepEqual([readFileSync(t.pin(rel), 'utf8'), readFileSync(t.pin(`${Q}/${SB}.superseded-${sha12(whole(v2))}.jsonl`), 'utf8')], [v3, whole(v2)]);
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('S369: a source rewritten, or cut short, between the read that decides and the read that writes is not written (a failure, op read, source-changed): a grown copy, its line and the pin stay as they were, and the next pin pins the source as it is then', async () => {
+  for (const change of ['rewritten', 'cut short']) {
+    const t = tree();
+    try {
+      const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel];
+      await pinPaths([t.src(Q)], t.opts());
+      appendFileSync(t.src(rel), L4);                                // grown: the decision is to write v1 + L4
+      const v3 = change === 'rewritten' ? L5 + L4 + L1 : v1;
+      const before = snapshot(t.to);
+      const r = await pinPaths([t.src(Q)], t.opts({ onStep(step, at) { if (step === 'read' && at === rel) writeFileSync(t.src(rel), v3); } }));
+      assert.deepEqual(r.failures, [{ path: t.src(rel), rel, op: 'read', code: 'source-changed' }], change);
+      assert.deepEqual([r.lines, snapshot(t.to)], [[], before], `${change}: nothing written, no temp left`);
+      const n = await pinPaths([t.src(Q)], t.opts());
+      assert.deepEqual(n.failures, []);
+      assert.deepEqual(n.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256]), change === 'rewritten' ? [[rel, 'rewritten', len(v3), sha(v3)]] : [], change);
+      checkClean(await checkPin(t.to));
+    } finally { t.clean(); }
+  }
+});
+
+test('S369: a rewritten source that changes again after its old copy was kept (between the two reads) is not written (source-changed); the kept copy stays, as after a pin stopped at its link: the next pin records it, and keeps nothing twice', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel], k = `${Q}/${SB}.superseded-${sha12(v1)}.jsonl`;
+    await pinPaths([t.src(Q)], t.opts());
+    writeFileSync(t.src(rel), L4 + L5);                             // rewritten: v1 is kept by a link, then the write
+    const r = await pinPaths([t.src(Q)], t.opts({ onStep(step, at) { if (step === 'linked' && at === rel) writeFileSync(t.src(rel), L5 + L4); } }));
+    assert.deepEqual(r.failures, [{ path: t.src(rel), rel, op: 'read', code: 'source-changed' }]);
+    assert.deepEqual([r.lines, readFileSync(t.pin(rel), 'utf8'), statSync(t.pin(k)).ino], [[], v1, statSync(t.pin(rel)).ino]);
+    const n = await pinPaths([t.src(Q)], t.opts());
+    assert.deepEqual(n.failures, []);
+    assert.deepEqual(n.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256, l.kept]), [[k, 'recovered', len(v1), sha(v1), undefined], [rel, 'rewritten', len(L5 + L4), sha(L5 + L4), k]]);
+    assert.deepEqual([readFileSync(t.pin(k), 'utf8'), readFileSync(t.pin(rel), 'utf8')], [v1, L5 + L4]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+test('S369: a source that grows between the read that decides and the read that writes is pinned as the decision read it: the bytes it gained are the next pin\'s', async () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`, v1 = PINNED[rel];
+    await pinPaths([t.src(Q)], t.opts());
+    appendFileSync(t.src(rel), L4);
+    const r = await pinPaths([t.src(Q)], t.opts({ onStep(step, at) { if (step === 'read' && at === rel) appendFileSync(t.src(rel), L5); } }));
+    assert.deepEqual(r.failures, []);
+    assert.deepEqual(r.lines.map((l) => [l.rel, l.how, l.bytes, l.sha256]), [[rel, 'grown', len(v1 + L4), sha(v1 + L4)]]);
+    assert.equal(readFileSync(t.pin(rel), 'utf8'), v1 + L4);
+    const n = await pinPaths([t.src(Q)], t.opts());
+    assert.deepEqual(n.lines.map((l) => [l.rel, l.how, l.bytes]), [[rel, 'grown', len(v1 + L4 + L5)]]);
+    checkClean(await checkPin(t.to));
+  } finally { t.clean(); }
+});
+
+// LTMS_BIG_DIR=<a directory on a disk, not tmpfs, with 10 GB free> runs the big tests (Box B, S369): real files past the
+// sizes that ended pins until 0.2.1, each pin in a child under a memory limit (systemd-run --user --scope -p MemoryMax).
+// Each source is sparse (a head of lines, a hole of zeros, a tail of lines), so it costs no disk; its copy is written
+// whole. Each copy is checked by sha256sum, an instrument of its own. Red on 0.2.1's code: the 1.5 GB one is killed at
+// the limit (read whole), the 4.56 GB one is refused (ERR_FS_FILE_TOO_LARGE).
+const BIG_DIR = process.env.LTMS_BIG_DIR;
+for (const [name, SIZE] of [['1.5 GB (more than the memory limit, less than 2 GiB)', 2 ** 30 + 2 ** 29], ['4.56 GB (past 2^31 and 2^32 bytes)', 2 ** 32 + 2 ** 28]]) {
+  test(`S369 big: a transcript of ${name} is pinned new, then grown, by a pin under a memory limit of 256 MiB; each copy is its source byte for byte (sha256sum)`, { skip: (!BIG_DIR && 'set LTMS_BIG_DIR to a directory on a disk (not tmpfs) with 10 GB free; needs systemd-run --user and sha256sum') || LINUX_PROC }, () => {
+    const tmp = realpathSync(mkdtempSync(join(BIG_DIR, 'ltms-big-')));
+    try {
+      const config = join(tmp, 'claude'), proj = join(config, 'projects', Q), to = join(tmp, 'pins');
+      mkdirSync(proj, { recursive: true });
+      const src = join(proj, `${SB}.jsonl`), rel = `${Q}/${SB}.jsonl`;
+      writeFileSync(src, L1 + L2);
+      truncateSync(src, SIZE - len(L3));
+      appendFileSync(src, L3);
+      assert.equal(statSync(src).size, SIZE);
+      const pinIn = (label) => {
+        const code = `import fs from 'node:fs';
+          const hwm = () => Number(/VmHWM:\\s+(\\d+) kB/.exec(fs.readFileSync('/proc/self/status', 'utf8'))[1]);
+          const { pinPaths } = await import(${JSON.stringify(pathToFileURL(PIN).href)});
+          const r = await pinPaths([${JSON.stringify(proj)}], ${JSON.stringify({ to, configDir: config })});
+          process.stdout.write(JSON.stringify({ hwmKiB: hwm(), failures: r.failures, lines: r.lines.filter((l) => l.rel !== undefined).map((l) => [l.rel, l.how, l.bytes, l.sha256]) }));`;
+        const c = spawnSync('systemd-run', ['--user', '--scope', '--quiet', '-p', 'MemoryMax=256M', '-p', 'MemorySwapMax=0', process.execPath, '--input-type=module', '-e', code],
+          { encoding: 'utf8', timeout: 30 * 60000 });
+        assert.equal(c.status, 0, `${label}: the pin ended with status ${c.status}, signal ${c.signal}: ${c.stderr}`);
+        return JSON.parse(c.stdout);
+      };
+      const sha256sum = (p) => spawnSync('sha256sum', [p], { encoding: 'utf8' }).stdout.split(' ')[0];
+      const a = pinIn('new');
+      const s1 = sha256sum(src);
+      assert.deepEqual([a.failures, a.lines], [[], [[rel, 'new', SIZE, s1]]]);
+      assert.equal(sha256sum(join(to, Q, `${SB}.jsonl`)), s1);
+      appendFileSync(src, L4);
+      const b = pinIn('grown');
+      const s2 = sha256sum(src);
+      assert.deepEqual([b.failures, b.lines], [[], [[rel, 'grown', SIZE + len(L4), s2]]]);
+      assert.equal(sha256sum(join(to, Q, `${SB}.jsonl`)), s2);
+      process.stderr.write(`S369 big, ${name}: the pin's peak resident memory (VmHWM) ${(a.hwmKiB / 1024).toFixed(1)} MiB new, ${(b.hwmKiB / 1024).toFixed(1)} MiB grown\n`);
+    } finally { rmSync(tmp, { recursive: true, force: true }); }
+  });
+}

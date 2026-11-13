@@ -52,10 +52,11 @@ export interface PinLogLine {
     /** the sha256 of the bytes of the line before this one (without its new line); null on the first line */
     chain: string | null;
 }
-/** The steps of one file's write, in order, as onStep sees them: `stat` (before the read), `linked` (an old copy kept),
- *  `temp-written` (the temp file written, fsynced and closed), `renamed` (the temp renamed over the copy, and its
- *  directory fsynced), `logged` (the line appended and fsynced); `rename-retry` before each retry on win32. */
-export type PinStep = 'stat' | 'linked' | 'temp-written' | 'renamed' | 'logged' | 'rename-retry';
+/** The steps of one file's write, in order, as onStep sees them: `stat` (before the read), `read` (the source read and
+ *  hashed, nothing of the pin read or written for it yet), `linked` (an old copy kept), `temp-written` (the temp file
+ *  written from the source read again, fsynced and closed), `renamed` (the temp renamed over the copy, and its directory
+ *  fsynced), `logged` (the line appended and fsynced); `rename-retry` before each retry on win32. */
+export type PinStep = 'stat' | 'read' | 'linked' | 'temp-written' | 'renamed' | 'logged' | 'rename-retry';
 /** pinPaths's options. Relative paths resolve against the current directory. */
 export interface PinOptions {
     /** the pin directory, made with mode 0700 when it does not exist */
@@ -75,6 +76,10 @@ export interface PinOptions {
     platform?: string;
     /** called at each step of each file's write (the tests use it to stop a pin at a chosen step) */
     onStep?: (step: PinStep, rel: string) => void;
+    /** the size of each read and write of a file's bytes, in bytes (a whole number from 1 to 2^30; default 1 MiB). No file
+     *  is held whole, so the memory a pin needs does not grow with the files it pins (the tests use small sizes, so that
+     *  each read crosses many) */
+    chunkBytes?: number;
 }
 /** One run's counts. `seen` = new + grown + rewritten + unchanged + notCopied + failed. */
 export interface PinCoverage {
@@ -234,8 +239,9 @@ export interface PinStaleness {
     unfinished: number;
     /** project directories under the root of which the pin holds nothing */
     projectsNotPinned: number;
-    /** of the sources, those larger than a pin reads (PIN_MAX_BYTES, 2 GiB): every pin fails on each, so the pin falls
-     *  behind them for good (also counted in missing or longer) */
+    /** of the sources, those larger than a pin can address (PIN_MAX_BYTES, 2^53 - 1 bytes: a position in a file is a
+     *  JavaScript number): every pin fails on each, so the pin falls behind them for good (also counted in missing or
+     *  longer). Until 0.2.1 the limit was 2 GiB, since a pin read each file whole */
     tooLarge: number;
     /** directories under the root (or the root itself) that could not be read */
     failed: number;

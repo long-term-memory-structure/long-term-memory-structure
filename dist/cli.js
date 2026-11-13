@@ -2246,9 +2246,10 @@ or the lock stayed held; 2 on a usage error or a refusal. --check: 0 when the
 pin holds what PINS.log records; 1 on a mismatch, a chain break, a line that
 is not a log line, a directory under the root that could not be read, a lock
 held for the whole wait, a PINS.log with another name, which every pin
-refuses, or a source larger than a pin reads, 2 GiB (unlogged files, temp
-files, a lock left by a pin that stopped, and missing sources are reported,
-and fail nothing); 2 on a usage error or a directory that is not a pin.
+refuses, or a source larger than a pin can address, 2^53 - 1 bytes
+(unlogged files, temp files, a lock left by a pin that stopped, and missing
+sources are reported, and fail nothing); 2 on a usage error or a directory
+that is not a pin.
 `;
 const PIN_VALUE_OPTIONS = ['--to', '--root', '--check'];
 const PIN_OPTION_KEY = { '--to': 'to', '--root': 'root', '--check': 'check' };
@@ -2582,9 +2583,10 @@ function printChecked(r) {
     }
     // while PINS.log has another name every pin into this directory is refused: the pins have stopped, and a check run
     // from cron says so by its status too (S368, the adversarial reading's B3)
-    // a source larger than a pin reads: every pin fails on it, so the pin is behind it for good (S368, B5)
+    // a source larger than a pin can address: every pin fails on it, so the pin is behind it for good (S368, B5; until
+    // 0.2.1 the limit was 2 GiB, since a pin read each file whole: S369)
     if (s !== null && s.tooLarge)
-        err(`ltms pin: ${plural(s.tooLarge, 'file', 'files')} under the root ${q(s.root)} ${s.tooLarge === 1 ? 'is' : 'are'} larger than a pin reads (2 GiB): every pin fails on ${s.tooLarge === 1 ? 'it' : 'them'} (ERR_FS_FILE_TOO_LARGE), and no copy of ${s.tooLarge === 1 ? 'its' : 'their'} later lines is kept.`);
+        err(`ltms pin: ${plural(s.tooLarge, 'file', 'files')} under the root ${q(s.root)} ${s.tooLarge === 1 ? 'is' : 'are'} larger than a pin can address (2^53 - 1 bytes): every pin fails on ${s.tooLarge === 1 ? 'it' : 'them'} (ERR_FS_FILE_TOO_LARGE), and no copy of ${s.tooLarge === 1 ? 'its' : 'their'} later lines is kept.`);
     return damage || (s !== null && (s.failed || s.tooLarge)) || !pinRuns ? 1 : 0;
 }
 async function pinMain(argv) {

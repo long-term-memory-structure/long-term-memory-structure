@@ -89,9 +89,9 @@ const codeOf = (e) => {
     return typeof c === 'string' ? c : e instanceof Error ? e.name : 'Error';
 };
 /** An error the file system raised (it carries an errno code and a syscall), or a file of the pin that is not a regular
- *  file (NotRegularFile), as against a bug, or an error thrown by onStep: those are not failures of one file, and are
- *  thrown on. */
-const isFsError = (e) => e instanceof NotRegularFile
+ *  file (NotRegularFile) or that changed under the pin (CopyChanged), as against a bug, or an error thrown by onStep:
+ *  those are not failures of one file, and are thrown on. */
+const isFsError = (e) => e instanceof NotRegularFile || e instanceof CopyChanged
     || (e instanceof Error && typeof e.code === 'string' && typeof e.syscall === 'string');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
@@ -113,12 +113,85 @@ function writeAll(fd, b) {
     for (let off = 0; off < b.length;)
         off += writeSync(fd, b, off, b.length - off);
 }
-/** The largest file pin reads: Node's Buffer indexOf and lastIndexOf take a 32-bit offset (measured, node 24: on a 2.4 GB
- *  buffer, lastIndexOf found its last new line at -1,883,242,454), and fs.writeSync refuses a length over 2^31 - 1. A
- *  larger file is a failure, ERR_FS_FILE_TOO_LARGE, before anything is read (as 0.2.0 failed on it), and --check counts
- *  it (PinStaleness.tooLarge). S368: a first repair read such a file in parts, and wrote a copy cut at a wrapped offset. */
-const PIN_MAX_BYTES = 2 ** 31 - 1;
-/** An open file's bytes, read to its end (it may have grown since its size was taken). */
+/** The largest file a pin addresses: a position in a file is a JavaScript number, exact up to 2^53 - 1. A larger file is a
+ *  failure, ERR_FS_FILE_TOO_LARGE, before anything is read, and --check counts it (PinStaleness.tooLarge). Until 0.2.1 a
+ *  pin read each file whole, into one Buffer, and the limit was 2^31 - 1: Node's Buffer indexOf and lastIndexOf take a
+ *  32-bit offset (measured, node 24: on a 2.4 GB buffer, lastIndexOf found its last new line at -1,883,242,454), and
+ *  fs.writeSync refuses a longer length. S369: no file is held whole; each is read and written in chunks (pass). */
+const PIN_MAX_BYTES = Number.MAX_SAFE_INTEGER;
+/** The size of each read and write of a file's bytes, unless PinOptions.chunkBytes gives another. */
+const CHUNK_BYTES = 1 << 20;
+const chunkOf = (o) => {
+    const c = o?.chunkBytes;
+    return typeof c === 'number' && Number.isSafeInteger(c) && c >= 1 && c <= 2 ** 30 ? c : CHUNK_BYTES;
+};
+const EMPTY_SHA256 = sha256(new Uint8Array(0));
+/** One pass over the open file fd from its start, read through buf (buf.length bytes at a time, never more held), to
+ *  its end or to `limit` bytes: what Pass says. The hash is taken in pieces, split at each mark and after the last new
+ *  line of each chunk, a copy of its state kept at each (Hash.copy). `sink` gets each chunk as it is read, before the
+ *  next read reuses buf. Passes never nest, so one buf serves a whole run (Env.chunk). Throws as readSync throws, and
+ *  as sink throws. */
+function pass(fd, buf, o = {}) {
+    const marks = [...new Set(o.marks ?? [])].filter((m) => Number.isSafeInteger(m) && m >= 0).sort((a, b) => a - b);
+    const limit = o.limit ?? Infinity;
+    const h = createHash('sha256'), at = new Map();
+    let pos = 0, m = 0, cut = 0, cutH = null, nlAfter = false, lastByte = -1;
+    for (; m < marks.length && marks[m] === 0; m++)
+        at.set(0, EMPTY_SHA256);
+    while (pos < limit) {
+        const n = readSync(fd, buf, 0, Math.min(buf.length, limit - pos), pos);
+        if (n === 0)
+            break;
+        const b = buf.subarray(0, n);
+        o.sink?.(b);
+        const points = []; // [offset in b, true for a mark / false for the cut]
+        for (; m < marks.length && marks[m] <= pos + n; m++)
+            points.push([marks[m] - pos, true]);
+        const nl = b.lastIndexOf(0x0a);
+        if (nl >= 0)
+            points.push([nl + 1, false]);
+        points.sort((x, y) => x[0] - y[0]);
+        let from = 0;
+        for (const [to, isMark] of points) {
+            if (to > from) {
+                h.update(b.subarray(from, to));
+                from = to;
+            }
+            if (isMark)
+                at.set(pos + to, h.copy().digest('hex'));
+            else {
+                cutH = h.copy();
+                cut = pos + to;
+            }
+        }
+        if (from < n)
+            h.update(b.subarray(from, n));
+        if (o.nlFrom !== undefined && !nlAfter && pos + n > o.nlFrom && b.indexOf(0x0a, Math.max(0, o.nlFrom - pos)) >= 0)
+            nlAfter = true;
+        lastByte = b[n - 1];
+        pos += n;
+    }
+    return { bytes: pos, sha256: h.digest('hex'), at, cut, cutSha256: cutH === null ? EMPTY_SHA256 : cutH.digest('hex'), nlAfter, lastByte };
+}
+/** A pass over a regular file, opened by openRegular's rules (never through a symbolic link, never waiting on a FIFO).
+ *  Throws as openRegular and pass throw. */
+function passRegular(path, chunk, o) {
+    const fd = openRegular(path, fsConstants.O_RDONLY);
+    try {
+        return pass(fd, chunk, o);
+    }
+    finally {
+        closeSync(fd);
+    }
+}
+/** Copies the first n bytes of the open file src to the open file dst (at dst's own position), through chunk; the
+ *  sha256 of what was copied, or null when src holds fewer than n bytes. */
+function copyPrefix(src, dst, n, chunk) {
+    const p = pass(src, chunk, { limit: n, sink: (b) => writeAll(dst, b) });
+    return p.bytes === n ? p.sha256 : null;
+}
+/** An open file's bytes, read to its end (it may have grown since its size was taken). Only for the pin's small files of
+ *  its own: the lock, and PINS.log. */
 function readFd(fd, size) {
     let buf = Buffer.allocUnsafe(Math.max(size, 0)), n = 0;
     for (;;) {
@@ -140,16 +213,6 @@ function readFd(fd, size) {
         n += r;
     }
 }
-/** A file's bytes, read once, to its end. */
-function readWhole(path, size) {
-    const fd = openSync(path, 'r');
-    try {
-        return readFd(fd, size);
-    }
-    finally {
-        closeSync(fd);
-    }
-}
 /** What a path that is not a regular file is, as lstat saw it. */
 function kindOf(st) {
     return st.isSymbolicLink() ? 'a symbolic link' : st.isDirectory() ? 'a directory' : st.isFIFO() ? 'a FIFO'
@@ -167,6 +230,16 @@ class NotRegularFile extends Error {
         this.kind = kind;
     }
     get link() { return this.kind === 'a symbolic link'; }
+}
+/** A copy that no longer held, when it was read again to be written, the bytes a pass over it had found a moment before
+ *  (something else wrote to it meanwhile): nothing is written. Its code is a failure's: `copy-changed`. */
+class CopyChanged extends Error {
+    path;
+    code = 'copy-changed';
+    constructor(path) {
+        super(`'${path}' changed while the pin read it`);
+        this.path = path;
+    }
 }
 /** Where the platform defines them (not on win32): an open that fails on a symbolic link, and one that does not wait (a
  *  FIFO opened to read waits for a writer, and opened to write, for a reader). Neither changes how a regular file reads. */
@@ -970,8 +1043,8 @@ function unlistedOver(e, rel) {
 function heldKept(e, rel, v) {
     const k = keptRel(rel, v.sha256);
     try {
-        const b = readRegular(under(e.to, k));
-        return b.length === v.bytes && sha256(b) === v.sha256 ? k : null;
+        const p = passRegular(under(e.to, k), e.chunk);
+        return p.bytes === v.bytes && p.sha256 === v.sha256 ? k : null;
     }
     catch (err) {
         if (!isFsError(err))
@@ -979,13 +1052,14 @@ function heldKept(e, rel, v) {
         return null;
     }
 }
-/** Keeps bytes b, which the copy at rel holds and which no line records as rel's version, before anything is written over
- *  them: linked to the kept name of their own bytes (keptRel; never over another file), a file of the pin of its own,
- *  with a recovered line that records it (prev null) unless a line names it already. Null, with a failure, when that
- *  name holds other bytes or the link fails: then nothing may be written over the copy (S368: --rehash wrote a copy
- *  again from its source, and lost what it held, the adversarial reading's A1). */
-function keepAside(e, rel, b) {
-    const sha = sha256(b), k = keptRel(rel, sha), kAbs = under(e.to, k);
+/** Keeps the bytes the copy at rel holds (`bytes` of them, whose sha256 is `sha`: a pass over it), which no line records
+ *  as rel's version, before anything is written over them: linked to the kept name of their own bytes (keptRel; never
+ *  over another file), a file of the pin of its own, with a recovered line that records it (prev null) unless a line
+ *  names it already. Null, with a failure, when that name holds other bytes or the link fails: then nothing may be
+ *  written over the copy (S368: --rehash wrote a copy again from its source, and lost what it held, the adversarial
+ *  reading's A1). */
+function keepAside(e, rel, bytes, sha) {
+    const k = keptRel(rel, sha), kAbs = under(e.to, k);
     const fail = (code) => {
         if (typeof code !== 'string' && !isFsError(code))
             throw code;
@@ -1003,12 +1077,12 @@ function keepAside(e, rel, b) {
             return fail(err);
         let there;
         try {
-            there = readRegular(kAbs);
+            there = passRegular(kAbs, e.chunk);
         }
         catch (err2) {
             return fail(err2);
         }
-        if (sha256(there) !== sha)
+        if (there.sha256 !== sha)
             return fail('kept-copy-differs');
     }
     try {
@@ -1023,7 +1097,7 @@ function keepAside(e, rel, b) {
             mtime = isoNs(lstatSync(kAbs, { bigint: true }).mtimeNs);
         }
         catch { /* linked a moment ago */ }
-        e.log.append({ t: now(), rel: k, how: 'recovered', bytes: b.length, sha256: sha, prev: null, ...(mtime === null ? {} : { mtime }) });
+        e.log.append({ t: now(), rel: k, how: 'recovered', bytes, sha256: sha, prev: null, ...(mtime === null ? {} : { mtime }) });
     }
     e.present.add(k);
     if (!e.keptAside.includes(k))
@@ -1055,47 +1129,22 @@ function linkOnTheWay(to, dir, seen) {
     seen.set(dir, found);
     return found;
 }
-/** Whether the file at path is exactly buf's first n bytes, read in chunks of 1 MiB, never whole, as a regular file: a
- *  grown copy is checked so, beside the source already held (S368, the re-check's A2: reading the copy whole doubled
- *  the memory a pin needs, and under a limit killed pins that 0.2.0 finished). False when it cannot be read. */
-function equalsPrefix(path, buf, n) {
-    let fd;
+/** Whether the copy at path holds exactly version v (one pass); a copy that cannot be read, or is not a regular file,
+ *  does not. */
+function holds(path, v, chunk) {
     try {
-        fd = openRegular(path, fsConstants.O_RDONLY);
-    }
-    catch {
-        return false;
-    }
-    try {
-        if (fstatSync(fd).size !== n || n > buf.length)
-            return false;
-        const chunk = Buffer.allocUnsafe(Math.min(1 << 20, Math.max(n, 1)));
-        for (let pos = 0; pos < n;) {
-            const r = readSync(fd, chunk, 0, Math.min(chunk.length, n - pos), pos);
-            if (r === 0 || !chunk.subarray(0, r).equals(buf.subarray(pos, pos + r)))
-                return false;
-            pos += r;
-        }
-        return true;
-    }
-    catch {
-        return false;
-    }
-    finally {
-        closeSync(fd);
-    }
-}
-/** Whether the copy at path holds exactly version v; a copy that cannot be read, or is not a regular file, does not. */
-function holds(path, v) {
-    try {
-        const b = readRegular(path);
-        return b.length === v.bytes && sha256(b) === v.sha256;
+        const p = passRegular(path, chunk);
+        return p.bytes === v.bytes && p.sha256 === v.sha256;
     }
     catch {
         return false;
     }
 }
-/** One file: stat, read once, cut, hash, decide, keep the old copy, write, rename, log. */
+/** One file: stat; one pass over the source (cut, hash, the prefix hashes the decision needs); decide; one pass over the
+ *  copy; keep the old copy; write (the source read again, up to the cut, and checked against the decision's hash);
+ *  rename; log. No file is held whole: each is read and written in chunks (Env.chunk), so the memory a pin needs does
+ *  not grow with the file (S369: until 0.2.1 the source and the copy were read whole, a source of 2 GiB or more could
+ *  not be pinned, and one larger than the memory a pin could use ended every pin at it). */
 function pinOne(rel, src, e) {
     const last = e.log.st.byRel.get(rel);
     const dst = under(e.to, rel);
@@ -1136,28 +1185,44 @@ function pinOne(rel, src, e) {
     // scan does not see it (the scan does not follow links), and be written again on every run
     if (linkOnTheWay(e.to, dirname(dst), e.linkTo) !== null)
         return fail('write', dst, 'symlink-in-pin');
-    let buf;
+    // the copy's size now: a mark of the pass over the source, so that whether the copy is a byte prefix of the source is a
+    // compare of two sha256s below (a copy whose size changes before it is read is then taken for no prefix: a rewrite,
+    // which keeps it)
+    let pre = null;
     try {
-        buf = readWhole(src, size);
+        const d = lstatSync(dst);
+        if (d.isFile())
+            pre = d.size;
+    }
+    catch { /* none: looked at again below */ }
+    // one pass over the source: its length, the sha256 at the cut and at the length the old copy claims
+    let p;
+    try {
+        const fd = openSync(src, 'r');
+        try {
+            p = pass(fd, e.chunk, { marks: [...(last === undefined ? [] : [last.bytes]), ...(pre === null ? [] : [pre])] });
+        }
+        finally {
+            closeSync(fd);
+        }
     }
     catch (err) {
-        if (err instanceof RangeError)
-            return fail('read', src, 'ERR_FS_FILE_TOO_LARGE');
         if (!isFsError(err))
             throw err;
         return fail('read', src, err);
     }
+    e.onStep?.('read', rel);
     // a .jsonl is cut at its last new line; one with none yet (or empty) has nothing whole to pin, and is not copied
     const jsonl = rel.endsWith('.jsonl');
-    const cut = jsonl ? buf.lastIndexOf(0x0a) + 1 : buf.length;
-    const partial = jsonl && cut < buf.length;
+    const cut = jsonl ? p.cut : p.bytes;
+    const partial = jsonl && cut < p.bytes;
     if (jsonl && cut === 0) {
         // nothing whole to copy. A copy that recovery left to this run (rehash: its version, then bytes no pin wrote) is cut
         // back to that version, so that those bytes never stand as one
         if (e.rehash && present && last !== undefined) {
             let held = null;
             try {
-                held = readRegular(dst);
+                held = passRegular(dst, e.chunk, { marks: [last.bytes], nlFrom: last.bytes });
             }
             catch (err) {
                 if (!isFsError(err))
@@ -1166,7 +1231,7 @@ function pinOne(rel, src, e) {
             if (held !== null && startsWith(held, last) && damageAfter(held, last, rel)) {
                 e.guard();
                 try {
-                    cutBack(dst, held, last, e.platform);
+                    cutBack(dst, last, e.platform, e.chunk);
                 }
                 catch (err) {
                     if (!isFsError(err))
@@ -1177,18 +1242,9 @@ function pinOne(rel, src, e) {
         }
         return { how: 'notCopied', partial, bytes: 0, again: null, lost: false };
     }
-    // the sha256 of the prefix the old copy claims and of the bytes up to the cut, in one pass
-    const h = createHash('sha256');
-    let prefix = null;
-    if (last !== undefined && last.bytes <= cut) {
-        h.update(buf.subarray(0, last.bytes));
-        prefix = h.copy().digest('hex');
-        h.update(buf.subarray(last.bytes, cut));
-    }
-    else
-        h.update(buf.subarray(0, cut));
-    const sha = h.digest('hex');
-    const body = buf.subarray(0, cut);
+    // the sha256 of the bytes up to the cut, and of the prefix the old copy claims, from the one pass
+    const sha = jsonl ? p.cutSha256 : p.sha256;
+    const prefix = last !== undefined && last.bytes <= cut ? p.at.get(last.bytes) ?? null : null;
     let how;
     let prev = last === undefined ? null : { bytes: last.bytes, sha256: last.sha256 };
     let again = null;
@@ -1198,7 +1254,7 @@ function pinOne(rel, src, e) {
         // the source holds the version its last line records: the copy is that version, unless it is missing or, read
         // with rehash, holds other bytes (a copy changed in place at the same size is seen by nothing else); then it is
         // written again from the source
-        if (present && !(e.rehash && !holds(dst, last)))
+        if (present && !(e.rehash && !holds(dst, last, e.chunk)))
             return unchanged(partial);
         how = 'recovered';
         again = present ? 'damaged' : 'missing';
@@ -1234,14 +1290,12 @@ function pinOne(rel, src, e) {
     if (how === 'rewritten' && present && disk === null)
         return fail('keep', dst, 'ENOENT');
     const believed = present && last !== undefined ? last : null;
+    // what the copy holds, in one pass (never read whole): its length and sha256, whether it starts with the version the
+    // run believes it holds, what follows that version in it, and its last byte
     let old = null;
-    // a grown copy that is the version its last line records, the bytes the source starts with: compared in chunks, not
-    // read whole (equalsPrefix); any other copy is read whole, as a rewrite read it in 0.2.0
-    const grownAsLine = disk !== null && how === 'grown' && believed !== null && Number(disk.size) === believed.bytes
-        && prefix === believed.sha256 && equalsPrefix(dst, buf, believed.bytes);
-    if (disk !== null && !grownAsLine) {
+    if (disk !== null) {
         try {
-            old = readRegular(dst);
+            old = passRegular(dst, e.chunk, believed === null ? {} : { marks: [believed.bytes], nlFrom: believed.bytes });
         }
         catch (err) {
             if (!isFsError(err))
@@ -1254,33 +1308,30 @@ function pinOne(rel, src, e) {
     // a rewrite keeps the old copy first, by a link named by the sha12 of its bytes on disk
     let kept;
     if (old !== null) {
-        // a grown file's copy is the version its last line records when it is the bytes the source starts with: the decision
-        // hashed that prefix, so a compare proves it, and the copy need not be hashed (measured: a grown 100 MB transcript)
-        const asPrefix = how === 'grown' && believed !== null && old.length === believed.bytes && prefix === believed.sha256 && buf.subarray(0, old.length).equals(old);
-        let oldSha = asPrefix ? believed.sha256 : sha256(old);
+        let oldBytes = old.bytes, oldSha = old.sha256;
         if (e.rehash && believed !== null && startsWith(old, believed) && damageAfter(old, believed, rel)) {
             // its version, then bytes no pin wrote (recovery left it to this run): cut back to that version first, which the
             // rewrite then keeps; the rules for a rewrite apply to the source's bytes, never to that damage
             e.guard();
             try {
-                cutBack(dst, old, believed, e.platform);
+                cutBack(dst, believed, e.platform, e.chunk);
             }
             catch (err) {
                 if (!isFsError(err))
                     throw err;
                 return fail('write', dst, err);
             }
-            old = old.subarray(0, believed.bytes);
+            oldBytes = believed.bytes;
             oldSha = believed.sha256;
         }
-        if (believed === null || old.length !== believed.bytes || oldSha !== believed.sha256) {
+        if (believed === null || oldBytes !== believed.bytes || oldSha !== believed.sha256) {
             if (e.rehash && believed !== null && (again === 'damaged' || how === 'grown')) {
                 // with --rehash, recovery left this copy to the run (its source holds the version its last line records, at its
                 // start): the run writes it from the source, and what the copy holds instead is kept aside first, a file of its
                 // own (it can be a version a killed pin renamed in); except a .jsonl's bytes that do not end in a new line, which
                 // no pin writes (it copies whole lines): damage, never a version
-                const cutInLine = rel.endsWith('.jsonl') && old.length > 0 && old[old.length - 1] !== 0x0a;
-                if (!cutInLine && keepAside(e, rel, old) === null)
+                const cutInLine = rel.endsWith('.jsonl') && oldBytes > 0 && old.lastByte !== 0x0a;
+                if (!cutInLine && keepAside(e, rel, oldBytes, oldSha) === null)
                     return { how: 'failed', partial: false, bytes: 0, again: null, lost: false };
             }
             else {
@@ -1292,13 +1343,15 @@ function pinOne(rel, src, e) {
                 }
                 catch { /* read a moment ago */ }
                 const lastKept = last === undefined ? null : heldKept(e, rel, last);
-                e.log.append({ t: now(), rel, how: 'recovered', bytes: old.length, sha256: oldSha, prev: last === undefined ? null : { bytes: last.bytes, sha256: last.sha256 },
+                e.log.append({ t: now(), rel, how: 'recovered', bytes: oldBytes, sha256: oldSha, prev: last === undefined ? null : { bytes: last.bytes, sha256: last.sha256 },
                     ...(lastKept === null ? {} : { kept: lastKept }), ...(copyMtime === null ? {} : { mtime: copyMtime }) });
                 e.present.add(rel);
-                prev = { bytes: old.length, sha256: oldSha };
-                if (old.length === cut && oldSha === sha)
+                prev = { bytes: oldBytes, sha256: oldSha };
+                if (oldBytes === cut && oldSha === sha)
                     return unchanged(partial);
-                how = old.length < cut && buf.subarray(0, old.length).equals(old) ? 'grown' : 'rewritten';
+                // grown when the copy is a byte prefix of the bytes up to the cut: the pass over the source hashed its first
+                // oldBytes bytes (the mark at the copy's size; a copy whose size changed since reads as no prefix, a rewrite)
+                how = oldBytes < cut && p.at.get(oldBytes) === oldSha ? 'grown' : 'rewritten';
                 again = null;
             }
         }
@@ -1318,14 +1371,14 @@ function pinOne(rel, src, e) {
                 // never waited on: a failure, not-a-regular-file)
                 let held;
                 try {
-                    held = readRegular(kAbs);
+                    held = passRegular(kAbs, e.chunk);
                 }
                 catch (err2) {
                     if (!isFsError(err2))
                         throw err2;
                     return fail('keep', kAbs, err2);
                 }
-                if (sha256(held) !== oldSha)
+                if (held.sha256 !== oldSha)
                     return fail('keep', kAbs, 'kept-copy-differs');
             }
             kept = k;
@@ -1333,21 +1386,59 @@ function pinOne(rel, src, e) {
             e.onStep?.('linked', rel);
         }
     }
-    // the write: a temp file from the very bytes hashed, with the source's mtime, fsynced; renamed over the copy; the
-    // directory fsynced
+    // the write: a temp file from the bytes decided on, with the source's mtime, fsynced; renamed over the copy; the
+    // directory fsynced. Those bytes are the source's up to the cut, read again and copied in chunks: when what is copied
+    // does not hash to what the decision hashed (the source was rewritten, or cut short, between the two reads), nothing
+    // is written (a failure, op read, source-changed), and the next pin pins it. A source that only grew meanwhile holds
+    // them still, and what it gained is the next pin's
     const dir = dirname(dst), tmp = join(dir, tempName(basename(dst)));
     let tmpMade = false;
+    // the temp is a write into the pin too, and the source is read again for it: a pin whose lock is lost stops before it
+    // (and before the rename, below: the copy can take long)
+    e.guard();
     try {
         mkdirSync(dir, { recursive: true, mode: DIR_MODE });
         const fd = openSync(tmp, 'wx', FILE_MODE & Number(st.mode)); // 0600, or the source's mode when it is stricter
         tmpMade = true;
+        let readFailed = null;
         try {
-            writeAll(fd, body);
-            futimesSync(fd, Number(st.atimeNs) / 1e9, Number(st.mtimeNs) / 1e9); // seconds as a double: within a µs
-            fsyncSync(fd);
+            let sfd = null;
+            try {
+                sfd = openSync(src, 'r');
+            }
+            catch (err) {
+                if (!isFsError(err))
+                    throw err;
+                readFailed = err;
+            }
+            if (sfd !== null) {
+                let got = null;
+                try {
+                    got = copyPrefix(sfd, fd, cut, e.chunk);
+                }
+                catch (err) {
+                    if (!isFsError(err) || err.syscall !== 'read')
+                        throw err;
+                    readFailed = err;
+                }
+                finally {
+                    closeSync(sfd);
+                }
+                if (readFailed === null && got !== sha)
+                    readFailed = 'source-changed';
+            }
+            if (readFailed === null) {
+                futimesSync(fd, Number(st.atimeNs) / 1e9, Number(st.mtimeNs) / 1e9); // seconds as a double: within a µs
+                fsyncSync(fd);
+            }
         }
         finally {
             closeSync(fd);
+        }
+        if (readFailed !== null) {
+            unlinkSync(tmp);
+            tmpMade = false;
+            return fail('read', src, readFailed);
         }
         e.onStep?.('temp-written', rel);
         e.guard();
@@ -1372,12 +1463,14 @@ function pinOne(rel, src, e) {
     e.onStep?.('logged', rel);
     return how === 'recovered' ? { how: 'unchanged', partial, bytes: cut, again, lost } : { how, partial, bytes: cut, again: null, lost };
 }
-/** Whether bytes b start with version v: the sha256 of their first v.bytes bytes is v's. */
-const startsWith = (b, v) => b.length >= v.bytes && sha256(b.subarray(0, v.bytes)) === v.sha256;
-/** Whether a copy b of rel, which starts with version v (startsWith), holds after it only bytes that no pin wrote: rel
- *  is a .jsonl, which a pin copies only up to a new line, and no new line follows v in b. Those bytes are damage, never
- *  a version: a pin stopped between the rename of a grown copy and its line leaves whole lines after v. */
-const damageAfter = (b, v, rel) => rel.endsWith('.jsonl') && b.length > v.bytes && b.indexOf(0x0a, v.bytes) < 0;
+/** Whether the bytes of a pass start with version v: the sha256 of their first v.bytes bytes is v's (the pass's mark at
+ *  v.bytes). */
+const startsWith = (b, v) => b.bytes >= v.bytes && b.at.get(v.bytes) === v.sha256;
+/** Whether a copy b of rel (a pass with nlFrom v.bytes), which starts with version v (startsWith), holds after it only
+ *  bytes that no pin wrote: rel is a .jsonl, which a pin copies only up to a new line, and no new line follows v in b.
+ *  Those bytes are damage, never a version: a pin stopped between the rename of a grown copy and its line leaves whole
+ *  lines after v. */
+const damageAfter = (b, v, rel) => rel.endsWith('.jsonl') && b.bytes > v.bytes && !b.nlAfter;
 /** Renames tmp over dst. On win32, a rename that fails with EPERM, EACCES or EBUSY is retried RENAME_TRIES times,
  *  RENAME_PAUSE_MS apart, onRetry called before each retry. */
 function renameOver(tmp, dst, platform, onRetry) {
@@ -1401,18 +1494,29 @@ function secondsOf(iso) {
     const ms = m === null ? NaN : Date.parse(`${m[1]}Z`);
     return Number.isNaN(ms) ? null : ms / 1000 + Number(m[2]) / 1e9;
 }
-/** Writes the copy at dst again holding only version v, from b, the copy's own bytes, which start with v (hashed: see
- *  startsWith), as pinOne writes a copy: a temp file, fsynced, renamed over the copy, its directory fsynced; with the
+/** Writes the copy at dst again holding only version v, its own first v.bytes bytes, which a pass found to start with v
+ *  (startsWith), as pinOne writes a copy: a temp file, fsynced, renamed over the copy, its directory fsynced; with the
  *  copy's own mode (0600, or stricter), and the mtime v's line records (its source's, when v was pinned), or, when that
- *  line has none that can be read, the copy's own. No line is written: the copy then holds what its last line records. */
-function cutBack(dst, b, v, platform) {
+ *  line has none that can be read, the copy's own. The bytes are copied in chunks and hashed as they go: when they do
+ *  not hash to v's sha256 (the copy changed since the pass), nothing is written over the copy (CopyChanged). No line is
+ *  written: the copy then holds what its last line records. */
+function cutBack(dst, v, platform, chunk) {
     const st = lstatSync(dst, { bigint: true });
     const dir = dirname(dst), tmp = join(dir, tempName(basename(dst)));
     const mtime = (v.mtime === null ? null : secondsOf(v.mtime)) ?? Number(st.mtimeNs) / 1e9;
     const fd = openSync(tmp, 'wx', FILE_MODE & Number(st.mode));
     try {
         try {
-            writeAll(fd, b.subarray(0, v.bytes));
+            const cfd = openRegular(dst, fsConstants.O_RDONLY);
+            let got;
+            try {
+                got = copyPrefix(cfd, fd, v.bytes, chunk);
+            }
+            finally {
+                closeSync(cfd);
+            }
+            if (got !== v.sha256)
+                throw new CopyChanged(dst);
             futimesSync(fd, Number(st.atimeNs) / 1e9, mtime);
             fsyncSync(fd);
         }
@@ -1432,17 +1536,17 @@ function cutBack(dst, b, v, platform) {
 }
 /** Whether the source at path holds version v at its start as a pin copies it: the sha256 of its first v.bytes bytes is
  *  v's, and, for a .jsonl, those bytes end at or before its last new line (whole lines). pinOne then finds it unchanged
- *  against v, or grown from it. `unreadable` when it cannot be read or is not a regular file (readRegular: never
- *  waited on). */
-function sourceHolds(path, rel, v) {
+ *  against v, or grown from it (one pass, in chunks). `unreadable` when it cannot be read or is not a regular file
+ *  (passRegular: never waited on). */
+function sourceHolds(path, rel, v, chunk) {
     let b;
     try {
-        b = readRegular(path);
+        b = passRegular(path, chunk, { marks: [v.bytes] });
     }
     catch {
         return 'unreadable';
     }
-    const cut = rel.endsWith('.jsonl') ? b.lastIndexOf(0x0a) + 1 : b.length;
+    const cut = rel.endsWith('.jsonl') ? b.cut : b.bytes;
     return v.bytes <= cut && startsWith(b, v);
 }
 /** With rehash: whether recovery leaves to this run, with no recovered line, a copy b that does not hold version v, the
@@ -1455,11 +1559,11 @@ function sourceHolds(path, rel, v) {
  *  bytes). Any other is recorded: what it holds after v can be a version that only the pin holds (a pin stopped between
  *  the rename of a grown copy and its line leaves whole lines there), and one that holds v no more, beside a source that
  *  holds v no more either, is the README's limit: a rewrite keeps it as it is. */
-function leftToTheRun(b, v, rel, src) {
+function leftToTheRun(b, v, rel, src, chunk) {
     const atStart = startsWith(b, v);
     if (atStart && damageAfter(b, v, rel))
         return true;
-    const holds = sourceHolds(src, rel, v);
+    const holds = sourceHolds(src, rel, v, chunk);
     return holds === 'unreadable' || (!atStart && holds);
 }
 /** Whether rel is one of rels, or under one ('' is the whole root). */
@@ -1478,9 +1582,10 @@ const atOrUnder = (rel, rels) => rels.some((d) => d === '' || rel === d || rel.s
 function recover(e, scan, sources, unread) {
     let n = 0;
     const st = e.log.st;
-    const read = (rel) => {
+    // one pass over a file of the pin; with v, the marks that say whether it starts with v and what follows v in it
+    const read = (rel, v) => {
         try {
-            return readRegular(under(e.to, rel));
+            return passRegular(under(e.to, rel), e.chunk, v === null ? {} : { marks: [v.bytes], nlFrom: v.bytes });
         }
         catch (err) {
             if (!isFsError(err))
@@ -1496,34 +1601,33 @@ function recover(e, scan, sources, unread) {
         const k = keptRel(rel, last.sha256), keptWaits = scan.files.has(k) && !st.named.has(k);
         if (f.size === last.bytes && !keptWaits)
             continue;
-        const b = read(rel);
+        const b = read(rel, last);
         if (b === null)
             continue;
-        const bSha = sha256(b);
-        if (b.length === last.bytes && bSha === last.sha256)
+        if (b.bytes === last.bytes && b.sha256 === last.sha256)
             continue; // as its line says: the rename did not happen
         const src = sources.get(rel);
         // pinned from src by this run; or, its source out of the walk's sight, left as it is
-        if (e.rehash && !keptWaits && (src === undefined ? atOrUnder(rel, unread) : leftToTheRun(b, last, rel, src)))
+        if (e.rehash && !keptWaits && (src === undefined ? atOrUnder(rel, unread) : leftToTheRun(b, last, rel, src, e.chunk)))
             continue;
         // the kept copy of the version its last line records, waiting or named by an earlier line, when it holds that version
         let kept;
         if (scan.files.has(k)) {
-            const kb = read(k);
-            if (kb !== null && kb.length === last.bytes && sha256(kb) === last.sha256)
+            const kb = read(k, null);
+            if (kb !== null && kb.bytes === last.bytes && kb.sha256 === last.sha256)
                 kept = k;
         }
-        e.log.append({ t: now(), rel, how: 'recovered', bytes: b.length, sha256: bSha, prev: { bytes: last.bytes, sha256: last.sha256 }, ...(kept === undefined ? {} : { kept }), mtime: f.mtime });
+        e.log.append({ t: now(), rel, how: 'recovered', bytes: b.bytes, sha256: b.sha256, prev: { bytes: last.bytes, sha256: last.sha256 }, ...(kept === undefined ? {} : { kept }), mtime: f.mtime });
         n++;
     }
     for (const rel of [...scan.files.keys()].sort()) {
         // a rel whose line could not be read back under this platform's rules gets none (S368, A8)
         if (st.named.has(rel) || !scan.shaped(rel) || !safeRel(rel, e.platform))
             continue;
-        const b = read(rel);
+        const b = read(rel, null);
         if (b === null)
             continue;
-        e.log.append({ t: now(), rel, how: 'recovered', bytes: b.length, sha256: sha256(b), prev: null, mtime: scan.files.get(rel).mtime });
+        e.log.append({ t: now(), rel, how: 'recovered', bytes: b.bytes, sha256: b.sha256, prev: null, mtime: scan.files.get(rel).mtime });
         n++;
     }
     return n;
@@ -1567,7 +1671,7 @@ function settleTemps(e, scan, root) {
         }
         let t;
         try {
-            t = readRegular(abs);
+            t = passRegular(abs, e.chunk);
         }
         catch (err) {
             fail(abs, null, 'recover', err);
@@ -1575,24 +1679,25 @@ function settleTemps(e, scan, root) {
         }
         const m = /^\.(.+)\.ltms-tmp-\d+$/.exec(basename(abs)), slash = rel.lastIndexOf('/');
         const target = m === null ? null : `${slash < 0 ? '' : rel.slice(0, slash + 1)}${m[1]}`;
+        // whether the file at path starts with the temp's bytes: its first t.bytes bytes, read (no more), hash to the temp's
         const holdsT = (path) => {
             let b;
             try {
-                b = readRegular(path);
+                b = passRegular(path, e.chunk, { limit: t.bytes });
             }
             catch (err) {
                 if (!isFsError(err))
                     throw err;
                 return false;
             }
-            return b.length >= t.length && b.subarray(0, t.length).equals(t);
+            return b.bytes === t.bytes && b.sha256 === t.sha256;
         };
         // held when a file of the pin holds its bytes: its target's copy, or a kept copy of it. Its source holding them is
         // not enough (S368, the re-check's B1): a pin of another project leaves that source unpinned, and once it is
         // rewritten the version is in no file. Except a .jsonl temp whose bytes do not end in a new line: a write cut short,
         // which holds no version (a pin copies whole lines), removed when its source holds them too
-        let held = t.length === 0;
-        const cutShort = target !== null && target.endsWith('.jsonl') && t[t.length - 1] !== 0x0a;
+        let held = t.bytes === 0;
+        const cutShort = target !== null && target.endsWith('.jsonl') && t.lastByte !== 0x0a;
         if (!held && target !== null) {
             const where = cutShort ? [under(e.to, target), under(root, target)] : [under(e.to, target)];
             for (const l of st.parsed)
@@ -1611,7 +1716,7 @@ function settleTemps(e, scan, root) {
             }
             continue;
         }
-        const sha = sha256(t), k = keptRel(target ?? rel, sha), kAbs = under(e.to, k);
+        const sha = t.sha256, k = keptRel(target ?? rel, sha), kAbs = under(e.to, k);
         // a kept name whose line could not be read back under this platform's rules: the temp is left as it is (S368, A8)
         if (!safeRel(k, e.platform)) {
             fail(abs, null, 'keep', 'name-not-allowed');
@@ -1628,13 +1733,13 @@ function settleTemps(e, scan, root) {
             }
             let there;
             try {
-                there = readRegular(kAbs);
+                there = passRegular(kAbs, e.chunk);
             }
             catch (err2) {
                 fail(kAbs, k, 'keep', err2);
                 continue;
             }
-            if (sha256(there) !== sha) {
+            if (there.sha256 !== sha) {
                 fail(kAbs, k, 'keep', 'kept-copy-differs');
                 continue;
             }
@@ -1652,9 +1757,9 @@ function settleTemps(e, scan, root) {
         }
         catch { /* linked a moment ago */ }
         if (!st.named.has(k))
-            e.log.append({ t: now(), rel: k, how: 'recovered', bytes: t.length, sha256: sha, prev: null, ...(mtime === null ? {} : { mtime }) });
+            e.log.append({ t: now(), rel: k, how: 'recovered', bytes: t.bytes, sha256: sha, prev: null, ...(mtime === null ? {} : { mtime }) });
         if (mtime !== null)
-            scan.files.set(k, { size: t.length, mtime });
+            scan.files.set(k, { size: t.bytes, mtime });
         e.present.add(k);
         out.kept.push(k);
     }
@@ -1779,7 +1884,7 @@ export async function pinPaths(paths, options) {
         const check = () => guard(heldNow, stateNow);
         const log = new Log(state, lines, platform, check);
         const e = { to, platform, rehash: options.rehash === true, onStep: options.onStep, log, present: new Set(scan.files.keys()), failures, linkTo: new Map(),
-            guard: check, unlisted: scan.unlisted, keptAside: [] };
+            guard: check, unlisted: scan.unlisted, keptAside: [], chunk: Buffer.allocUnsafe(chunkOf(options)) };
         try {
             if (state.torn !== null) {
                 log.closeTorn();
