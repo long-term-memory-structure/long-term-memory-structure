@@ -4978,10 +4978,10 @@ test('S369: a source that grows between the read that decides and the read that 
 // LTMS_BIG_DIR=<a directory on a disk, not tmpfs, with 10 GB free> runs the big tests (Box B, S369): real files past the
 // sizes that ended pins until 0.2.1, each pin in a child under a memory limit (systemd-run --user --scope -p MemoryMax).
 // Each source is sparse (a head of lines, a hole of zeros, a tail of lines), so it costs no disk; its copy is written
-// whole. Each copy is checked by sha256sum, an instrument of its own. Red on 0.2.1's code: the 1.5 GB one is killed at
-// the limit (read whole), the 4.56 GB one is refused (ERR_FS_FILE_TOO_LARGE).
+// whole. Each copy is checked by sha256sum, an instrument of its own. Red on 0.2.1's code: the 1.5 GiB one is killed at
+// the limit (read whole), the 4.25 GiB one is refused (ERR_FS_FILE_TOO_LARGE).
 const BIG_DIR = process.env.LTMS_BIG_DIR;
-for (const [name, SIZE] of [['1.5 GB (more than the memory limit, less than 2 GiB)', 2 ** 30 + 2 ** 29], ['4.56 GB (past 2^31 and 2^32 bytes)', 2 ** 32 + 2 ** 28]]) {
+for (const [name, SIZE] of [['1.5 GiB (more than the memory limit, less than 2 GiB)', 2 ** 30 + 2 ** 29], ['4.25 GiB (past 2^31 and 2^32 bytes)', 2 ** 32 + 2 ** 28]]) {
   test(`S369 big: a transcript of ${name} is pinned new, then grown, by a pin under a memory limit of 256 MiB; each copy is its source byte for byte (sha256sum)`, { skip: (!BIG_DIR && 'set LTMS_BIG_DIR to a directory on a disk (not tmpfs) with 10 GB free; needs systemd-run --user and sha256sum') || LINUX_PROC }, () => {
     const tmp = realpathSync(mkdtempSync(join(BIG_DIR, 'ltms-big-')));
     try {
@@ -5017,3 +5017,39 @@ for (const [name, SIZE] of [['1.5 GB (more than the memory limit, less than 2 Gi
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   });
 }
+
+test('S369: chunkBytes sets the size of each read of a file\'s bytes: at 1, a pin reads a source one byte at a time (at least as many reads as it has bytes); at the default, a few', () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    const count = (chunkBytes) => {
+      writeFileSync(t.src(rel), PINNED[rel]);
+      rmSync(t.to, { recursive: true, force: true });
+      return ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(t.opts({ chunkBytes }))});
+        process.stdout.write(JSON.stringify({ reads: globalThis.reads, failures: r.failures }));`,
+      { patch: 'globalThis.reads = 0; const rs = fs.readSync; fs.readSync = function () { globalThis.reads++; return rs.apply(this, arguments); };' }));
+    };
+    const one = count(1), dflt = count(1 << 20);
+    assert.deepEqual([one.failures, dflt.failures], [[], []]);
+    assert.ok(one.reads >= len(PINNED[rel]), `at 1 byte: ${one.reads} reads for ${len(PINNED[rel])} bytes`);
+    assert.ok(dflt.reads < 20, `at the default: ${dflt.reads} reads`);
+  } finally { t.clean(); }
+});
+
+test('S369: a temp that cannot be written (ENOSPC while the source is copied into it) is a write failure of the copy, as in 0.2.1, not a read one: the copy and its line stay as they were, and no temp is left', () => {
+  const t = tree();
+  try {
+    const rel = `${Q}/${SB}.jsonl`;
+    const opts = t.opts();
+    ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(opts)}); process.stdout.write(JSON.stringify(r));`));
+    appendFileSync(t.src(rel), L4);
+    const before = snapshot(t.to);
+    const patch = `
+      const temps = new Set(); const os = fs.openSync, ws = fs.writeSync;
+      fs.openSync = function (p) { const fd = os.apply(this, arguments); if (String(p).endsWith(${JSON.stringify(`.${SB}.jsonl.ltms-tmp-`)} + process.pid)) temps.add(fd); return fd; };   // the copy's temp, not the lock's
+      fs.writeSync = function (fd) { if (temps.has(fd)) { const e = new Error('ENOSPC: no space left on device, write'); e.code = 'ENOSPC'; e.syscall = 'write'; e.errno = -28; throw e; } return ws.apply(this, arguments); };`;
+    const r = ranTo(childModule(`const r = await pinPaths([${JSON.stringify(t.src(Q))}], ${JSON.stringify(opts)}); process.stdout.write(JSON.stringify(r));`, { patch }));
+    assert.deepEqual(r.failures, [{ path: t.pin(rel), rel, op: 'write', code: 'ENOSPC' }]);
+    assert.deepEqual([r.lines, snapshot(t.to)], [[], before]);
+  } finally { t.clean(); }
+});
