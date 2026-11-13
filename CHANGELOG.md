@@ -1,5 +1,17 @@
 # Changes
 
+## Unreleased (0.2.2)
+
+- **`ltms pin` holds no file whole.** Each file is read and written in chunks of 1 MiB through one buffer per run, and hashed as it is read, so the memory a pin needs no longer grows with the files it pins, and a transcript of 2 GiB or more is pinned like any other. Until 0.2.1 a pin read each source whole, and each copy too before writing over it: a transcript of 2 GiB or more failed every pin (`ERR_FS_FILE_TOO_LARGE`), and one larger than the memory a pin could use (a container's limit, or cron's) ended every pin at it. Measured on real files, each pin under a memory limit of 256 MiB: transcripts of 1.5 and 4.25 GiB pinned, then grown, each copy equal to its source by `sha256sum`, at a peak of 65 to 70 MiB; 0.2.1's pin of the 1.5 GiB one was killed at the limit, and it refused the 4.25 GiB one. Both cases leave the README's technical debt.
+- **A copy is written from a second read of its source,** up to the cut the first read decided on, and checked against the first read's sha256: a source rewritten or cut short between the two reads is a failure, `source-changed` (op `read`), and nothing is written over the copy; the next pin pins the source as it is then. A source that only grew meanwhile is pinned as the first read found it. A rewrite that meets this after its old copy was kept leaves the kept copy, as a pin stopped at that point does, and the next pin records it.
+- **`--check`** counts as too large (`tooLarge`) only a source larger than a pin can address, 2^53 - 1 bytes; until 0.2.1, any source of 2 GiB or more.
+- **Library:** `PinOptions` gains `chunkBytes` (the size of each read and write, default 1 MiB; the tests use small ones); `PinStep` gains `read` (after the source was read and hashed, before anything of the pin is read or written for it); `PinFailure.code` gains `source-changed` and `copy-changed` (a copy cut back under `rehash` that changed while it was read again: nothing is written over it). A pin also checks its lock before writing a copy's temp file, as before its rename.
+
+### Known limits
+
+- `PINS.log` is still read whole, at the start of each pin and each check: a log of millions of lines costs at least its size in memory.
+- 0.2.1's other Known limits stand, but the first two (a transcript of 2 GiB or more; one larger than a memory limit), repaired here.
+
 ## 0.2.1 (2026-11-13)
 
 - **The README opens with the design's first constraint, "Preserve potential indefinitely."**, for both its readers, people and agents evaluating the package; then the five facts the design answers (the record is on disk; it is deleted after `cleanupPeriodDays`; it is far larger than a context window; a wrong recollection becomes a wrong action; one agent, one user, one machine), the architecture, and the **technical debt**: every way an adversarial reading of 0.2.0 found the opening false, each with its state in this release. The commands follow.
