@@ -3,7 +3,7 @@
 
 **Preserve potential indefinitely.** Nothing ltms does destroys a record. A version of a transcript, once a pin has copied it, is never deleted or written over by ltms: a rewrite keeps the old copy beside the new one, and `ltms pin --check` reads back every version `PINS.log` records. What ltms cannot keep is what it never copied: a version is kept from the pin that copies it, so pin at the end of every session and from cron, and run `ltms pin --check` now and then: what it counts missing from the pin or longer than its copy shows when pins have stopped. It copies what Claude Code's cleanup deletes of a project: the transcripts, Claude Code's set-aside copies of them, and the files under each session's `subagents/`, `tool-results/`, `workflows/` and `mcp-tasks/`, a transcript up to its last whole line. One pin directory is one copy on one disk: keep another.
 
-That is the design's first constraint, and the claim to test it by ([a check anyone can run in about ten minutes](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.1/docs/check.md): the package against its source, its tests, each repair against the code before it, no network, the report's figures). Below: the facts it comes from, the architecture that keeps it, and the [technical debt](#technical-debt): every way an adversarial reading of the code found it false, each with its state in this release and the test that reproduces it.
+That is the design's first constraint, and the claim to test it by ([a check anyone can run in about ten minutes](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.2/docs/check.md): the package against its source, its tests, each repair against the code before it, no network, the report's figures). Below: the facts it comes from, the architecture that keeps it, and the [technical debt](#technical-debt): every way an adversarial reading of the code found it false, each with its state in this release and the test that reproduces it.
 
 Long-Term Memory Structure is an independent project. It is not affiliated with or endorsed by Anthropic.
 
@@ -167,7 +167,7 @@ Under a directory given, these are counted and not read: the `.jsonl` files in a
 
 ### `ltms skeleton <file.jsonl>...`
 
-One JSON line per turn and per tool call. A turn starts at a prompt; its tool calls follow it in order. This is one turn of the synthetic test transcript [`test/fixtures/demo.jsonl`](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.1/test/fixtures/demo.jsonl): a hook blocks a command, the tests fail twice, a fix is made, the tests pass.
+One JSON line per turn and per tool call. A turn starts at a prompt; its tool calls follow it in order. This is one turn of the synthetic test transcript [`test/fixtures/demo.jsonl`](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.2/test/fixtures/demo.jsonl): a hook blocks a command, the tests fail twice, a fix is made, the tests pass.
 
 ```
 {"k":"turn","a":"demo.jso:L20","ta":"demo.jso:T003","ch":"typed","n":47}
@@ -491,7 +491,7 @@ Each source is opened once and read in chunks of 1 MiB through that one descript
 | `lastLog` | when PINS.log's last line was written |
 | `ms` | how long the run took, in milliseconds |
 
-A failure line is `{"k":"failure","path","rel","op","code"}`: `op` is the step (`to`, `lock`, `log`, `walk`, `read`, `keep`, `write` or `recover`) and `code` the error code, or one of ltms's own (`symlink-in-pin`, `not-a-regular-file`, `kept-copy-differs`, `kept-name`, `name-not-allowed`, `lock-lost`, `log-changed`, `source-changed`, `copy-changed`: [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.1/docs/library.md#pinfailure) says what each means). `--list` adds one line per line appended to PINS.log for a file: `{"k":"pin","rel","how","bytes","prev","kept"}`, where `prev` is the length of the version before (`null` for a new file) and `kept`, after a rewrite, the old copy's `rel`. stderr says what recovery found and did, and closes with one line when something failed or nothing was found to pin.
+A failure line is `{"k":"failure","path","rel","op","code"}`: `op` is the step (`to`, `lock`, `log`, `walk`, `read`, `keep`, `write` or `recover`) and `code` the error code, or one of ltms's own (`symlink-in-pin`, `not-a-regular-file`, `kept-copy-differs`, `kept-name`, `name-not-allowed`, `lock-lost`, `log-changed`, `source-changed`, `copy-changed`: [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.2/docs/library.md#pinfailure) says what each means). `--list` adds one line per line appended to PINS.log for a file: `{"k":"pin","rel","how","bytes","prev","kept"}`, where `prev` is the length of the version before (`null` for a new file) and `kept`, after a rewrite, the old copy's `rel`. stderr says what recovery found and did, and closes with one line when something failed or nothing was found to pin.
 
 **Checking a pin.** `ltms pin --check <dir>` writes nothing. A pin that is running is waited for first, as a pin waits for one (up to 30 s; then exit 1, as pin does), since a file it is writing would read as damage. It reads every version PINS.log records back from the copy that holds it (the file, or the kept copy a later line names), checks every line's `chain`, and counts the files under the root (the one PINS.log records, or `--root`) that the pin is missing or holds shorter than they are now (a `.jsonl` with no new line yet is not missing: pin does not copy it; one whose copy is a byte prefix of it, longer only by an unfinished line, is counted apart, `unfinished`, since pin copies whole lines only; one rewritten under an unfinished line is longer). That count is how a pin that has stopped is seen. stdout is one line, then one line per finding:
 
@@ -589,11 +589,11 @@ const t = parseTranscript(readFileSync(file, 'utf8'));
 const turns = turnsOf(t, repairedLivePath(t).path);   // each turn: its prompt, its records, its tool calls
 ```
 
-`turnsOf(t)` without the repaired path stops at the last compaction: on a demo project's 35 transcripts it gives 201 turns, where `ltms` counts 218. Every exported function, type and field is described in [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.1/docs/library.md), with its meaning, its unit, and when it is absent.
+`turnsOf(t)` without the repaired path stops at the last compaction: on a demo project's 35 transcripts it gives 201 turns, where `ltms` counts 218. Every exported function, type and field is described in [docs/library.md](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.2.2/docs/library.md), with its meaning, its unit, and when it is absent.
 
 ## Status
 
-Version 0.2.1. Early: the output format may change between versions.
+Version 0.2.2. Early: the output format may change between versions.
 
 ## Development
 
