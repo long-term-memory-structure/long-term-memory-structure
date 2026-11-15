@@ -192,8 +192,9 @@ test('the package: the installed bin runs: ltms and long-term-memory-structure -
   const s = bin('ltms', ['skeleton', DEMO]);
   assert.deepEqual([s.status, s.stderr], [0, ''], `ltms skeleton ${DEMO}`);
   // known answers: the README's example lines for this fixture (the contract), each printed by the installed copy
-  // (search's three line shapes are checked against search's own output in test/search.test.mjs)
-  const examples = readFileSync(join(root, 'README.md'), 'utf8').split('\n').filter((l) => l.startsWith('{"k":') && !/^\{"k":"(?:coverage","query"|file"|hit")/.test(l));
+  // (search's three line shapes are checked against search's own output in test/search.test.mjs, and, 0.3.0, shapes' line
+  // kinds against shapes' own in test/shapes.test.mjs and below)
+  const examples = readFileSync(join(root, 'README.md'), 'utf8').split('\n').filter((l) => l.startsWith('{"k":') && !/^\{"k":"(?:coverage","query"|file"|hit"|shapes"|version"|kind"|path"|rare"|end"|unlisted)/.test(l));
   assert.ok(examples.length >= 6, `only ${examples.length} example lines were read from the README`);
   // 0.2.0: index's example, run by the installed copy as the README shows it, its coverage line's time made the README's
   const ix = spawnSync(join(consumer, 'node_modules', '.bin', WIN ? 'ltms.cmd' : 'ltms'), ['index', 'test/fixtures/compacted.jsonl', 'test/fixtures/demo.jsonl'], { encoding: 'utf8', env, shell: WIN, timeout: 20000, cwd: root });
@@ -204,6 +205,19 @@ test('the package: the installed bin runs: ltms and long-term-memory-structure -
   // and the installed copy prints what this tree's own build prints
   const inTree = spawnSync(process.execPath, [join(root, 'dist', 'cli.js'), 'skeleton', DEMO], { encoding: 'utf8', timeout: 20000 });
   assert.equal(s.stdout, inTree.stdout);
+});
+
+test('the package (0.3.0): the installed ltms shapes reads the vocabulary the package ships, beside its dist/, and prints what this tree\'s build prints; the package holds no other vocabulary', { skip: noNpm }, () => {
+  const { consumer, pkgDir } = install();
+  const env = { ...process.env, PATH: dirname(process.execPath) + delimiter + process.env.PATH };
+  const fixtures = ['cc-a.jsonl', 'cc-b.jsonl', 'cc-c.jsonl', 'cc-map.jsonl'].map((f) => join(here, 'shapes-fixtures', f));
+  const installed = spawnSync(join(consumer, 'node_modules', '.bin', WIN ? 'ltms.cmd' : 'ltms'), ['shapes', ...fixtures], { encoding: 'utf8', env, shell: WIN, timeout: 20000 });
+  assert.equal(installed.status, 0, installed.stderr);
+  const inTree = spawnSync(process.execPath, [join(root, 'dist', 'cli.js'), 'shapes', ...fixtures], { encoding: 'utf8', timeout: 20000 });
+  assert.equal(installed.stdout, inTree.stdout);
+  assert.equal(JSON.parse(installed.stdout.split('\n')[0]).vocabulary[0].name, 'claude-code-docs');
+  assert.deepEqual(readdirSync(join(pkgDir, 'vocab')), ['claude-code.docs.json']);
+  assert.ok(readFileSync(join(pkgDir, 'vocab', 'claude-code.docs.json')).equals(readFileSync(join(root, 'vocab', 'claude-code.docs.json'))), 'the packed vocabulary is this tree\'s, byte for byte');
 });
 
 let ts = null, noTs = false;
@@ -322,9 +336,9 @@ test('the package: scripts.test names every test file in test/, without a glob, 
   assert.deepEqual(present.filter((f) => !named.includes(f)), [], 'test files that scripts.test does not run');
 });
 
-test('the package: "files" is 0.0.5\'s and skills (0.2.0, the SKILL.md ltms skill prints): dist, skills, README.md, CHANGELOG.md and LICENSE (docs/ and test/ are not shipped)', () => {
+test('the package: "files" is 0.0.5\'s, skills (0.2.0, the SKILL.md ltms skill prints) and the one vocabulary ltms shapes ships (0.3.0, named by its own name, so that no other file of vocab/ is packed): dist, skills, vocab/claude-code.docs.json, README.md, CHANGELOG.md and LICENSE (docs/ and test/ are not shipped)', () => {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  assert.deepEqual(pkg.files, ['dist', 'skills', 'README.md', 'CHANGELOG.md', 'LICENSE']);
+  assert.deepEqual(pkg.files, ['dist', 'skills', 'vocab/claude-code.docs.json', 'README.md', 'CHANGELOG.md', 'LICENSE']);
   assert.deepEqual(readdirSync(join(root, 'skills'), { recursive: true }).sort(), ['ltms', 'ltms/SKILL.md'], 'skills/ holds the one SKILL.md');
 });
 

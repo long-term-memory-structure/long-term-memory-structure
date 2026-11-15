@@ -1,0 +1,6 @@
+{"sessionId":"00000000-0000-4000-8000-000000000161","projectHash":"zqhash7canary","startTime":"2026-01-02T03:04:05.678Z","lastUpdated":"2026-01-02T03:04:05.678Z","kind":"main"}
+{"id":"00000000-0000-4000-8000-000000000159","timestamp":"2026-01-02T03:04:05.678Z","type":"user","content":[{"text":"zq7canary"}]}
+{"id":"00000000-0000-4000-8000-000000000160","timestamp":"2026-01-02T03:04:05.678Z","type":"gemini","content":"","model":"zqmodel","thoughts":[{"subject":"zq","description":"zq7canary","timestamp":"2026-01-02T03:04:05.678Z"}],"toolCalls":[{"id":"zq","name":"read_file","args":{"absolute_path":"/home/zqcanary"},"status":"success","timestamp":"2026-01-02T03:04:05.678Z"}]}
+{"$set":{"lastUpdated":"2026-01-02T03:04:05.678Z"}}
+{"$rewindTo":"00000000-0000-4000-8000-000000000159"}
+{"$patch":{"id":"00000000-0000-4000-8000-000000000160","removeIds":["00000000-0000-4000-8000-000000000159"]}}

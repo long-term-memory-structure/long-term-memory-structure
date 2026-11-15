@@ -751,7 +751,8 @@ test('usage errors: exit 2, nothing on stdout, the message names the input and t
   const cases = [
     // 0.2.0: index heads the usage (the entry point for an agent orienting itself), and skill is a command
     { args: [], message: /^ltms: no command given\.\n\nUsage:\n {2}ltms index <path>\.\.\. {12}one JSON line per session, newest first\n {2}ltms skeleton <file\.jsonl>/ },
-    { args: ['skelton', DEMO], message: /unknown command 'skelton'\. The commands are index, skeleton, stats, search, pin and skill/ },
+    // 0.3.0: shapes is a command
+    { args: ['skelton', DEMO], message: /unknown command 'skelton'\. The commands are index, skeleton, stats, search, pin, skill and shapes/ },
     { args: ['--frobnicate'], message: /unknown option '--frobnicate'\. The options are --help and --version/ },
     { args: ['stats'], message: /ltms stats: no input files\. Pass one or more transcripts, e\.g\. ltms stats ~\/\.claude/ },
     { args: ['stats', '--summary', DEMO], message: /ltms stats: unknown option '--summary'.*put -- before a file name/ },
@@ -797,8 +798,9 @@ test('--help describes every field the two commands print', () => {
 
 test('README: its example lines are what the commands print, and it describes every field', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
-  // search's three line shapes are checked against search's own output in test/search.test.mjs
-  const examples = readme.split('\n').filter((l) => (l.startsWith('{"k":') || l.startsWith('{"session":')) && !/^\{"k":"(?:coverage","query"|file"|hit")/.test(l));
+  // search's three line shapes are checked against search's own output in test/search.test.mjs, and (0.3.0) shapes' line
+  // kinds against shapes' own output in test/shapes.test.mjs
+  const examples = readme.split('\n').filter((l) => (l.startsWith('{"k":') || l.startsWith('{"session":')) && !/^\{"k":"(?:coverage","query"|file"|hit"|shapes"|version"|kind"|path"|rare"|end"|unlisted)/.test(l));
   assert.ok(examples.length >= 7, `only ${examples.length} example lines found`);
   // 0.2.0: index's example, run as the README shows it (two fixtures by their paths from the repository's root), its
   // coverage line's time made the README's
@@ -835,11 +837,12 @@ test('the package: a shebang, no runtime dependencies, nothing imported but node
   assert.equal(pkg.bin.ltms, 'dist/cli.js');
   assert.equal(pkg.bin['long-term-memory-structure'], 'dist/cli.js');
   assert.ok(readFileSync(CLI, 'utf8').startsWith('#!/usr/bin/env node\n'));
-  // 0.2.0: session.js (indexTranscript, ltms index's line) joins the modules; S366: sieve-cache.js (search's kept sieves)
-  for (const f of ['cli.js', 'parser.js', 'search.js', 'session.js', 'pin.js', 'sieve-cache.js']) {
+  // 0.2.0: session.js (indexTranscript, ltms index's line) joins the modules; S366: sieve-cache.js (search's kept sieves);
+  // 0.3.0: shapes.js (ltms shapes)
+  for (const f of ['cli.js', 'parser.js', 'search.js', 'session.js', 'pin.js', 'sieve-cache.js', 'shapes.js']) {
     const src = readFileSync(join(dirname(CLI), f), 'utf8');
     const specifiers = [...src.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
-    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js' || s === './sieve-cache.js', `${f} imports '${s}'`);
+    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js' || s === './sieve-cache.js' || s === './shapes.js', `${f} imports '${s}'`);
     assert.doesNotMatch(src, /\brequire\s*\(|\bimport\s*\(|\bfetch\s*\(|node:(?:https?|net|dgram|tls|http2|child_process)\b/, f);
   }
 });

@@ -1,0 +1,9 @@
+{
+  "format": "ltms-shapes-vocabulary/0",
+  "name": "codex-sketch",
+  "source": "A test fixture of ltms (test/make-shapes-fixtures.mjs), not a vocabulary it ships: a sketch of Codex's rollout line, from names quoted from openai/codex at 81b995a6 (codex-rs/protocol), incomplete by design. A real vocabulary is compiled from that source at a pinned commit; nobody's transcripts are needed for it.",
+  "kinds": {"path":".type","sub":{"response_item":".payload.type","event_msg":".payload.type"}},
+  "versions": [".payload.cli_version"],
+  "paths": [".timestamp",".ordinal",".type",".payload",".metadata",".payload.type",".payload.id",".payload.session_id",".payload.timestamp",".payload.cwd",".payload.originator",".payload.cli_version",".payload.source",".payload.model_provider",".payload.base_instructions",".payload.history_mode",".payload.forked_from_id",".payload.parent_thread_id",".payload.history_base",".payload.subagent_history_start_ordinal",".payload.turn_id",".payload.root_turn_id",".payload.approval_policy",".payload.permission_profile",".payload.model",".payload.effort",".payload.role",".payload.content",".payload.content[]",".payload.content[].type",".payload.content[].text",".payload.name",".payload.arguments",".payload.call_id",".payload.output",".payload.message",".payload.kind",".payload.info"],
+  "values": {".type":["session_meta","turn_context","response_item","event_msg","compacted","inter_agent_communication","inter_agent_communication_metadata","token_usage_record","world_state","retained_context","security_risk_score","dynamic_tools_updated","realtime_item"],".payload.type":["message","token_count","thread_goal_updated","thread_rolled_back","turn_aborted","turn_started","turn_complete","thread_settings_applied","user_message","agent_message","agent_reasoning","item_completed"],".payload.history_mode":["legacy","paginated"]}
+}

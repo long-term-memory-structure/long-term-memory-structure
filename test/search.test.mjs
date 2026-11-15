@@ -1290,7 +1290,7 @@ test('command: every string an output line carries is a fixed word, a label, an 
 });
 
 const HELP_005 = read('help-0.0.5.txt');   // `ltms --help` as 0.0.5 printed it (its build, run once; 9,026 bytes)
-test("help: ltms --help is 0.0.5's, with search's, index's, pin's and skill's usage lines and paragraphs more (each pointing to its own --help, after the stats fields in that order), pin's two sentences (DESIGN 4.5), the sentence on reading with search's and index's walks, the index named apart from skeleton (0.2.0), and nothing else changed", () => {
+test("help: ltms --help is 0.0.5's, with search's, index's, pin's, skill's and shapes' usage lines and paragraphs more (each pointing to its own --help, after the stats fields in that order), pin's two sentences (DESIGN 4.5), the sentence on reading with search's, index's and shapes' walks, the index named apart from skeleton (0.2.0), and nothing else changed", () => {
   const h = ltms(['--help']).out;
   const usageLine = '  ltms search <query> <path>...   the turns that hold every word of the query\n';
   const start = h.indexOf('search finds the turns'), stop = h.indexOf('\n\n', start) + 2;
@@ -1315,25 +1315,34 @@ test("help: ltms --help is 0.0.5's, with search's, index's, pin's and skill's us
   assert.ok(skillStart > 0 && h.includes(skillUsageLine));
   const skillParagraph = h.slice(skillStart, skillStop);
   assert.match(skillParagraph.replace(/\s+/g, ' '), /ltms skill --help says how to install it/);
+  // 0.3.0: shapes' usage line and paragraph, right after skill's
+  const shapesUsageLine = '  ltms shapes <path>...           the shape of transcripts, not their content\n';
+  const shapesStart = h.indexOf('shapes prints a report of the shape'), shapesStop = h.indexOf('\n\n', shapesStart) + 2;
+  assert.ok(shapesStart > 0 && h.includes(shapesUsageLine));
+  const shapesParagraph = h.slice(shapesStart, shapesStop);
+  assert.match(shapesParagraph.replace(/\s+/g, ' '), /ltms shapes --help gives its whole part/);
   // 0.2.0: the index is index's list of sessions; the per-turn lines are skeleton's (the sentence as printed now, and
   // as 0.0.5 printed it)
   const appends = ['Claude Code appends to it (it can rewrite one only in rare cases, and pin\nkeeps both versions). ltms index lists the sessions, one line each, and\nltms skeleton prints one line per turn and per tool call of a session, each\nwith the line of the file where it is written, so what compaction took out of\nthe context can be found and read again (for line 22: sed -n 22p <file>).\n',
     'Claude Code only appends to it. ltms prints an index of the transcript,\none line per turn and per tool call, each with the line of the file where it\nis written, so what compaction took out of the context can be found and read\nagain (for line 22: sed -n 22p <file>).\n'];
-  // the repair round (merge 1), then 0.2.0: the sentence on reading names search's and index's walks, and skill's file
-  const reads = ["ltms reads only the files it is given (search and index: also the .jsonl\nfiles under the directories they are given, index not those in a session's\nown directory, set-aside copies or pin directories; pin: the files under the\npaths it is given; skill: its own SKILL.md and package.json), writes only to\nstdout and stderr, except pin, which writes only into its --to directory, and\nuses no network.\n",
+  // the repair round (merge 1), then 0.2.0: the sentence on reading names search's and index's walks, and skill's file;
+  // 0.3.0: shapes' walk, and its vocabulary file
+  const reads = ["ltms reads only the files it is given (search, index and shapes: also the\n.jsonl files under the directories they are given, index not those in a\nsession's own directory, set-aside copies or pin directories; shapes: also\nits vocabulary file; pin: the files under the paths it is given; skill: its\nown SKILL.md and package.json), writes only to stdout and stderr, except pin,\nwhich writes only into its --to directory, and uses no network.\n",
     'ltms reads only the files it is given, writes only to stdout and stderr,\nand uses no network.\n'];
   assert.ok(h.includes(appends[0]) && h.includes(reads[0]));
-  // the repair round (merge 11), then 0.2.0: search's paragraph right after the stats fields, then index's, pin's and skill's
+  // the repair round (merge 11), then 0.2.0: search's paragraph right after the stats fields, then index's, pin's and
+  // skill's; 0.3.0: then shapes'
   assert.ok(h.slice(0, start).endsWith('  hopsOver2     chains of more than 2 hops\n\n'), "search's paragraph does not follow the stats fields");
-  assert.deepEqual([indexStart, pinStart, skillStart], [stop, indexStop, pinStop], 'the paragraphs are not search, index, pin and skill, in that order');
+  assert.deepEqual([indexStart, pinStart, skillStart, shapesStart], [stop, indexStop, pinStop, skillStop], 'the paragraphs are not search, index, pin, skill and shapes, in that order');
   assert.equal(h.replace(usageLine, '').replace(indexUsageLine, '').replace(skillUsageLine, '').replace(paragraph, '').replace(indexParagraph, '')
-    .replace(pinUsageLine, '').replace(pinParagraph, '').replace(skillParagraph, '').replace(...appends).replace(...reads)
+    .replace(pinUsageLine, '').replace(pinParagraph, '').replace(skillParagraph, '').replace(shapesUsageLine, '').replace(shapesParagraph, '')
+    .replace(...appends).replace(...reads)
     // 0.2.0: index tells files with one prefix apart by their path, so the sentence names skeleton and stats
     .replace('that get the same prefix cannot be told apart in one run of skeleton or stats\n(a warning names them): give them to separate runs.\n', 'that get the same prefix cannot be told apart in one run (a warning names\nthem): give them to separate runs.\n'), HELP_005);
   for (const args of [['skeleton', '--help'], ['stats', '-h'], ['help']]) assert.equal(ltms(args).out, h, args.join(' '));
   // the usage errors print the usage with every command in it
-  for (const l of [usageLine, indexUsageLine, pinUsageLine, skillUsageLine]) assert.ok(ltms([]).err.includes(l), l);
-  assert.match(ltms(['skelton']).err, /^ltms: unknown command 'skelton'\. The commands are index, skeleton, stats, search, pin and skill\.\n/);
+  for (const l of [usageLine, indexUsageLine, pinUsageLine, skillUsageLine, shapesUsageLine]) assert.ok(ltms([]).err.includes(l), l);
+  assert.match(ltms(['skelton']).err, /^ltms: unknown command 'skelton'\. The commands are index, skeleton, stats, search, pin, skill and shapes\.\n/);
 });
 
 /** The keys search prints, read from its output: the top-level keys of each kind of line, and the nested ones. */
@@ -1583,13 +1592,13 @@ test('command: an internal error inside search is reported by its kind and its p
   } finally { rm(dir); }
 });
 
-test('source: cli.ts holds ASCII only and no typed backslash-u escape, and imports nothing but node: built-ins, the parser, search, session (0.2.0), pin and the sieve cache (S366)', () => {
+test('source: cli.ts holds ASCII only and no typed backslash-u escape, and imports nothing but node: built-ins, the parser, search, session (0.2.0), pin, the sieve cache (S366) and shapes (0.3.0)', () => {
   const src = readFileSync(join(root, 'src', 'cli.ts'), 'utf8');
   assert.ok(!/[^\x00-\x7f]/.test(src), 'a character outside ASCII in src/cli.ts');
   assert.ok(!src.includes(BSL + 'u'), 'a typed backslash-u in src/cli.ts');
   for (const text of [src, readFileSync(CLI, 'utf8')]) {
     const specifiers = [...text.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
-    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js' || s === './sieve-cache.js', s);
+    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js' || s === './sieve-cache.js' || s === './shapes.js', s);
     assert.ok(specifiers.includes('./search.js'));
   }
 });

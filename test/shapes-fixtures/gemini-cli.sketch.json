@@ -1,0 +1,9 @@
+{
+  "format": "ltms-shapes-vocabulary/0",
+  "name": "gemini-cli-sketch",
+  "source": "A test fixture of ltms (test/make-shapes-fixtures.mjs), not a vocabulary it ships: a sketch of Gemini CLI's chat recording lines (the metadata line, MessageRecord, $set, $rewindTo, $patch), from names quoted from google-gemini/gemini-cli at 4ed06ed0 (chatRecordingTypes.ts), incomplete by design.",
+  "kinds": {"path":".type","sub":{}},
+  "versions": [],
+  "paths": [".sessionId",".projectHash",".startTime",".lastUpdated",".kind",".directories",".directories[]",".id",".timestamp",".type",".content",".content[]",".content[].text",".displayContent",".model",".thoughts",".thoughts[]",".thoughts[].subject",".thoughts[].description",".thoughts[].timestamp",".toolCalls",".toolCalls[]",".toolCalls[].id",".toolCalls[].name",".toolCalls[].args",".toolCalls[].status",".toolCalls[].timestamp",".toolCalls[].result",".tokens",".$set",".$set.lastUpdated",".$set.summary",".$set.directories",".$set.memoryScratchpad",".$rewindTo",".$patch",".$patch.id",".$patch.content",".$patch.toolCalls",".$patch.updates",".$patch.removeIds",".$patch.removeIds[]",".$patch.orderIds"],
+  "values": {".type":["user","info","error","warning","gemini"],".kind":["main","subagent"]}
+}

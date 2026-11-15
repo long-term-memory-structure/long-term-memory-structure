@@ -1,0 +1,44 @@
+{
+  "format": "ltms-shapes-vocabulary/0",
+  "name": "claude-code-docs",
+  "source": "ltms 0.2.2 (fa57b3c): docs/library.md, section 'The records, as Claude Code writes them'; src/parser.ts, RecordType, SystemRecord.subtype and BlockType. Public: both ship in the npm package.",
+  "kinds": { "path": ".type", "sub": { "system": ".subtype", "attachment": ".attachment.type" } },
+  "versions": [".version"],
+  "paths": [
+    ".uuid", ".parentUuid", ".sessionId", ".timestamp", ".version", ".cwd", ".gitBranch", ".userType", ".entrypoint",
+    ".isSidechain", ".type",
+    ".message", ".requestId", ".effort", ".apiBlockIndex", ".agentId", ".attributionAgent", ".attributionSkill",
+    ".isApiErrorMessage", ".error", ".wireToolInputs",
+    ".promptId", ".sourceToolAssistantUUID", ".toolUseResult", ".permissionMode", ".promptSource", ".origin", ".origin.kind",
+    ".isMeta", ".toolEndsTurn", ".toolDenialKind", ".isCompactSummary", ".queueSkipAttachments",
+    ".attachment", ".attachment.type", ".rendered", ".renderedInHumanTurn",
+    ".subtype", ".level", ".hookCount", ".hookInfos", ".hookErrors", ".hookAdditionalContext", ".preventedContinuation",
+    ".stopReason", ".hasOutput", ".toolUseID", ".logicalParentUuid", ".compactMetadata",
+    ".leafUuid",
+    ".message.id", ".message.role", ".message.model", ".message.content", ".message.usage", ".message.stop_reason",
+    ".message.usage.input_tokens", ".message.usage.output_tokens", ".message.usage.cache_creation_input_tokens",
+    ".message.usage.cache_read_input_tokens", ".message.usage.output_tokens_details",
+    ".message.usage.output_tokens_details.thinking_tokens",
+    ".message.content[]", ".message.content[].type", ".message.content[].text", ".message.content[].thinking",
+    ".message.content[].signature", ".message.content[].data", ".message.content[].id", ".message.content[].name",
+    ".message.content[].input", ".message.content[].caller", ".message.content[].caller.type",
+    ".message.content[].tool_use_id", ".message.content[].content", ".message.content[].is_error",
+    ".message.content[].source",
+    ".message.content[].content[]", ".message.content[].content[].type", ".message.content[].content[].text"
+  ],
+  "values": {
+    ".type": [
+      "assistant", "user", "attachment", "system", "queue-operation", "last-prompt", "ai-title", "bridge-session",
+      "atis-latch", "mode", "file-history-snapshot", "file-history-delta", "launched", "started", "result", "frame-link",
+      "artifact-autoreact-ledger", "permission-mode", "artifact-comment-monitor"
+    ],
+    ".subtype": [
+      "stop_hook_summary", "api_error", "turn_duration", "model_refusal_fallback", "away_summary", "local_command",
+      "compact_boundary"
+    ],
+    ".message.role": ["assistant", "user"],
+    ".message.content[].type": ["text", "thinking", "redacted_thinking", "tool_use", "tool_result", "image"],
+    ".message.content[].content[].type": ["text", "image"],
+    ".message.content[].caller.type": ["direct"]
+  }
+}

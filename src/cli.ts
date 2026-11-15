@@ -13,15 +13,17 @@
 //
 // skeleton and stats read only the files named on the command line; search reads the files named and the .jsonl files
 // under the directories named; index the same, but those in a session's own directory, set-aside copies and pin
-// directories, which it counts; pin reads the files under the paths it is given, and its pin directory; skill reads its
-// own SKILL.md. Writes only to stdout and stderr, except pin, which writes only into its --to directory.
-// No network, no telemetry.
+// directories, which it counts; shapes the same as search, and its vocabulary file; pin reads the files under the paths
+// it is given, and its pin directory; skill reads its own SKILL.md. Writes only to stdout and stderr, except pin, which
+// writes only into its --to directory. No network, no telemetry.
 
 import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import type { BigIntStats, Dirent } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getHeapStatistics } from 'node:v8';
+import { constants as bufferConstants } from 'node:buffer';
+import { fileURLToPath } from 'node:url';
 import { parseTranscript, repairedLivePath, turnsOf, inputChannel } from './parser.js';
 import type { Transcript, TreeNode } from './parser.js';
 import { checkSearchSupport, parseSearchQuery, searchTranscript, sieveMayHold, sieveResult, sieveTranscript, SEARCH_DEFAULT_KINDS, SEARCH_GAP_SCRIPTS, SEARCH_KINDS } from './search.js';
@@ -31,6 +33,8 @@ import type { SearchCounts, SearchKind, SearchNotSearched, SearchQuery, SearchRe
 import { indexTranscript } from './session.js';
 import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
 import type { PinCheckDone, PinCoverage, PinDone, PinLogLine, PinRefusal } from './pin.js';
+import { applyAllow, buildReport, checkReport, collectFiles, loadVocabulary, readShapes, reviewLines, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE } from './shapes.js';
+import type { ShapesVocabulary } from './shapes.js';
 
 /** A turn: where its prompt is, which channel it came through, and the prompt's length. */
 interface TurnLine { k: 'turn'; a: string; ta: string; ch: string; n: number }
@@ -55,6 +59,7 @@ const USAGE = `Usage:
   ltms search <query> <path>...   the turns that hold every word of the query
   ltms pin <path>... --to <dir>   copies the cleanup does not delete, and a log
   ltms skill                      the skill that teaches an agent to use ltms
+  ltms shapes <path>...           the shape of transcripts, not their content
   ltms --help                     show the help, with every output field
   ltms --version                  show the version
 `;
@@ -72,12 +77,12 @@ with the line of the file where it is written, so what compaction took out of
 the context can be found and read again (for line 22: sed -n 22p <file>).
 
 Claude Code keeps transcripts in ~/.claude/projects/<project>/<session>.jsonl.
-ltms reads only the files it is given (search and index: also the .jsonl
-files under the directories they are given, index not those in a session's
-own directory, set-aside copies or pin directories; pin: the files under the
-paths it is given; skill: its own SKILL.md and package.json), writes only to
-stdout and stderr, except pin, which writes only into its --to directory, and
-uses no network.
+ltms reads only the files it is given (search, index and shapes: also the
+.jsonl files under the directories they are given, index not those in a
+session's own directory, set-aside copies or pin directories; shapes: also
+its vocabulary file; pin: the files under the paths it is given; skill: its
+own SKILL.md and package.json), writes only to stdout and stderr, except pin,
+which writes only into its --to directory, and uses no network.
 
 It follows each session's live path: the branch the session ended on, as the
 transcript's own last-prompt record names it (without one, the branch of the
@@ -215,6 +220,13 @@ output.
 
 skill prints SKILL.md, which teaches an agent the loop: index, skeleton,
 search, then read one address. ltms skill --help says how to install it.
+
+shapes prints a report of the shape of transcripts, made to be sent, since
+it holds none of their content: record kinds, key paths, JSON types, classes
+of values, counts in powers of two, and the versions of the program that
+wrote them, every name and value in it from a vocabulary that ships with
+ltms or from your own --allow, but those versions. ltms shapes --help gives
+its whole part.
 
 Warnings go to stderr: lines that are not JSON objects (or are nested more
 than 1,000 levels deep), files with nothing to show (empty, a workflow journal,
@@ -634,7 +646,7 @@ function internalError(e: unknown): string {
   const kind = LABEL.test(e.name) ? e.name : 'Error';
   const head = e.message ? `${e.name}: ${e.message}` : e.name;
   const stack = typeof e.stack === 'string' && e.stack.startsWith(head) ? e.stack.slice(head.length) : '';
-  const frame = stack.split('\n').map((l) => /^\s+at .*?([^()\s/\\]+\.js):(\d+):\d+\)?$/.exec(l)).find((m) => m !== null && /^(?:cli|parser|pin|search|session)\.js$/.test(m[1]));
+  const frame = stack.split('\n').map((l) => /^\s+at .*?([^()\s/\\]+\.js):(\d+):\d+\)?$/.exec(l)).find((m) => m !== null && /^(?:cli|parser|pin|search|session|shapes)\.js$/.test(m[1]));
   return frame ? `${kind} at ${frame[1]}:${frame[2]}` : kind;
 }
 
@@ -2201,6 +2213,298 @@ async function pinMain(argv: string[]): Promise<number> {
   return printPinned(r, a, paths, root);
 }
 
+// ---- ltms shapes --------------------------------------------------------------------------------------------------
+// The command around ./shapes.js (shapes.ts): the arguments, which vocabulary to read, the messages and the exit status.
+// A report leaves only through writeReport, which checks each line against the report's closed language just before it
+// writes it. The review list (--unlisted), which holds what the transcripts write and says on every line that it is
+// not to be sent, is the command's only other output.
+
+/** The vocabularies that ship with ltms, by the name --supplier takes: files of the package's vocab/, beside dist/. */
+const SHAPES_SUPPLIERS: Readonly<Record<string, string>> = { 'claude-code': 'claude-code.docs.json' };
+const SHAPES_SUPPLIER = 'claude-code';
+const SHAPES_OPTIONS = '--supplier, --vocabulary, --floor, --allow, --max-line, --check, --unlisted, --help and --version';
+/** What each option that takes a value takes, for the message when it is given none. */
+const SHAPES_VALUES: Readonly<Record<string, string>> = {
+  '--supplier': `the program whose vocabulary to read (${Object.keys(SHAPES_SUPPLIERS).join(', ')})`,
+  '--vocabulary': 'a vocabulary file',
+  '--floor': 'the files a path must be seen in to be printed, 2 or more',
+  '--allow': 'a key path to print, such as .message.newField, or a path and a value, .type=newType',
+  '--max-line': 'the longest line to read, in bytes',
+  '--check': 'the report to check',
+};
+
+const SHAPES_HELP = `ltms shapes <path>... [--supplier <name> | --vocabulary <file>] [--floor <n>]
+            [--allow <path>[=<value>]]... [--max-line <bytes>]
+ltms shapes --check <report.jsonl> [--supplier <name> | --vocabulary <file>]
+ltms shapes --unlisted <path>... [--supplier <name> | --vocabulary <file>]
+            [--allow <path>[=<value>]]... [--max-line <bytes>]
+
+Prints a report of the shape of transcripts: their record kinds, key paths,
+JSON types, classes of strings and numbers, counts, and the versions of the
+program that wrote them, never their content. It is made to be sent (to the
+maintainers of ltms, say): every line of it is checked against the report's
+closed language just before it is written, so a defect in the reading can
+make a count wrong but cannot put a word of a transcript in it.
+  ltms shapes ~/.claude/projects/-home-me-my-app > shapes.jsonl
+  ltms shapes --check shapes.jsonl
+A path is a transcript, or a directory: every .jsonl under it, at any depth.
+Symbolic links met under a directory are counted, not followed, and a
+directory met twice (the same device and inode) is read once. Each line is
+read alone, as JSON.
+
+Every string in a report is one of:
+  - the report's own field names and words, such as (unlisted) and (rare);
+  - a count, as a power-of-two bucket: 0, 1, 2-3, 4-7, 8-15, and so on (a
+    number of distinct names, or an array's length, stops at 64+);
+  - a JSON type, a class of strings or a class of numbers (below);
+  - a key path or a value from the vocabulary (named in the first line, with
+    the sha256 of its file), or one named with --allow (listed there too);
+  - a version of the form N.N.N, read where the vocabulary says one is.
+A key the vocabulary does not hold prints as *, and nothing below it is
+read; a value it does not hold prints as (unlisted). A path seen in fewer
+files than the floor is not printed (its kind's rare line counts it), and a
+count over fewer files than the floor is added into (rare). Before you send
+a report, read its first line's allowed list (the only words in it you
+chose), and run ltms shapes --check on it.
+
+--supplier <name>     the vocabulary that ships with ltms for that program:
+                      claude-code (the default), built from ltms's own
+                      public docs and parser
+--vocabulary <file>   a vocabulary file instead (its format
+                      ltms-shapes-vocabulary/0)
+--floor <n>           the files a path must be seen in to be printed
+                      (default 3; 2 or more)
+--allow <path>        print this key path, written like .message.newField or
+                      .list[].name, and every path above it; repeatable
+--allow <path>=<value>
+                      print this value at this path; repeatable
+--max-line <bytes>    the longest line read (default 67108864, 64 MiB; from
+                      1024 to the longest string this Node can hold): a
+                      longer one is counted, as its bytes pass, and never
+                      read
+--check <report>      is every token of this report in its language? Give
+                      the vocabulary the report was made with
+--unlisted            NOT a report: the names and values the vocabulary does
+                      not hold, as the transcripts write them, with exact
+                      counts and the --allow that would print each, for
+                      your own review. Every line says "send":false, and
+                      --check refuses it: do not send it
+
+The report's lines, in this order, each a JSON object:
+
+The first line, k "shapes":
+  format        "ltms-shapes/0"
+  vocabulary    [{name, sha256 (the first 12 hex digits of its file's),
+                paths, values (how many it lists)}]
+  floor         the files a path must be seen in to be printed
+  allowed       the --allow arguments, sorted
+  files         read, failed
+  lines         records; blank, notJson, notObject: lines that are not
+                records; tooLong: lines longer than --max-line, not read
+
+A version line, k "version", one per version in force:
+  v             N.N.N; (none): the records before their file's first
+                version; (withheld): a value at a version path that is not
+                N.N.N
+  records       the records under it
+  files         the files they are in
+
+A kind line, k "kind", one per record kind:
+  kind          the value at the vocabulary's kind path, joined with its
+                sub-kind where the vocabulary names one (system:api_error);
+                (unlisted) for a value the vocabulary lacks, (none) when
+                there is none, (not a string) for another type
+  records       the records of that kind
+  files         the files they are in
+  versions      the records per version
+
+A path line, k "path", one per kind and path seen in floor files or more:
+  kind          the record kind
+  path          vocabulary steps, then one .* step (the keys the vocabulary
+                lacks, merged) or one [] step (the elements of an array
+                whose elements it does not name)
+  n             the occurrences
+  files         the files it occurs in
+  first, last   the lowest and highest version in force where it occurs
+  types         array, boolean, null, number, object, string
+  strings       empty, uuid, iso8601-utc, iso8601-offset, iso8601-local,
+                date, version, digits, hex (8 or more hex digits), label (a
+                label by the label rule), text
+  numbers       int, float, epoch-s, epoch-ms (whole seconds or milliseconds
+                between 2000 and 2100)
+  booleans      true, false
+  lengths       the arrays' lengths: 0, 1, 2-3, ... 32-63, 64+
+  values        only at a value path: the vocabulary's values, (unlisted)
+  names         only on a .* line: the distinct names merged there, up to
+                64+
+Every count on these lines is a bucket, and each one over fewer files than
+the floor is added into (rare).
+
+A rare line, k "rare", one per kind with path lines under the floor:
+  kind          the record kind
+  paths         how many of its path lines are under the floor
+  n             their occurrences
+
+The last line, k "end":
+  lines         the lines of the report, this one included, so a cut
+                report shows
+
+The --unlisted list, never a report:
+  k             unlisted-review (the first line, with a note), unlisted (a
+                name), unlisted-more (the occurrences past the first 2048
+                names at a path), unlisted-value (a value)
+  send          false
+  note          on the first line: what the list is, and not to send it
+  at            the .* path the name was merged into, or the value path
+  name, value   as the transcripts write it
+  n, files      exact counts
+  allow         the --allow argument that would print it; null when none
+                can (a name that is not a field name, a value that is not a
+                label)
+
+stderr holds the files and directories that could not be read, by their
+paths, and one closing line with the exact totals and the time; the report
+holds no path, no time and no exact count.
+
+Exit status: 0 when every file was read and every line written; 1 when a
+file could not be read, or a line failed the language at the write (a bug in
+ltms: the report is then incomplete, and stderr says so); --check: 0 when
+every token is in the language, 1 when not or when the report cannot be
+read; 2 on a usage error.
+`;
+
+interface ShapesArgs {
+  paths: string[]; supplier: string | null; vocabulary: string | null; floor: number | null; allow: string[];
+  maxLine: number | null; check: string | null; unlisted: boolean;
+}
+/** shapes' arguments, or the exit status of a usage error already reported (or of --help, --version). */
+function readShapesArgs(args: string[]): ShapesArgs | number {
+  const usage = (m: string): number => { err(`ltms shapes: ${m}`); return 2; };
+  const a: ShapesArgs = { paths: [], supplier: null, vocabulary: null, floor: null, allow: [], maxLine: null, check: null, unlisted: false };
+  let ended = false;
+  for (let i = 0; i < args.length; i++) {
+    const x = args[i];
+    if (!ended && x === '--') { ended = true; continue; }
+    if (!ended && x === '-') return usage(`reading from standard input ('-') is not supported. Give the transcripts' folder or files, e.g. ltms shapes ~/.claude/projects/<project> > shapes.jsonl`);
+    if (ended || !x.startsWith('-')) { a.paths.push(x); continue; }
+    if (x === '--help' || x === '-h') { out(SHAPES_HELP); return 0; }
+    if (x === '--version' || x === '-v') return printVersion();
+    const eq = x.indexOf('='), name = eq < 0 ? x : x.slice(0, eq);
+    if (name === '--unlisted') { if (eq >= 0) return usage(`--unlisted takes no value; '${x}' gives it one.`); a.unlisted = true; continue; }
+    if (!Object.hasOwn(SHAPES_VALUES, name)) return usage(`unknown option '${x}'. The options are ${SHAPES_OPTIONS}; put -- before a path that starts with '-'.`);
+    let v: string;
+    if (eq >= 0) v = x.slice(eq + 1);
+    else if (i + 1 < args.length) v = args[++i];
+    else return usage(`${name} needs a value after it: ${SHAPES_VALUES[name]}.`);
+    if (name === '--supplier' || name === '--vocabulary') {
+      if (a.supplier !== null || a.vocabulary !== null) return usage('--supplier and --vocabulary each name the vocabulary: give one of them, once.');
+      if (name === '--vocabulary') { a.vocabulary = v; continue; }
+      if (!Object.hasOwn(SHAPES_SUPPLIERS, v)) return usage(`no vocabulary ships with ltms for '${v}': the suppliers are ${Object.keys(SHAPES_SUPPLIERS).join(', ')}. To read with a vocabulary of your own, give --vocabulary <file>.`);
+      a.supplier = v;
+    } else if (name === '--floor') {
+      if (!/^\d+$/.test(v) || Number(v) < 2) return usage(`--floor takes a whole number of files, 2 or more (the default is ${SHAPES_FLOOR}); '${v}' is not one.`);
+      a.floor = Number(v);
+    } else if (name === '--max-line') {
+      if (!/^\d+$/.test(v) || Number(v) < 1024 || Number(v) > bufferConstants.MAX_STRING_LENGTH) return usage(`--max-line takes a number of bytes from 1024 to ${bufferConstants.MAX_STRING_LENGTH} (the longest string this Node can hold); '${v}' is not one.`);
+      a.maxLine = Number(v);
+    } else if (name === '--allow') a.allow.push(v);
+    else {
+      if (a.check !== null) return usage('--check reads one report: give it once.');
+      a.check = v;
+    }
+  }
+  if (a.check !== null) {
+    const extra = [...a.paths.map(q), ...(a.floor === null ? [] : ['--floor']), ...a.allow.map((s) => `--allow ${q(s)}`), ...(a.maxLine === null ? [] : ['--max-line']), ...(a.unlisted ? ['--unlisted'] : [])];
+    if (extra.length) return usage(`--check reads a report, and takes only --supplier or --vocabulary besides it (the report's first line says what it allowed), and ${extra.join(', ')} ${extra.length === 1 ? 'was' : 'were'} given too. To check: ltms shapes --check ${q(a.check)}`);
+    return a;
+  }
+  if (a.unlisted && a.floor !== null) return usage('--unlisted lists every name, in any number of files: it takes no --floor.');
+  if (!a.paths.length) return usage(`no paths: give the transcripts or their folder (every .jsonl under a directory is read), e.g. ltms shapes ~/.claude/projects/<project> > shapes.jsonl`);
+  return a;
+}
+
+/** An error of the file system (it names its system call), as against a bug in ltms. */
+const isReadError = (e: unknown): e is NodeJS.ErrnoException => e instanceof Error && typeof (e as NodeJS.ErrnoException).code === 'string' && typeof (e as NodeJS.ErrnoException).syscall === 'string';
+
+/** shapes, with an internal error outside any one file reported by its kind and its place, never its message. */
+function shapesMain(args: string[]): number {
+  try { return shapesRun(args); }
+  catch (e) { err(`ltms shapes: stopped with an internal error (${internalError(e)}). This is a bug in ltms; anything printed before it is incomplete.`); return 1; }
+}
+function shapesRun(args: string[]): number {
+  const started = Date.now();
+  const a = readShapesArgs(args);
+  if (typeof a === 'number') return a;
+  const shipped = a.vocabulary === null;
+  const file = a.vocabulary ?? fileURLToPath(new URL(`../vocab/${SHAPES_SUPPLIERS[a.supplier ?? SHAPES_SUPPLIER]}`, import.meta.url));
+  // the --check command a closing line gives: the same vocabulary, named as it was named
+  const vocabularyArg = shipped ? (a.supplier === null ? '' : ` --supplier ${a.supplier}`) : ` --vocabulary ${q(file)}`;
+  let V: ShapesVocabulary;
+  try { V = loadVocabulary(file); }
+  catch (e) {
+    if (e instanceof ShapesUsageError) { err(`ltms shapes: ${e.message}`); return 2; }
+    if (!isReadError(e)) throw e;
+    if (shipped) { err(`ltms shapes: cannot read the vocabulary that ships with ltms, '${file}' (${e.code}): the package is incomplete. Install it again, or give a vocabulary with --vocabulary <file>.`); return 1; }
+    err(`ltms shapes: cannot read the vocabulary '${file}' (${e.code}). Check the path.`);
+    return 2;
+  }
+  if (a.check !== null) return shapesCheck(a.check, V);
+  let allowed: string[];
+  try { allowed = applyAllow(V, a.allow); }
+  catch (e) { if (e instanceof ShapesUsageError) { err(`ltms shapes: ${e.message}`); return 2; } throw e; }
+
+  const found = collectFiles(a.paths);
+  for (const f of found.failed) err(isReadError(f.error) ? cannotRead('shapes', f.path, f.error) : `ltms shapes: cannot read '${f.path}' (${internalError(f.error)}).`);
+  const S = readShapes(V, found.files, { maxLine: a.maxLine ?? SHAPES_MAX_LINE, unlisted: a.unlisted });
+  for (const f of S.failures) {
+    err(isReadError(f.error) ? cannotRead('shapes', f.file, f.error)
+      : `ltms shapes: '${f.file}': stopped with an internal error (${internalError(f.error)}), so it counts as failed, and the report counts what was read of it before. This is a bug in ltms; the other files are read as usual.`);
+  }
+  S.filesFailed += found.failed.length;
+  if (!found.files.length && !found.failed.length) err(`ltms shapes: warning: no .jsonl file was found under the paths given, so the ${a.unlisted ? 'list' : 'report'} counts nothing. ${TRANSCRIPTS_HINT}`);
+  if (found.symlinks) err(`ltms shapes: ${plural(found.symlinks, 'symbolic link', 'symbolic links')} met under the directories given ${found.symlinks === 1 ? 'was' : 'were'} not followed.`);
+  const secs = (): string => ((Date.now() - started) / 1000).toFixed(1);
+
+  if (a.unlisted) {
+    // NOT a report: the names and values as the transcripts write them, for the person's own review
+    const review = reviewLines(S);
+    for (let i = 0; i < review.length; i += 1000) out(review.slice(i, i + 1000).map((o) => JSON.stringify(o) + '\n').join(''));
+    err(`ltms shapes --unlisted: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; ${review.length - 1} names and values the vocabulary does not hold, as the transcripts write them; ${secs()} s. This list is for your own review, not a report: do not send it. To print a name in a report, rerun without --unlisted, with the --allow its line gives.`);
+    return S.filesFailed ? 1 : 0;
+  }
+  const floor = a.floor ?? SHAPES_FLOOR;
+  const report = buildReport(V, S, floor, allowed);
+  const w = writeReport(report.lines, shapesLanguage(V, allowed, { floor, lines: report.lines.length }), out);
+  if (w.refused) {
+    const first = w.reasons[0];
+    err(`ltms shapes: ${plural(w.refused, 'line', 'lines')} failed the report's own language at the write and ${w.refused === 1 ? 'was' : 'were'} not written (the first, line ${first.line}: ${first.why}). This is a bug in ltms; the report is incomplete: do not send it.`);
+  }
+  err(`ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. Before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>${vocabularyArg}`);
+  return S.filesFailed || w.refused ? 1 : 0;
+}
+
+/** --check: every line of a report against its language (the vocabulary given, the report's own allowed list). */
+function shapesCheck(file: string, V: ShapesVocabulary): number {
+  let text: string;
+  try { text = readFileSync(file, 'utf8'); }
+  catch (e) { err(`ltms shapes --check: cannot read '${file}' (${isReadError(e) ? e.code : internalError(e)}).`); return 1; }
+  const r = checkReport(text, V);
+  if (r.k === 'not-a-report') { err(`ltms shapes --check: '${file}': its first line is not a report's (k "shapes", with an allowed list), so it is not a report. An --unlisted list is not one either: it is never sent.`); return 1; }
+  if (r.k === 'bad-allowed') { err(`ltms shapes --check: '${file}': its first line's allowed list holds an entry that is not an --allow argument (a path, or a path and a value, by the rules --allow takes).`); return 1; }
+  const named = V.list.map((v) => `${v.name}@${v.sha256}`).join(', ');
+  const say = (p: { line: number; why: string }): string => (p.why === 'end'
+    ? `the last line is not an end line that counts the report's ${r.lines} lines: the report is cut, or was edited`
+    : p.why === 'vocabulary' && p.line === 1
+      ? `the first line names another vocabulary than the one given, ${named}: give the one the report was made with (--vocabulary <file>)`
+      : `its ${p.why} is not in the report's language`);
+  const shown = r.problems.filter((p, i) => i < 20 || p.why === 'end');
+  for (const p of shown) err(`ltms shapes --check: line ${p.line}: ${say(p)}.`);
+  if (r.problems.length > shown.length) err(`ltms shapes --check: and ${r.problems.length - shown.length} more.`);
+  if (r.problems.length) { err(`ltms shapes --check: '${file}': ${plural(r.problems.length, 'problem', 'problems')}; do not send it as it is.`); return 1; }
+  err(`ltms shapes --check: '${file}': ${r.lines} lines, every token in the report's language (vocabulary ${named}; allowed: ${r.allowed.length ? r.allowed.join(' ') : 'none'}).`);
+  return 0;
+}
+
 function main(argv: string[]): number | Promise<number> {
   const cmd = argv[0];
   if (cmd === undefined) { err(`ltms: no command given.\n\n${USAGE}`); return 2; }
@@ -2210,9 +2514,10 @@ function main(argv: string[]): number | Promise<number> {
   if (cmd === 'index') return indexMain(argv.slice(1));
   if (cmd === 'skill') return skillMain(argv.slice(1));
   if (cmd === 'pin') return pinMain(argv.slice(1));
+  if (cmd === 'shapes') return shapesMain(argv.slice(1));
   if (cmd !== 'skeleton' && cmd !== 'stats') {
     if (cmd.startsWith('-')) err(`ltms: unknown option '${cmd}'. The options are --help and --version.\n\n${USAGE}`);
-    else err(`ltms: unknown command '${cmd}'. The commands are index, skeleton, stats, search, pin and skill.\n\n${USAGE}`);
+    else err(`ltms: unknown command '${cmd}'. The commands are index, skeleton, stats, search, pin, skill and shapes.\n\n${USAGE}`);
     return 2;
   }
 

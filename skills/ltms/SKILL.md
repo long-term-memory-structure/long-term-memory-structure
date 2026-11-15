@@ -74,3 +74,6 @@ included, and what you read enters your context.
   command a longer timeout.
 - Never write into `~/.claude/projects/`. Claude Code deletes transcripts after 30 days by default
   (`cleanupPeriodDays`); to keep them, the user runs `ltms pin` (`npx -y long-term-memory-structure@0.2 pin --help`).
+- To show the maintainers what transcripts are made of without sending them, the user runs `ltms shapes`
+  (`npx -y long-term-memory-structure@0.2 shapes --help`): record kinds, key paths and types, never their content. The
+  user reads its first line and runs its `--check` before sending; its `--unlisted` list is never sent.

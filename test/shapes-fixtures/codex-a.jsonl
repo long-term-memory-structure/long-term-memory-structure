@@ -1,0 +1,8 @@
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"session_meta","payload":{"id":"00000000-0000-4000-8000-000000000153","session_id":"00000000-0000-4000-8000-000000000154","timestamp":"2026-01-02T03:04:05.678Z","cwd":"/home/zqcanary","originator":"codex_cli_rs","cli_version":"0.169.0","source":"cli","model_provider":"zqprovider","base_instructions":{"text":"zq7canary"},"history_mode":"legacy"}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"turn_context","payload":{"cwd":"/home/zqcanary","approval_policy":"on-request","model":"zqmodel","effort":"medium"}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"zq7canary"}]}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"zq7canary\"]}","call_id":"call_zq7canary"}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_zq7canary","output":"zq7canary"}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"event_msg","payload":{"type":"user_message","message":"zq7canary","kind":"plain"}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"event_msg","payload":{"type":"token_count","info":null}}
+{"timestamp":"2026-01-02T03:04:05.678Z","type":"compacted","payload":{"message":"zq7canary summary"}}
