@@ -17,7 +17,7 @@
 // it is given, and its pin directory; records reads only the one file named; skill reads its own SKILL.md. Writes only to stdout and stderr, except pin, which
 // writes only into its --to directory. No network, no telemetry.
 
-import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import type { BigIntStats, Dirent } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -35,7 +35,8 @@ import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches }
 import type { PinCheckDone, PinCoverage, PinDone, PinLogLine, PinRefusal } from './pin.js';
 import { applyAllow, buildReport, checkReport, collectFiles, loadVocabulary, readShapes, reviewLines, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE } from './shapes.js';
 import type { ShapesVocabulary } from './shapes.js';
-import { recordsOf, RECORD_KINDS } from './records.js';
+import { writeRecords, RecordsLineTooLong, RECORD_KINDS } from './records.js';
+import type { RecordsRun } from './records.js';
 
 /** A turn: where its prompt is, which channel it came through, and the prompt's length. */
 interface TurnLine { k: 'turn'; a: string; ta: string; ch: string; n: number }
@@ -2582,12 +2583,22 @@ The kinds:
   other types   other (the type is in supplier.type)
   a line        blank (white space only); malformed (not a JSON object)
 
+The file is read twice, a piece at a time: once for the first record of each
+uuid and the versions (the header, written first, lists them), once for the
+records. Memory holds a piece of 1 MiB, the line that crosses it, and the
+uuids, never the whole file. Both reads stop at the size the file had when it
+was opened, so lines appended later are not read; if the two reads differ (the
+file was rewritten or cut between them), stderr says so and the exit status is
+1: the records written are then not a view of the file.
+
 stderr holds one line: the lines read, the records written by kind, the
 repeats, and the parent links (in the file, roots, not in this file, outside
 the tree).
 
-Exit status: 0 when the count balances; 1 when the file cannot be read, or
-the count does not balance (a bug in ltms); 2 on a usage error.
+Exit status: 0 when the count balances; 1 when the file cannot be read, the
+two reads differ, a line is too long for this Node to read as a string, or
+the count does not balance (a bug in ltms); 2 on a usage error, a path that
+is not a regular file (a FIFO, a directory) included.
 `;
 
 /** records, with an internal error reported by its kind and its place, never its message. */
@@ -2612,12 +2623,22 @@ function recordsRun(args: string[]): number {
   let isDir = false;
   try { isDir = statSync(file).isDirectory(); } catch { /* reading it below says why */ }
   if (isDir) { err(`ltms records: '${file}' is a directory; records reads one transcript. For a folder: ${FOLDER.replace('<folder>', q(file.replace(/\/+$/, '')))}`); return 2; }
-  let bytes: Buffer;
-  try { bytes = readFileSync(file); }
+  // Read twice, a chunk at a time (src/records.ts says why). O_NONBLOCK: a FIFO opens at once, without waiting for a
+  // writer, and is refused below; a regular file reads as usual.
+  let fd: number;
+  try { fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0)); }
   catch (e) { err(cannotRead('records', file, e)); return 1; }
-  const r = recordsOf(bytes, { prefix: prefixOf(file), path: resolve(file), readAt: new Date().toISOString(), converterVersion: readVersion() });
-  out(JSON.stringify(r.header) + '\n');
-  for (let i = 0; i < r.records.length; i += 1000) out(r.records.slice(i, i + 1000).map((x) => JSON.stringify(x) + '\n').join(''));
+  let r: RecordsRun;
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) { err(`ltms records: '${file}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Copy it to one first, e.g. cat ${q(file)} > transcript.jsonl`); return 2; }
+    r = writeRecords((buf, pos) => readSync(fd, buf, 0, buf.length, pos), st.size, { prefix: prefixOf(file), path: resolve(file), readAt: new Date().toISOString(), converterVersion: readVersion() }, out);
+  } catch (e) {
+    if (e instanceof RecordsLineTooLong) { err(`ltms records: '${file}': ${e.message}, so it cannot be converted; what was written before it is incomplete.`); return 1; }
+    if (typeof (e as NodeJS.ErrnoException)?.code === 'string') { err(`${cannotRead('records', file, e)} What was written before it is incomplete.`); return 1; }
+    throw e;
+  } finally { closeSync(fd); }
+  if (r.changed) { err(`ltms records: '${file}': ${r.changed}, so the records written are not a view of it. Run it again.`); return 1; }
   const B = r.balance;
   const kinds = RECORD_KINDS.filter((k) => B.byKind[k]).map((k) => `${B.byKind[k]} ${k}`).join(', ');
   const ok = B.linesRead === B.recordsWritten;

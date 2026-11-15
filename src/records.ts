@@ -25,8 +25,17 @@
 // the like) is outside the tree: parent null, parent_by "none". A record whose uuid an earlier record carries (a replay)
 // names that one in dup_of. Nothing is repaired here: a repair belongs to a view (the live path), not to the records.
 //
-// This module reads no file and writes nothing: the command (cli.ts) gives it the bytes and prints what it returns. It
-// imports node:crypto, so it is not part of the library's entry point (which imports nothing from Node).
+// How it reads (S375): never the whole file. Two passes over the same bytes, a chunk at a time (1 MiB): the first finds
+// the first line that carries each uuid (a parent may be written after its child) and the versions (the header, written
+// first, lists them); the second writes each record as its line passes. So memory holds one chunk, the line that
+// crosses it, and the uuids, not the file and every line parsed (that took 3.6 GiB for a file of 1 GB, and a file of
+// 2 GiB or more could not be read at all). Both passes read the size the file had when it was opened, so lines appended
+// after it are not read; and each pass hashes every byte it reads: two passes that disagree (the file was rewritten, or
+// shrank, between them) are reported, and the records written are then not a view of it.
+//
+// This module opens no file and writes nothing itself: the command (cli.ts) gives it a function that reads a file's
+// bytes at a position and one that writes text. It imports node:crypto, so it is not part of the library's entry point
+// (which imports nothing from Node).
 
 import { createHash } from 'node:crypto';
 import { blocksOf, hasEnvelope, isInputTurn, isToolResultRecord } from './parser.js';
@@ -196,52 +205,113 @@ function timeOf(r: Record<string, any>): RecordTime | undefined {
   return out;
 }
 
-/** The lines of a file: [start, end) byte spans, split on byte 0x0A, which never occurs inside a UTF-8 sequence. A last
- *  line with no newline is a line; the empty rest after a final newline is not. */
-export function lineSpans(bytes: Uint8Array): { spans: [number, number][]; terminated: number; unterminated: boolean } {
-  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const spans: [number, number][] = [];
-  let start = 0;
-  for (let nl = buf.indexOf(NL, start); nl >= 0; nl = buf.indexOf(NL, start)) { spans.push([start, nl]); start = nl + 1; }
-  const unterminated = start < buf.length;
-  if (unterminated) spans.push([start, buf.length]);
-  return { spans, terminated: unterminated ? spans.length - 1 : spans.length, unterminated };
+/** The bytes read at a time. */
+export const RECORDS_CHUNK = 1 << 20;
+
+/** Reads the source's bytes at a byte position into buf, and returns how many it read (0 at its end). */
+export type ReadAt = (buf: Buffer, position: number) => number;
+
+/** One pass over a source. */
+export interface RecordsPass {
+  /** The bytes read. */
+  bytes: number;
+  /** The lines the splitter gave: one per newline, and a last one without a newline. */
+  lines: number;
+  /** The newline bytes, counted chunk by chunk by another route than the splitter's (the balance compares the two). */
+  newlines: number;
+  /** True when the last byte read is not a newline: the last line has none. */
+  unterminated: boolean;
+  /** The sha256 of every byte read, in hex: two passes over an unchanged source agree on it. */
+  sha256: string;
 }
 
-/** The lines of a file counted by another route than lineSpans: its newline bytes, and a last line without one. The
- *  balance compares this count with the records written, so a defect in the splitting shows as a count that differs. */
-export function countLines(bytes: Uint8Array): { newlines: number; unterminated: boolean } {
-  let newlines = 0;
-  for (let i = 0; i < bytes.length; i++) if (bytes[i] === NL) newlines++;
-  return { newlines, unterminated: bytes.length > 0 && bytes[bytes.length - 1] !== NL };
+/** Reads `size` bytes of a source, a chunk at a time, and gives each line to onLine: its bytes without the newline (a
+ *  carriage return before it kept), valid only during the call, its number (1-based) and the byte offset of its start.
+ *  A line longer than a chunk is joined from its pieces; a last line without a newline is a line; the empty rest after
+ *  a final newline is not. Splits on byte 0x0A, which never occurs inside a UTF-8 sequence. */
+export function scanLines(read: ReadAt, size: number, chunkBytes: number, onLine: (bytes: Buffer, line: number, offset: number) => void): RecordsPass {
+  const buf = Buffer.allocUnsafe(Math.max(1, Math.min(chunkBytes, size)));
+  const whole = createHash('sha256');
+  let pos = 0, line = 0, start = 0, newlines = 0, last = -1;
+  let pieces: Buffer[] = [];
+  while (pos < size) {
+    const n = read(buf.subarray(0, Math.min(buf.length, size - pos)), pos);
+    if (!(n > 0)) break; // the source ended before its size: it shrank (the caller compares bytes with size)
+    const chunk = buf.subarray(0, n);
+    whole.update(chunk);
+    for (let i = 0; i < n; i++) if (chunk[i] === NL) newlines++;
+    last = chunk[n - 1];
+    let from = 0;
+    for (let nl = chunk.indexOf(NL, from); nl >= 0; nl = chunk.indexOf(NL, from)) {
+      const part = chunk.subarray(from, nl);
+      onLine(pieces.length ? Buffer.concat([...pieces, part]) : part, ++line, start);
+      pieces = [];
+      start = pos + nl + 1;
+      from = nl + 1;
+    }
+    if (from < n) pieces.push(Buffer.from(chunk.subarray(from))); // a copy: buf is read into again
+    pos += n;
+  }
+  if (pieces.length) onLine(Buffer.concat(pieces), ++line, start);
+  return { bytes: pos, lines: line, newlines, unterminated: pos > 0 && last !== NL, sha256: whole.digest('hex') };
 }
 
-/** A transcript's bytes as ltms-records/0: its header, one record per line, and the balance. */
-export function recordsOf(bytes: Uint8Array, o: RecordsOptions): { header: RecordsHeader; records: ViewRecord[]; balance: RecordsBalance } {
-  const { spans } = lineSpans(bytes);
-  const counted = countLines(bytes);
+/** A line longer than this Node can hold as a string: it cannot be parsed, so the file cannot be converted. */
+export class RecordsLineTooLong extends Error {
+  constructor(readonly line: number, readonly bytes: number) {
+    super(`line ${line} is ${bytes} bytes, longer than this Node can read as a string`);
+    this.name = 'RecordsLineTooLong';
+  }
+}
+
+/** A line as JSON: an object; 'blank' (white space only); or 'malformed' (not a JSON object). */
+function parseLine(bytes: Buffer, line: number): Record<string, any> | 'blank' | 'malformed' {
+  let text: string;
+  try { text = DECODER.decode(bytes); }
+  catch { throw new RecordsLineTooLong(line, bytes.length); }
+  if (text.trim() === '') return 'blank';
+  let v: unknown;
+  try { v = JSON.parse(text); } catch { return 'malformed'; }
+  return isObj(v) ? v : 'malformed';
+}
+
+/** What a records run wrote, and whether its two passes agreed. */
+export interface RecordsRun {
+  header: RecordsHeader;
+  balance: RecordsBalance;
+  /** null when both passes read the same bytes; else why not (the records written are then not a view of the file). */
+  changed: string | null;
+}
+
+/** A transcript as ltms-records/0, written as it is read: the header (after a first pass), then one record per line
+ *  (the second pass), in batches of 1000 lines. `size` is the file's length when it was opened. */
+export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, write: (text: string) => void, chunkBytes: number = RECORDS_CHUNK): RecordsRun {
   const at = (line: number): string => `${o.prefix}:L${line}`;
-  // first pass: each line parsed alone; the first line that carries each uuid, so a parent may be written after its child
-  const parsed: (Record<string, any> | 'blank' | 'malformed')[] = [];
+  // the first pass: the first line that carries each uuid, and the versions
   const firstLine = new Map<string, number>();
-  spans.forEach(([a, b], i) => {
-    const text = DECODER.decode(bytes.subarray(a, b));
-    if (text.trim() === '') { parsed.push('blank'); return; }
-    let v: unknown;
-    try { v = JSON.parse(text); } catch { parsed.push('malformed'); return; }
-    if (!isObj(v)) { parsed.push('malformed'); return; }
-    parsed.push(v);
-    if (hasEnvelope(v) && !firstLine.has(v.uuid)) firstLine.set(v.uuid, i + 1);
+  const versions = new Set<string>();
+  const one = scanLines(read, size, chunkBytes, (bytes, line) => {
+    const p = parseLine(bytes, line);
+    if (typeof p === 'string') return;
+    if (hasEnvelope(p) && !firstLine.has(p.uuid)) firstLine.set(p.uuid, line);
+    const version = str(p.version);
+    if (version !== undefined) versions.add(version);
   });
-  // second pass: the records
+  const header: RecordsHeader = {
+    format: RECORDS_FORMAT, kind: 'header',
+    source: { id: o.prefix, path: o.path, bytes: one.bytes, lines: one.newlines, last_line_unterminated: one.unterminated, read_at: o.readAt },
+    supplier: { name: 'claude-code', versions: [...versions].sort(cmpVersions) },
+    converter: { name: 'ltms', version: o.converterVersion },
+    content: 'by-address',
+  };
+  write(JSON.stringify(header) + '\n');
+  // the second pass: each record as its line passes
   const byKind = Object.fromEntries(RECORD_KINDS.map((k) => [k, 0])) as Record<RecordKind, number>;
   const parents = { resolved: 0, root: 0, unresolved: 0, none: 0 };
-  const versions = new Set<string>();
-  let dupOf = 0;
-  const records: ViewRecord[] = spans.map(([a, b], i) => {
-    const line = i + 1;
-    const src: RecordSrc = { kind: 'line', line, offset: a, bytes: b - a, sha256: createHash('sha256').update(bytes.subarray(a, b)).digest('hex') };
-    const p = parsed[i];
+  let dupOf = 0, written = 0, text = '', held = 0;
+  const two = scanLines(read, size, chunkBytes, (bytes, line, offset) => {
+    const src: RecordSrc = { kind: 'line', line, offset, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    const p = parseLine(bytes, line);
     let rec: ViewRecord;
     if (p === 'blank' || p === 'malformed') {
       parents.none++;
@@ -261,11 +331,11 @@ export function recordsOf(bytes: Uint8Array, o: RecordsOptions): { header: Recor
         parentBy = 'supplied';
         if (pu === null) parents.root++;
         else { const pl = firstLine.get(pu); if (pl !== undefined) { parent = at(pl); parents.resolved++; } else parents.unresolved++; }
-        const first = firstLine.get(p.uuid) as number;
-        if (first !== line) { dup = at(first); dupOf++; }
+        const first = firstLine.get(p.uuid);
+        if (first !== undefined && first !== line) { dup = at(first); dupOf++; }
       } else parents.none++;
       const version = str(p.version);
-      if (version !== undefined) { supplier.version = version; versions.add(version); }
+      if (version !== undefined) supplier.version = version;
       const group = p.type === 'assistant' ? str(p.requestId) ?? (isObj(p.message) ? str(p.message.id) : undefined) : undefined;
       const time = timeOf(p);
       rec = {
@@ -275,14 +345,22 @@ export function recordsOf(bytes: Uint8Array, o: RecordsOptions): { header: Recor
       };
     }
     byKind[rec.kind]++;
-    return rec;
+    written++;
+    text += JSON.stringify(rec) + '\n';
+    if (++held === 1000) { write(text); text = ''; held = 0; }
   });
-  const header: RecordsHeader = {
-    format: RECORDS_FORMAT, kind: 'header',
-    source: { id: o.prefix, path: o.path, bytes: bytes.length, lines: counted.newlines, last_line_unterminated: counted.unterminated, read_at: o.readAt },
-    supplier: { name: 'claude-code', versions: [...versions].sort(cmpVersions) },
-    converter: { name: 'ltms', version: o.converterVersion },
-    content: 'by-address',
-  };
-  return { header, records, balance: { linesRead: counted.newlines + (counted.unterminated ? 1 : 0), recordsWritten: records.length, byKind, dupOf, parents } };
+  if (text) write(text);
+  const changed = one.bytes < size || two.bytes < size
+    ? `the file shrank while it was read (${size} bytes when it was opened; ${Math.min(one.bytes, two.bytes)} read)`
+    : one.sha256 !== two.sha256 ? `the file changed between the two reads (its first ${size} bytes differ)` : null;
+  return { header, balance: { linesRead: two.newlines + (two.unterminated ? 1 : 0), recordsWritten: written, byKind, dupOf, parents }, changed };
+}
+
+/** writeRecords over bytes in memory: the header, the records and the balance (for the tests and the library). */
+export function recordsOf(bytes: Uint8Array, o: RecordsOptions, chunkBytes: number = RECORDS_CHUNK): { header: RecordsHeader; records: ViewRecord[]; balance: RecordsBalance; changed: string | null } {
+  const src = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const parts: string[] = [];
+  const r = writeRecords((buf, pos) => src.copy(buf, 0, pos, Math.min(pos + buf.length, src.length)), src.length, o, (t) => { parts.push(t); }, chunkBytes);
+  const records = parts.join('').split('\n').slice(1, -1).map((l) => JSON.parse(l) as ViewRecord);
+  return { header: r.header, records, balance: r.balance, changed: r.changed };
 }

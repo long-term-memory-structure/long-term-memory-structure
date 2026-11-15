@@ -127,22 +127,48 @@ export declare function kindOf(r: Record<string, any>): {
     kind: RecordKind;
     kinds?: RecordKind[];
 };
-/** The lines of a file: [start, end) byte spans, split on byte 0x0A, which never occurs inside a UTF-8 sequence. A last
- *  line with no newline is a line; the empty rest after a final newline is not. */
-export declare function lineSpans(bytes: Uint8Array): {
-    spans: [number, number][];
-    terminated: number;
-    unterminated: boolean;
-};
-/** The lines of a file counted by another route than lineSpans: its newline bytes, and a last line without one. The
- *  balance compares this count with the records written, so a defect in the splitting shows as a count that differs. */
-export declare function countLines(bytes: Uint8Array): {
+/** The bytes read at a time. */
+export declare const RECORDS_CHUNK: number;
+/** Reads the source's bytes at a byte position into buf, and returns how many it read (0 at its end). */
+export type ReadAt = (buf: Buffer, position: number) => number;
+/** One pass over a source. */
+export interface RecordsPass {
+    /** The bytes read. */
+    bytes: number;
+    /** The lines the splitter gave: one per newline, and a last one without a newline. */
+    lines: number;
+    /** The newline bytes, counted chunk by chunk by another route than the splitter's (the balance compares the two). */
     newlines: number;
+    /** True when the last byte read is not a newline: the last line has none. */
     unterminated: boolean;
-};
-/** A transcript's bytes as ltms-records/0: its header, one record per line, and the balance. */
-export declare function recordsOf(bytes: Uint8Array, o: RecordsOptions): {
+    /** The sha256 of every byte read, in hex: two passes over an unchanged source agree on it. */
+    sha256: string;
+}
+/** Reads `size` bytes of a source, a chunk at a time, and gives each line to onLine: its bytes without the newline (a
+ *  carriage return before it kept), valid only during the call, its number (1-based) and the byte offset of its start.
+ *  A line longer than a chunk is joined from its pieces; a last line without a newline is a line; the empty rest after
+ *  a final newline is not. Splits on byte 0x0A, which never occurs inside a UTF-8 sequence. */
+export declare function scanLines(read: ReadAt, size: number, chunkBytes: number, onLine: (bytes: Buffer, line: number, offset: number) => void): RecordsPass;
+/** A line longer than this Node can hold as a string: it cannot be parsed, so the file cannot be converted. */
+export declare class RecordsLineTooLong extends Error {
+    readonly line: number;
+    readonly bytes: number;
+    constructor(line: number, bytes: number);
+}
+/** What a records run wrote, and whether its two passes agreed. */
+export interface RecordsRun {
+    header: RecordsHeader;
+    balance: RecordsBalance;
+    /** null when both passes read the same bytes; else why not (the records written are then not a view of the file). */
+    changed: string | null;
+}
+/** A transcript as ltms-records/0, written as it is read: the header (after a first pass), then one record per line
+ *  (the second pass), in batches of 1000 lines. `size` is the file's length when it was opened. */
+export declare function writeRecords(read: ReadAt, size: number, o: RecordsOptions, write: (text: string) => void, chunkBytes?: number): RecordsRun;
+/** writeRecords over bytes in memory: the header, the records and the balance (for the tests and the library). */
+export declare function recordsOf(bytes: Uint8Array, o: RecordsOptions, chunkBytes?: number): {
     header: RecordsHeader;
     records: ViewRecord[];
     balance: RecordsBalance;
+    changed: string | null;
 };

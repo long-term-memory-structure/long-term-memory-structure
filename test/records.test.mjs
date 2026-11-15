@@ -8,11 +8,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync, writeSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -173,5 +173,107 @@ test('records: the same bytes give the same records, but the time read', () => {
   const d = tmp(), f = synthetic(d);
   const strip = (s) => s.replace(/"read_at":"[^"]*"/, '"read_at":""');
   assert.equal(strip(run(f).stdout), strip(run(f).stdout));
+  rmSync(d, { recursive: true });
+});
+
+// ---- S375: the file is read in pieces, twice (once for its links and versions, once for its records), never whole ----
+
+/** The first line of a file, read alone (a records file can be large). */
+function firstLineOf(file) {
+  const fd = openSync(file, 'r');
+  try { const b = Buffer.alloc(64 << 10); const n = readSync(fd, b, 0, b.length, 0); const s = b.subarray(0, n).toString('utf8'); return JSON.parse(s.slice(0, s.indexOf('\n'))); }
+  finally { closeSync(fd); }
+}
+/** Runs records on a file with its stdout written to a file beside it: [status, stderr, the output's path]. */
+function runToFile(file, nodeArgs = []) {
+  const outPath = file + '.records';
+  const fd = openSync(outPath, 'w');
+  try {
+    const r = spawnSync(process.execPath, [...nodeArgs, CLI, 'records', file], { encoding: 'utf8', stdio: ['ignore', fd, 'pipe'], timeout: 600000 });
+    return [r.status, r.stderr, outPath, r.signal];
+  } finally { closeSync(fd); }
+}
+
+test('records (S375): a transcript is read in pieces, never whole: 64 MB of records under a heap of 40 MB (it once held the file and every line parsed: 3.6 GiB for 1 GB)', () => {
+  const d = tmp(), f = join(d, 'big.jsonl');
+  const demo = readFileSync(join(here, 'fixtures', 'demo.jsonl'));
+  const copies = Math.ceil((64 << 20) / demo.length);
+  const fd = openSync(f, 'w');
+  for (let i = 0; i < copies; i++) writeSync(fd, demo);
+  closeSync(fd);
+  const [status, stderr, out, signal] = runToFile(f, ['--max-old-space-size=40']);
+  assert.equal(status, 0, `status ${status}, signal ${signal}: ${stderr.slice(0, 400)}`);
+  const n = copies * 37;
+  assert.match(stderr, new RegExp(`: ${n} lines read, ${n} records written `));
+  const h = firstLineOf(out);
+  assert.deepEqual([h.source.bytes, h.source.lines, h.source.last_line_unterminated], [copies * demo.length, n, false]);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375): a FIFO is refused at once (records reads a file twice), never waited on', { skip: process.platform === 'win32' && 'no mkfifo' }, (t) => {
+  const d = tmp(), f = join(d, 'pipe.jsonl');
+  const m = spawnSync('mkfifo', [f]);
+  if (m.status !== 0) { t.skip('mkfifo is not available here'); rmSync(d, { recursive: true }); return; }
+  const r = spawnSync(process.execPath, [CLI, 'records', f], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(r.status, 2, `status ${r.status}, signal ${r.signal}: ${r.stderr}`);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /is not a regular file/);
+  assert.match(r.stderr, /cat .* > /, 'the fix: copy it to a file');
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375): the module gives the same records from chunks of any size, and refuses two reads that differ', async () => {
+  const R = await import(pathToFileURL(join(DIST, 'records.js')).href);
+  assert.equal(typeof R.writeRecords, 'function', 'records.js exports writeRecords(read, size, options, write, chunkBytes)');
+  const d = tmp(), f = synthetic(d), bytes = readFileSync(f);
+  const o = { prefix: '12345678', path: f, readAt: '2026-01-01T00:00:00.000Z', converterVersion: '0.0.0' };
+  const readerOf = (passes) => { let pass = -1; return (buf, pos) => { if (pos === 0) pass++; const src = passes[Math.min(pass, passes.length - 1)]; return src.copy(buf, 0, pos, Math.min(pos + buf.length, src.length)); }; };
+  const runWith = (chunk, passes = [bytes], size = bytes.length) => { let text = ''; const r = R.writeRecords(readerOf(passes), size, o, (s) => { text += s; }, chunk); return { text, r }; };
+  const want = runWith(1 << 20);
+  assert.equal(want.r.changed, null);
+  assert.equal(want.text, run(f).stdout.replace(/^.*\n/, (h) => JSON.stringify({ ...JSON.parse(h), source: { ...JSON.parse(h).source, path: f, read_at: o.readAt }, converter: { name: 'ltms', version: '0.0.0' } }) + '\n'), 'the module writes what the command prints');
+  for (const chunk of [1, 2, 3, 5, 7, 64, 4096]) assert.equal(runWith(chunk).text, want.text, `chunks of ${chunk} bytes`);
+  // a byte changed between the two reads: refused
+  const flipped = Buffer.from(bytes); flipped[100] ^= 1;
+  assert.match(String(runWith(7, [bytes, flipped]).r.changed), /changed between the two reads/);
+  // the file shorter at the second read than at the first: refused
+  assert.match(String(runWith(1 << 20, [bytes, bytes.subarray(0, bytes.length - 10)]).r.changed), /shrank/);
+  // the file grown since it was opened: only the bytes it had then are read, twice, and nothing is refused
+  const grown = Buffer.concat([bytes, Buffer.from('{"type":"late"}\n')]);
+  const g = runWith(1 << 20, [grown, grown], bytes.length);
+  assert.equal(g.r.changed, null);
+  assert.equal(g.text, want.text);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375): a transcript of more than 2 GiB is converted (readFileSync refused it), in bounded memory',
+  { skip: !process.env.LTMS_HEAVY && 'set LTMS_HEAVY=1 to run: it writes a file of about 2.2 GB and its records' }, () => {
+  const d = tmp(), f = join(d, 'huge.jsonl');
+  const demo = readFileSync(join(here, 'fixtures', 'demo.jsonl'));
+  const copies = Math.ceil((2.05 * 1024 ** 3) / demo.length);
+  const fd = openSync(f, 'w');
+  for (let i = 0; i < copies; i++) writeSync(fd, demo);
+  closeSync(fd);
+  const [status, stderr, out, signal] = runToFile(f, ['--max-old-space-size=64']);
+  assert.equal(status, 0, `status ${status}, signal ${signal}: ${stderr.slice(0, 400)}`);
+  const n = copies * 37;
+  assert.match(stderr, new RegExp(`: ${n} lines read, ${n} records written `));
+  assert.equal(firstLineOf(out).source.bytes, copies * demo.length);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375): a line too long for this Node to read as a string stops the command with its line and length, not as a bug',
+  { skip: !process.env.LTMS_HEAVY && 'set LTMS_HEAVY=1 to run: it writes a line of about 600 MB and needs about 2 GB of memory' }, () => {
+  const d = tmp(), f = join(d, 'long.jsonl');
+  const fd = openSync(f, 'w');
+  writeSync(fd, '{"type":"user","message":"');
+  const piece = Buffer.alloc(1 << 20, 0x61);
+  for (let i = 0; i < 600; i++) writeSync(fd, piece);
+  writeSync(fd, '"}\n{"type":"x"}\n');
+  closeSync(fd);
+  const [status, stderr] = runToFile(f);
+  assert.equal(status, 1, stderr);
+  assert.match(stderr, /line 1 is \d+ bytes, longer than this Node can read as a string/);
+  assert.doesNotMatch(stderr, /a bug in ltms/);
   rmSync(d, { recursive: true });
 });
