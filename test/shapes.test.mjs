@@ -541,7 +541,9 @@ test('shapes: the write guard checks the very text it writes (an inherited toJSO
 // S4 (S374's closure read): versions equal as numbers but spelled apart (1.2.3, 01.2.3, 1.02.3) were ordered by where
 // they were first met, so the order of the files reached the report (the version lines, each kind's versions, a path
 // line's first and last). Three files, one spelling each; B holds A's contents under other names; a hard link reaches
-// A/x.jsonl a second time, so the two orders of the same two paths read the same files in another order.
+// A/x.jsonl a second time, so the two orders of the same two paths read the same files in another order. Since U3 the
+// version rule withholds 01.2.3 and 1.02.3, so no two versions can tie and these files no longer reach the tie-break
+// (a mutant without it survives this test): the test still holds the bytes to the order of the files.
 test('shapes: versions equal as numbers but spelled apart: the same contents under other names, and the same two paths in either order, give the same bytes, every field equal to the recompute', () => {
   const dir = tmp();
   try {
