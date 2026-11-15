@@ -202,8 +202,8 @@ shapes prints a report of the shape of transcripts, made to be sent, since
 it holds none of their content: record kinds, key paths, JSON types, classes
 of values, counts in powers of two, and the versions of the program that
 wrote them, every name and value in it from a vocabulary that ships with
-ltms or from your own --allow, but those versions. ltms shapes --help gives
-its whole part.
+ltms, or from the vocabulary you give with --vocabulary, or from your own
+--allow, but those versions. ltms shapes --help gives its whole part.
 
 records prints a transcript as ltms-records/0, the record protocol's format:
 a header, then one JSON line per line of the file, with the address of its
@@ -2726,7 +2726,8 @@ read; a value it does not hold prints as (unlisted). A path seen in fewer
 files than the floor is not printed (its kind's rare line counts it), and a
 count over fewer files than the floor is added into (rare). Before you send
 a report, read its first line's allowed list (the only words in it you
-chose), and run ltms shapes --check on it.
+chose, but those of a vocabulary you gave with --vocabulary: read that file
+too), and run ltms shapes --check on it.
 
 --supplier <name>     the vocabulary that ships with ltms for that program:
                       claude-code (the default), built from ltms's own
@@ -2780,7 +2781,9 @@ A kind line, k "kind", one per record kind:
                 sub-kind where the vocabulary names one (system:api_error);
                 at either path, (unlisted) for a string the vocabulary
                 lacks, (none) when the record has none, (not a string) for
-                another type: (none), system:(none), system:(unlisted)
+                another type: (none), system:(none), system:(unlisted);
+                and (all) for every record when the vocabulary names no
+                kind path
   records       the records of that kind
   files         the files they are in
   versions      the records per version

@@ -497,6 +497,14 @@ test("shapes: --check also refuses a report made with another vocabulary, a firs
   } finally { rm(dir); }
 });
 
+/** Every field, line kind, type, class and word of the language, and of the review list: the README's section on ltms
+ *  shapes names each as code, and ltms shapes --help names each. */
+const LANGUAGE_WORDS = ['shapes', 'version', 'kind', 'path', 'rare', 'end', 'format', 'vocabulary', 'name', 'sha256', 'paths', 'values', 'floor', 'allowed', 'files', 'read', 'failed',
+  'lines', 'records', 'blank', 'notJson', 'notObject', 'tooLong', 'v', 'versions', 'n', 'first', 'last', 'types', 'strings', 'numbers', 'booleans', 'lengths', 'names',
+  'array', 'boolean', 'null', 'number', 'object', 'string', 'empty', 'uuid', 'iso8601-utc', 'iso8601-offset', 'iso8601-local', 'date', 'digits', 'hex', 'label', 'text',
+  'int', 'float', 'epoch-s', 'epoch-ms', 'true', 'false', '(rare)', '(unlisted)', '(none)', '(withheld)', '(not a string)', '(all)', '64+', '*',
+  'unlisted-review', 'unlisted', 'unlisted-more', 'unlisted-value', 'send', 'note', 'at', 'allow'];
+
 test("README: shapes' section: its example lines are what ltms shapes prints on the fixtures, as it runs them; it names every field, every line kind, and every type, class and word of the language", () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
   const start = readme.indexOf('### `ltms shapes');
@@ -508,12 +516,7 @@ test("README: shapes' section: its example lines are what ltms shapes prints on 
   const examples = section.split('\n').filter((l) => l.startsWith('{"k":'));
   assert.ok(examples.length >= 6, `${examples.length} example lines`);
   assert.deepEqual(examples.filter((l) => !printed.has(l)), [], 'example lines ltms shapes does not print');
-  const words = ['shapes', 'version', 'kind', 'path', 'rare', 'end', 'format', 'vocabulary', 'name', 'sha256', 'paths', 'values', 'floor', 'allowed', 'files', 'read', 'failed',
-    'lines', 'records', 'blank', 'notJson', 'notObject', 'tooLong', 'v', 'versions', 'n', 'first', 'last', 'types', 'strings', 'numbers', 'booleans', 'lengths', 'names',
-    'array', 'boolean', 'null', 'number', 'object', 'string', 'empty', 'uuid', 'iso8601-utc', 'iso8601-offset', 'iso8601-local', 'date', 'digits', 'hex', 'label', 'text',
-    'int', 'float', 'epoch-s', 'epoch-ms', 'true', 'false', '(rare)', '(unlisted)', '(none)', '(withheld)', '(not a string)', '(all)', '64+', '*',
-    'unlisted-review', 'unlisted', 'unlisted-more', 'unlisted-value', 'send', 'note', 'at', 'allow'];
-  assert.deepEqual(words.filter((w) => !section.includes('`' + w + '`')), [], "words of the language the README's section on ltms shapes does not name as code");
+  assert.deepEqual(LANGUAGE_WORDS.filter((w) => !section.includes('`' + w + '`')), [], "words of the language the README's section on ltms shapes does not name as code");
 });
 
 test('shapes: the independent validator read every report this file made', (t) => {
@@ -733,4 +736,23 @@ test('shapes: a vocabulary file: a field it does not know, at its top or in kind
   const fields = [...part.matchAll(/^\| `([a-z]+)` \|/gm)].map((m) => m[1]);
   assert.deepEqual(fields.slice().sort(), Object.keys(base).sort(), "the README's table names the shipped vocabulary's fields, each once");
   assert.match(readme, /\| `--vocabulary <file>` \|[^\n]*\[The vocabulary file\]\(#the-vocabulary-file\)/, 'the --vocabulary row links the format');
+});
+
+// S11 (S374's closure read): --help's kind row did not name (all), which a vocabulary with no kind path prints (the
+// README did); and the overviews (ltms --help's paragraph on shapes, the README's architecture) said every name in a
+// report comes from a vocabulary that ships or from --allow, where --vocabulary gives one of your own. (Its third part,
+// the version rule's digits, is U3's test.)
+test("shapes: --help names every word of the language that the README's section names, (all) among them; ltms --help and the README's overview name the vocabulary given with --vocabulary", () => {
+  const h = spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout;
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // a word counts as named where it stands alone: at the start or end of a line, or by white space or punctuation
+  const named = (w) => new RegExp(`(^|[\\s,;:"(\\[{])${esc(w)}($|[\\s,;:.")\\]}])`, 'm').test(h);
+  assert.deepEqual(LANGUAGE_WORDS.filter((w) => !named(w)), [], 'words of the language ltms shapes --help does not name');
+  const top = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' }).stdout;
+  const at = top.indexOf('shapes prints a report');
+  assert.ok(at > 0, "ltms --help's paragraph on shapes");
+  assert.match(top.slice(at, top.indexOf('\n\n', at)).replace(/\s+/g, ' '), /every name and value in it from a vocabulary that ships with ltms, or from the vocabulary you give with --vocabulary, or from your own --allow/);
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const arch = readme.slice(readme.indexOf('## The architecture'), readme.indexOf('\n## ', readme.indexOf('## The architecture') + 1));
+  assert.match(arch, /every name and value in it comes from a vocabulary that ships with ltms, or from the vocabulary you give with `--vocabulary`, or from your own `--allow`/);
 });
