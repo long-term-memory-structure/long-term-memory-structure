@@ -2,8 +2,13 @@
 // test/shapes-recompute.mjs: a SECOND implementation of the ltms-shapes/0 report, written from the design's rules and
 // not from the code of src/shapes.ts (it shares none): whole-file reads, a recursive walk, Sets of file numbers for the
 // file counts, its own bucket arithmetic and class tests. It is the S373 prototype's recompute.mjs, its code unchanged
-// below this header. It exists to check every field ltms shapes prints: both outputs, each line with its keys sorted,
-// must be equal (test/shapes.test.mjs).
+// below this header but for the changes listed here. It exists to check every field ltms shapes prints: both outputs,
+// each line with its keys sorted, must be equal (test/shapes.test.mjs).
+//
+// Changed since the prototype, each with the rule it follows (S375, after S374's closure read):
+//   - vOrder: versions equal as numbers (1.2.3, 01.2.3) are ordered by their text, not by where they were met (S4).
+//   - isVersion: no part of more than one digit starts with 0 (U3); the class version follows it, as before.
+//   - kindOf: a sub-kind gives (none) when the record has none there, (not a string) for another type (U14).
 //
 //   node test/shapes-recompute.mjs --vocabulary <v.json>... [--floor <n>] [--allow <spec>]... [--max-line <bytes>] <file>...
 //   node test/shapes-recompute.mjs --canon <report.jsonl>      the same report, each line's keys sorted (to compare with)
@@ -35,7 +40,7 @@ if (opt.canon) {
 const isPlainObject = (v) => Object.prototype.toString.call(v) === '[object Object]';
 const fieldName = (k) => /^[$@]?[A-Za-z_][A-Za-z0-9_:+-]*$/.test(k) && k.length <= 64 + (/^[$@]/.test(k) ? 1 : 0);
 const isLabel = (s) => s.length >= 1 && s.length <= 64 && /^[A-Za-z0-9_.:+-]+$/.test(s);
-const isVersion = (s) => { const p = s.split('.'); return p.length === 3 && p.every((x, i) => /^[0-9]+$/.test(x) && x.length <= [4, 4, 6][i]); };
+const isVersion = (s) => { const p = s.split('.'); return p.length === 3 && p.every((x, i) => /^[0-9]+$/.test(x) && x.length <= [4, 4, 6][i] && (x.length === 1 || x[0] !== '0')); };
 function bucketOf(n) { if (n === 0) return '0'; if (n === 1) return '1'; const k = Math.floor(Math.log2(n)); const lo = 2 ** k; return lo + '-' + (2 * lo - 1); }
 const cap = (n) => (n < 64 ? bucketOf(n) : '64+');
 function strClass(s) {
@@ -123,8 +128,9 @@ function kindOf(r) {
   if (!(VALUES[KIND] && VALUES[KIND].has(t))) return '(unlisted)';
   if (!Object.prototype.hasOwnProperty.call(SUB, t)) return t;
   const s = getAt(r, SUB[t]);
-  if (s === undefined) return t;
-  return typeof s === 'string' && VALUES[SUB[t]] && VALUES[SUB[t]].has(s) ? t + ':' + s : t + ':(unlisted)';
+  if (s === undefined) return t + ':(none)';
+  if (typeof s !== 'string') return t + ':(not a string)';
+  return VALUES[SUB[t]] && VALUES[SUB[t]].has(s) ? t + ':' + s : t + ':(unlisted)';
 }
 files.forEach((file, fi) => {
   let buf;
@@ -156,7 +162,7 @@ files.forEach((file, fi) => {
 const F = opt.floor, out = [];
 const vOrder = (a, b) => {
   const va = isVersion(a), vb = isVersion(b);
-  if (va && vb) { const x = a.split('.').map(Number), y = b.split('.').map(Number); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; }
+  if (va && vb) { const x = a.split('.').map(Number), y = b.split('.').map(Number); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || (a < b ? -1 : a > b ? 1 : 0); }
   if (va !== vb) return va ? -1 : 1;
   return a < b ? -1 : a > b ? 1 : 0;
 };

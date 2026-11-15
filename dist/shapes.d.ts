@@ -6,6 +6,11 @@ export declare const SHAPES_VOCABULARY_FORMAT = "ltms-shapes-vocabulary/0";
 export declare const SHAPES_MAX_LINE: number;
 /** The number of files a path must be seen in to be printed, unless --floor says otherwise. */
 export declare const SHAPES_FLOOR = 3;
+/** The least floor --floor takes, and a report's first line may state; the largest is Number.MAX_SAFE_INTEGER (a floor is
+ *  a whole number a double holds exactly, never one it rounds: S374's closure read, U7). */
+export declare const SHAPES_MIN_FLOOR = 2;
+/** The names (or values) kept per path for the local review list (--unlisted); the occurrences past them are counted. */
+export declare const SHAPES_NAMES_PER_PATH = 2048;
 /** A usage error: the run cannot start as given (exit 2). Its message is ltms's own, and quotes only what was given. */
 export declare class ShapesUsageError extends Error {
     constructor(message: string);
@@ -37,11 +42,13 @@ export interface ShapesVocabulary {
     versions: string[];
 }
 /** Reads a vocabulary file (ltms-shapes-vocabulary/0). A file that cannot be read throws its own error; one that is not a
- *  vocabulary, or whose path or value breaks the rules (a path step that is not a field name, a value that fails the label
- *  rule), is a usage error. */
+ *  vocabulary, that holds a field the format does not name (at its top or in kinds), whose path, name or value breaks
+ *  the rules, or that names in kinds, versions or values a path that paths does not list, is a usage error whose
+ *  message names the entry by its field and index (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]). */
 export declare function loadVocabulary(file: string): ShapesVocabulary;
 /** --allow <path> or --allow <path>=<value>: the person names a key path (and with it every path above it) or a value, to
- *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. */
+ *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. A value
+ *  at a kind path may not hold ':' (S374's closure read, U15): it would merge two kinds of record into one line. */
 export declare function applyAllow(V: ShapesVocabulary, specs: readonly string[]): string[];
 /** A path that could not be read, with its error (the command words the message). */
 export interface ShapesFailure {
@@ -58,15 +65,28 @@ export interface ShapesFiles {
     failed: ShapesFailure[];
     /** The symbolic links met under the directories given: counted, not followed. */
     symlinks: number;
+    /** The entries named .jsonl under the directories given that are not regular files (a FIFO, a socket, a device):
+     *  counted, not read (S374's closure read, U13). */
+    special: number;
+    /** The entries under the directories given whose names are not valid UTF-8, a directory or a name that ends in
+     *  .jsonl: its directory, its name's bytes, and whether it is a directory. Not read (ltms reads paths as text, and
+     *  such a name, decoded, can name another entry), each a failure (S374's closure read, S7). */
+    notUtf8: {
+        dir: string;
+        name: Buffer;
+        isDir: boolean;
+    }[];
 }
-/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; a
- *  directory met twice, by its device and inode, read once). Sorted, so a run does not depend on the order the paths were
- *  given or listed in. */
+/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
+ *  entry named .jsonl that is not a regular file counted, not read; a name that is not valid UTF-8 kept by its bytes and
+ *  not read; a directory met twice, by its device and inode, read once, so each entry is counted once). Sorted, so a run
+ *  does not depend on the order the paths were given or listed in. */
 export declare function collectFiles(paths: readonly string[]): ShapesFiles;
 /** Calls onLine(bytes) for each line of the file, split on byte 0x0A (which never occurs inside a UTF-8 sequence; a last
  *  line without a new line is read), or onLine(null) for a line longer than maxLine bytes, whose bytes are passed over as
- *  they stream past and never held. Memory: one chunk, plus at most maxLine bytes of one line. */
-export declare function readLines(file: string, maxLine: number, onLine: (line: Buffer | null) => void): void;
+ *  they stream past and never held; onLine returns false to read no further. Memory: one chunk, plus at most maxLine
+ *  bytes of one line. */
+export declare function readLines(file: string, maxLine: number, onLine: (line: Buffer | null) => boolean | void): void;
 /** A count: its occurrences, its files, and the last file it was counted in (by its number in the run). */
 export type ShapesCount = [n: number, f: number, last: number];
 /** What one (kind, path) line has counted. */
@@ -103,9 +123,10 @@ export interface ShapesKindCount {
 }
 /** The names (or values) the vocabulary lacks at one path, for the local review list. */
 export interface ShapesUnlisted {
-    /** Per name, its count; at most 2048 names. */
+    /** Per name (or value), its count; at most 2048, the first met. */
     names: Map<string, ShapesCount>;
-    /** The occurrences of the names past the 2048 kept. */
+    /** The occurrences of the names (or values) past the 2048 kept: counted, not kept (S374's closure read, S5, for the
+     *  values). */
     overflow: number;
 }
 /** What reading the files counted. */
@@ -114,6 +135,9 @@ export interface ShapesRun {
     filesRead: number;
     /** Files that could not be read, or whose reading stopped with an error. */
     filesFailed: number;
+    /** Files not read, being ltms shapes' own output, not transcripts: their first line is a report's or an --unlisted
+     *  list's (S374's closure read, U5). Neither read nor failed. */
+    skipped: string[];
     /** Those files, with their errors. */
     failures: {
         file: string;
@@ -137,8 +161,10 @@ export interface ShapesRun {
     lines: Map<string, ShapesPathCount>;
     /** --unlisted only: per .* path, the names merged there. */
     unlisted: Map<string, ShapesUnlisted> | null;
-    /** --unlisted only: per value path, the values the vocabulary lacks. */
-    unlistedValues: Map<string, Map<string, ShapesCount>> | null;
+    /** --unlisted only: per value path, the values the vocabulary lacks: at a path that lists values, as the walk meets
+     *  them; at the kind path and a sub-kind's path, as the reading of the kind meets them where the walk keeps none (no
+     *  list there, or a path it does not reach). */
+    unlistedValues: Map<string, ShapesUnlisted> | null;
 }
 /** How to read. */
 export interface ShapesReadOptions {
@@ -148,10 +174,12 @@ export interface ShapesReadOptions {
     unlisted: boolean;
 }
 /** Reads the files, one at a time, each line alone, and counts. Per record: the version in force (the value at the first
- *  version path the record has, if N.N.N; (withheld) for a value of another form; else the version before it in the same
- *  file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key the vocabulary
- *  holds is counted at its path and walked, any other is counted at the .* of the object it is in, and the walk stops
- *  there. A file whose reading throws counts as failed; what was read of it before is counted. */
+ *  version path the record has, if it follows the version rule; (withheld) for any other value; else the version before
+ *  it in the same file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key
+ *  the vocabulary holds is counted at its path and walked, any other is counted at the .* of the object it is in, and
+ *  the walk stops there. A file whose reading throws counts as failed; what was read of it before is counted. A file
+ *  whose first line is a report's or an --unlisted list's is ltms shapes' own output: nothing of it is read, and it is
+ *  listed in skipped. */
 export declare function readShapes(V: ShapesVocabulary, files: readonly string[], opts: ShapesReadOptions): ShapesRun;
 /** A line of a report, as built and as written: one JSON object whose `k` names its kind. */
 export type ShapesLine = Record<string, unknown>;
@@ -168,8 +196,9 @@ export interface ShapesReport {
 }
 /** The report of a run. Every count becomes a bucket; a path line seen in fewer than floor files is not printed and is
  *  counted in its kind's rare line; a sub-count over fewer than floor files folds into (rare). The lines are sorted
- *  (versions in numeric order, then kinds, then paths by kind and path, then the rare lines), and their fields come in a
- *  fixed order, so the same files give the same bytes whatever the order of the files and of the keys in each record. */
+ *  (versions in numeric order, equal numbers by their text, then kinds, then paths by kind and path, then the rare
+ *  lines), and their fields come in a fixed order, so the same files give the same bytes whatever the order of the files
+ *  and of the keys in each record. */
 export declare function buildReport(V: ShapesVocabulary, S: ShapesRun, floor: number, allowed: readonly string[]): ShapesReport;
 /** The language of one report: the vocabulary (with --allow's names), the allowed list its first line must print, and,
  *  at the write, the floor and the number of lines it must state. */
@@ -191,51 +220,101 @@ export declare function shapesLanguage(V: ShapesVocabulary, allowed: readonly st
     floor: number;
     lines: number;
 }): ShapesLanguage;
-/** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words (the
- *  field or the line kind that failed), never a part of the line. */
+/** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words, never
+ *  a part of the line: 'not an object'; 'k' (no line kind of the format); 'fields' (one missing, or one its kind does
+ *  not have); or the name of the field that failed (S374's closure read, U10). */
 export declare function checkLine(o: unknown, Lg: ShapesLanguage): string | null;
+/** A problem of a report: the number of its line, and why, as one of the check's own words (checkLine's, or one of the
+ *  report as a whole: CHECK_WORDS), never a part of the line. */
+export interface ShapesProblem {
+    /** The line's number in the report, from 1. */
+    line: number;
+    /** Why it is not in the language. */
+    why: string;
+}
+/** The words of the report as a whole, beside checkLine's: a line that is 'blank' or 'not JSON'; a line that is in the
+ *  language alone but not where it stands
+ *  ('first line': line 1 is not a first line; 'second first line'; 'end before the last line'; 'order': out of the
+ *  format's order of line kinds, or of its kind's order; 'repeat': the same key as the line of its kind before it;
+ *  'under the floor': a path line in fewer files than the floor), one not written as the builder writes it ('form'), and
+ *  the end ('cut': the last line is not an end line; 'count': the end line does not count the report's lines). */
+export declare const CHECK_WORDS: string[];
+/** THE CHECK OF A REPORT WHOLE, the same at the write and at --check (S374's closure read, S3 and U6). `rows` are its
+ *  lines' text (null: a line that has none, an object JSON cannot write). Each line alone: JSON, an object, in the
+ *  language (checkLine), and written byte for byte as the builder writes it (canonicalText: its fields in the format's
+ *  order, each map's keys in the builder's order, each key once, no space, JSON's own spelling of every string and
+ *  number). Then each line in its place: line 1 the first line, and no other; the line kinds in the format's order
+ *  (shapes, version, kind, path, rare, end); within each kind, the lines strictly in the builder's order, so none
+ *  repeats; a path line in at least the floor's files; one end line, the last, that counts the lines. A line that fails
+ *  alone is not held to its place. Returns the problems, by line; none when the report is in the language. */
+export declare function checkRows(rows: readonly (string | null)[], Lg: ShapesLanguage): ShapesProblem[];
 /** What writeReport did. */
 export interface ShapesWritten {
-    /** Lines written. */
+    /** Lines written: every line of the report, or none. */
     written: number;
-    /** Lines refused at the write (each a bug in ltms): not written. */
+    /** The lines that failed the check (each a bug in ltms); when there is one, nothing is written. */
     refused: number;
-    /** For each refused line, its number in the report and why (checkLine's word). */
-    reasons: {
-        line: number;
-        why: string;
-    }[];
+    /** Each problem, by its line's number in the report and why (checkRows' words). */
+    reasons: ShapesProblem[];
     /** Bytes written. */
     bytes: number;
 }
-/** THE WRITE GUARD, and the only way a report leaves this module: each line is turned into the text that will be
- *  written, that text is parsed back and checked against the language, and only that text is written: what is checked is
- *  exactly what goes out (an object whose JSON is not its own fields, through an inherited toJSON say, cannot pass as one
- *  line and be written as another: S374's closure read, S1). A line that fails is not written. `write` is given the text
- *  in parts of at most 1,000 lines. */
+/** THE WRITE GUARD, and the only way a report leaves this module. Each line is turned into the text that will be
+ *  written; the report, that text, is checked whole (checkRows: each line parsed back and checked against the language,
+ *  and each in its place) before any of it is written; and only that text is written: what is checked is exactly what
+ *  goes out (an object whose JSON is not its own fields, through an inherited toJSON say, cannot pass as one line and be
+ *  written as another: S374's closure read, S1). A report with any problem is not written at all: no part of a report
+ *  out of the language (a line repeated, say) leaves, and which lines failed cannot be read from what does. `write` is
+ *  given the text in parts of at most 1,000 lines. */
 export declare function writeReport(lines: readonly unknown[], Lg: ShapesLanguage, write: (text: string) => void): ShapesWritten;
 /** What --check found in a report file. */
 export type ShapesCheck = {
     k: 'not-a-report';
+    /** Why: the file is empty; its first line is blank, not JSON, or JSON but not an object; it is an --unlisted list
+     *  (its first line's k is unlisted-review); or its first line is no report's first line. */
+    why: 'empty' | 'blank' | 'not JSON' | 'not an object' | 'unlisted' | 'not a first line';
 } | {
     k: 'bad-allowed';
 } | {
     k: 'checked';
-    /** The lines read. */
+    /** The report's lines, checked: the file's lines but the blank lines at its end. */
     lines: number;
-    /** Each line outside the language, by its number and checkLine's word; the cut or edited end, as 'end'. */
-    problems: {
-        line: number;
-        why: string;
-    }[];
+    /** The file's lines, those blank lines among them. */
+    rows: number;
+    /** Each problem, by its line's number and why (checkRows' words, and the file's own: 'byte-order mark',
+     *  'carriage return', 'blank at the end'), in the order of the lines. */
+    problems: ShapesProblem[];
     /** The allowed list of its first line, as read. */
     allowed: string[];
 };
-/** --check: is every token of this report in its language? The language is the vocabulary given and the report's own
- *  allowed list (its first line); every line is checked as the writer checks it, and the last line must be an end line
- *  that counts the report's lines. */
+/** --check: is this report, every token of it and every line in its place, in its language? The language is the
+ *  vocabulary given and the report's own allowed list (its first line); the report is checked whole as the writer checks
+ *  it (checkRows), its floor the one its first line states. It cannot tell whether ltms wrote it, nor whether its counts
+ *  are true. What ltms never writes, and an editor or a shell can add (S374's closure read, U10), is named for what it
+ *  is: a byte-order mark before line 1, a carriage return at the end of a line (CR LF), blank lines after the last line;
+ *  each is a problem, and is taken off for the rest of the check, so that the lines are checked as they would be without
+ *  it. */
 export declare function checkReport(text: string, V: ShapesVocabulary): ShapesCheck;
 /** --unlisted: NOT a report. The names and values the vocabulary lacks, read from the transcripts as written, for the
  *  person's own review before an --allow; every line says "send":false, and --check refuses the list. Exact counts. A
- *  name that cannot be a path step (a file path, say) gets "allow":null: it can never be allowed. */
-export declare function reviewLines(S: ShapesRun): ShapesLine[];
+ *  name that cannot be a path step (a file path, say), or a value --allow refuses (not a label; ':' at a kind path),
+ *  gets "allow":null: it can never be allowed. */
+export declare function reviewLines(S: ShapesRun, V: ShapesVocabulary): ShapesLine[];
+/** What an --unlisted list holds, counted from its lines (for the command's closing line): the names and the values
+ *  listed, each with the number of paths they are at, and the occurrences counted past the 2048 kept at a path (its
+ *  unlisted-more line), for names (at a .* path) and for values (at a value path, which never ends in .*). */
+export interface ShapesReviewTotals {
+    /** unlisted lines, and the .* paths they are at. */
+    names: number;
+    namePaths: number;
+    /** unlisted-value lines, and the paths they are at. */
+    values: number;
+    valuePaths: number;
+    /** The occurrences of names past the cap, and the .* paths with an unlisted-more line. */
+    moreNames: number;
+    moreNamePaths: number;
+    /** The occurrences of values past the cap, and the value paths with an unlisted-more line. */
+    moreValues: number;
+    moreValuePaths: number;
+}
+export declare function reviewTotals(lines: readonly ShapesLine[]): ShapesReviewTotals;

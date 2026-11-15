@@ -75,6 +75,13 @@ for (let i = 0; i < 100; i++) backups[`/home/zqcanary/f${i}.txt`] = { backupFile
 for (let i = 0; i < 100; i++) backups[uuid()] = { backupFileName: null, version: 2, backupTime: T };
 writeFileSync(join(dir, 'cc-map.jsonl'), J({ type: 'file-history-snapshot', messageId: uuid(), snapshot: { messageId: uuid(), trackedFileBackups: backups, timestamp: T }, isSnapshotUpdate: true }) + '\n');
 
+// arrays of 0 to 200 elements, the same lengths in each of three files, so that every label of lengths, 0 to 64+, is
+// printed (each in 3 files, the floor) and the recompute compares each (S374's closure read, S2: the fixtures above
+// print no length but 0, 1 and (rare), so exact or uncapped lengths passed every test)
+const LENGTHS = [0, 1, 2, 3, 5, 9, 17, 33, 65, 200];
+const arrays = () => LENGTHS.map((len) => J({ type: 'user', message: { role: 'user', content: Array.from({ length: len }, () => ({ type: 'text', text: 'zq7canary' })) } })).join('\n') + '\n';
+for (const x of ['a', 'b', 'c']) writeFileSync(join(dir, `len-${x}.jsonl`), arrays());
+
 // Codex-shaped (the line envelope, and its kinds): not a captured file
 function codex() {
   const L = [];
@@ -148,4 +155,4 @@ writeFileSync(join(dir, 'gemini-cli.sketch.json'), vocabulary({
     '.$patch.removeIds[]', '.$patch.orderIds'],
   values: { '.type': ['user', 'info', 'error', 'warning', 'gemini'], '.kind': ['main', 'subagent'] },
 }));
-process.stderr.write(`make-shapes-fixtures: wrote 12 files to ${dir}\n`);
+process.stderr.write(`make-shapes-fixtures: wrote 15 files to ${dir}\n`);

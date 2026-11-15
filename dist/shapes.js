@@ -7,11 +7,15 @@
 //   (3) a JSON type, or the name of a class of strings or numbers, from the fixed lists below;
 //   (4) a key path or a value from the vocabulary (named in the first line by its name and sha256), or one the person
 //       named with --allow (listed in the first line);
-//   (5) a version of the form N.N.N, read only at a version path the vocabulary names.
+//   (5) a version by the version rule (VERSION, below: N.N.N, no part of more than one digit starting with 0), read
+//       only at a version path the vocabulary names, and printed as written: the one value of a record a report holds
+//       (it can be a date, when a program writes its version as one, 2026.11.15).
 // No key name, value, length, time, position or order from a transcript reaches a report any other way: writeReport
-// checks every line against that language (checkLine) just before it writes it, and writes no line that fails. The guard
-// is at the write, so a defect in the reading (a misparse, a wrong count) can make a count wrong but cannot put a
-// transcript's token in the report.
+// checks the report whole against that language before it writes any of it (checkRows: every line by checkLine, each
+// written byte for byte as the builder writes it, and each in its place: the line kinds in the format's order, each
+// kind's lines in the builder's order and each once, the end line last, counting them), and writes none of a report that
+// fails. The guard is at the write, so a defect in the reading (a misparse, a wrong count) can make a count wrong but
+// cannot put a transcript's token in the report, nor a count or an order in the number or the order of its lines.
 //
 // This module knows nothing of any supplier: everything that names a program's records is data in the vocabulary file.
 // Each line of a transcript is parsed alone, with JSON.parse; nothing here uses the parser of the rest of ltms. It writes
@@ -28,14 +32,20 @@ export const SHAPES_VOCABULARY_FORMAT = 'ltms-shapes-vocabulary/0';
 export const SHAPES_MAX_LINE = 64 * 1024 * 1024;
 /** The number of files a path must be seen in to be printed, unless --floor says otherwise. */
 export const SHAPES_FLOOR = 3;
+/** The least floor --floor takes, and a report's first line may state; the largest is Number.MAX_SAFE_INTEGER (a floor is
+ *  a whole number a double holds exactly, never one it rounds: S374's closure read, U7). */
+export const SHAPES_MIN_FLOOR = 2;
 /** The core's label rule, a copy of cli.ts's (test/shapes.test.mjs holds the two equal). A value printed in a report
  *  (a vocabulary value, an allowed one) must pass it. */
 const LABEL = /^[\w.:+-]{1,64}$/;
 /** A key name a vocabulary or --allow may hold: a field name, with no '.' and no '[' (a path's own syntax), so a key that
  *  holds them can never be read as a path. An optional leading $ or @ (as in JSON Schema's $id, JSON-LD's @type). */
 const NAME = /^[$@]?[A-Za-z_][A-Za-z0-9_:+-]{0,63}$/;
-/** The only versions printed: three numeric parts, nothing else (no pre-release or build suffix). */
-const VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}$/;
+/** THE VERSION RULE, the only versions printed: three parts joined by '.', of 1 to 4, 1 to 4 and 1 to 6 digits, none of
+ *  more than one digit starting with 0, and nothing else (no pre-release or build suffix). Without a leading 0, each
+ *  version has one spelling, so two versions never compare equal (S374's closure read, U3). The class version is a
+ *  string that follows it too. */
+const VERSION = /^(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,5})$/;
 const TYPES = ['array', 'boolean', 'null', 'number', 'object', 'string'];
 const STRING_CLASSES = ['empty', 'uuid', 'iso8601-utc', 'iso8601-offset', 'iso8601-local', 'date', 'version', 'digits', 'hex', 'label', 'text'];
 const NUMBER_CLASSES = ['int', 'float', 'epoch-s', 'epoch-ms'];
@@ -45,7 +55,7 @@ const RARE = '(rare)', UNLISTED = '(unlisted)', NONE = '(none)', WITHHELD = '(wi
 const CAP = 64;
 const CAP_LABELS = ['0', '1', '2-3', '4-7', '8-15', '16-31', '32-63', '64+'];
 /** The names (or values) kept per path for the local review list (--unlisted); the occurrences past them are counted. */
-const NAMES_PER_PATH = 2048;
+export const SHAPES_NAMES_PER_PATH = 2048;
 /** Separators inside the accumulators' keys, built: no name, path or label printed can hold them. */
 const SEP = String.fromCharCode(0), KSEP = String.fromCharCode(1);
 // ---- buckets --------------------------------------------------------------------------------------------------------
@@ -123,9 +133,26 @@ export class ShapesUsageError extends Error {
     constructor(message) { super(message); this.name = 'ShapesUsageError'; }
 }
 const usage = (m) => new ShapesUsageError(m);
+/** A vocabulary file's fields, and its kinds' (the README's section on ltms shapes, The vocabulary file, gives the
+ *  format); the loader refuses any other (S374's closure read, U4). */
+const VOCABULARY_FIELDS = ['format', 'name', 'source', 'paths', 'values', 'kinds', 'versions'];
+const KINDS_FIELDS = ['path', 'sub'];
+/** The rules, as the messages word them. */
+const NAME_RULE = 'a name being an optional $ or @, then an ASCII letter or _, then ASCII letters, digits and _ : + -, at most 64 after the $ or @';
+const PLAIN_RULE = `steps, each . and a name, ${NAME_RULE}`;
+const PATH_RULE = `steps, each . and a name, or [] (an array's elements), ${NAME_RULE}`;
+const VALUE_RULE = '1 to 64 ASCII letters, digits and . _ : + -';
+/** An entry of a vocabulary file, as a message shows it: a string quoted as JSON (its first 80 characters), any other
+ *  value by its type. */
+function shown(x) {
+    if (typeof x === 'string')
+        return x.length > 80 ? `${JSON.stringify(x.slice(0, 80))}...` : JSON.stringify(x);
+    return x === null ? 'null' : Array.isArray(x) ? 'an array' : isObj(x) ? 'an object' : `a ${typeof x}`;
+}
 /** Reads a vocabulary file (ltms-shapes-vocabulary/0). A file that cannot be read throws its own error; one that is not a
- *  vocabulary, or whose path or value breaks the rules (a path step that is not a field name, a value that fails the label
- *  rule), is a usage error. */
+ *  vocabulary, that holds a field the format does not name (at its top or in kinds), whose path, name or value breaks
+ *  the rules, or that names in kinds, versions or values a path that paths does not list, is a usage error whose
+ *  message names the entry by its field and index (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]). */
 export function loadVocabulary(file) {
     const bytes = readFileSync(file);
     let v;
@@ -137,71 +164,111 @@ export function loadVocabulary(file) {
     }
     if (!isObj(v) || v.format !== SHAPES_VOCABULARY_FORMAT)
         throw usage(`'${file}' is not a vocabulary (its format is not ${SHAPES_VOCABULARY_FORMAT}).`);
+    const bad = (m) => usage(`'${file}': ${m}`);
+    for (const f of Object.keys(v))
+        if (!VOCABULARY_FIELDS.includes(f))
+            throw bad(`the field ${shown(f)} is not a vocabulary's; its fields are format, name, source, paths, values, kinds and versions (the README's section on ltms shapes: The vocabulary file).`);
+    if (v.name === undefined)
+        throw bad(`name is missing: the vocabulary's name, which a report's first line gives (${VALUE_RULE}).`);
     if (typeof v.name !== 'string' || !LABEL.test(v.name))
-        throw usage(`'${file}': the vocabulary's name must pass the label rule.`);
-    const list = (x, what) => {
-        if (x === undefined)
-            return [];
-        if (!Array.isArray(x))
-            throw usage(`'${file}': ${what} is not a list.`);
-        return x;
-    };
+        throw bad(`name ${shown(v.name)} is not a value: ${VALUE_RULE}.`);
+    if (v.source !== undefined && typeof v.source !== 'string')
+        throw bad(`source is ${shown(v.source)}: it holds words on where the vocabulary's names come from, a string.`);
+    if (v.paths === undefined)
+        throw bad('paths is missing: the list of the key paths a report may print (with none, every key prints as *).');
+    if (!Array.isArray(v.paths))
+        throw bad(`paths is ${shown(v.paths)}, not a list of key paths.`);
+    const paths = v.paths;
     const V = { list: [], paths: new Set(), values: new Map(), kindPath: null, sub: new Map(), versions: [] };
-    const paths = list(v.paths, 'paths');
-    for (const p of paths) {
+    paths.forEach((p, i) => {
         if (typeof p !== 'string' || !VOCAB_PATH.test(p))
-            throw usage(`'${file}': a path does not follow the path rule; every name must pass the NAME rule.`);
+            throw bad(`paths[${i}] ${shown(p)} is not a key path: ${PATH_RULE}; as in .message.content[].type.`);
         V.paths.add(p);
-    }
+    });
+    const notListed = ' is a path that paths does not list; every path named in kinds, versions and values must be in paths.';
     let nValues = 0;
     if (v.values !== undefined && !isObj(v.values))
-        throw usage(`'${file}': values is not an object of value lists.`);
+        throw bad(`values is ${shown(v.values)}, not an object of value lists by path.`);
     for (const [p, vs] of Object.entries(v.values ?? {})) {
-        if (!VOCAB_PATH.test(p) || !Array.isArray(vs))
-            throw usage(`'${file}': a value list is not a path and an array.`);
+        const at = `values[${shown(p)}]`;
+        if (!VOCAB_PATH.test(p))
+            throw bad(`${at} names no key path: ${PATH_RULE}.`);
+        if (!V.paths.has(p))
+            throw bad(at + notListed);
+        if (!Array.isArray(vs))
+            throw bad(`${at} is ${shown(vs)}, not a list of values.`);
         let set = V.values.get(p);
         if (!set)
             V.values.set(p, (set = new Set()));
-        for (const x of vs) {
+        for (let j = 0; j < vs.length; j++) {
+            const x = vs[j];
             if (typeof x !== 'string' || !LABEL.test(x))
-                throw usage(`'${file}': a value does not pass the label rule.`);
+                throw bad(`${at}[${j}] ${shown(x)} is not a value: ${VALUE_RULE}.`);
             set.add(x);
             nValues++;
         }
     }
     if (v.kinds !== undefined) {
         const k = v.kinds;
-        if (!isObj(k) || typeof k.path !== 'string' || !PLAIN_PATH.test(k.path))
-            throw usage(`'${file}': kinds.path is not a plain path.`);
+        if (!isObj(k))
+            throw bad(`kinds is ${shown(k)}, not an object: {"path": the path of a record's kind, "sub": {a kind: the path of its sub-kind}}.`);
+        for (const f of Object.keys(k))
+            if (!KINDS_FIELDS.includes(f))
+                throw bad(`kinds holds the field ${shown(f)}; its fields are path and sub.`);
+        if (k.path === undefined)
+            throw bad(`kinds.path is missing: the path of a record's kind (${PLAIN_RULE}).`);
+        if (typeof k.path !== 'string' || !PLAIN_PATH.test(k.path))
+            throw bad(`kinds.path ${shown(k.path)} is not a plain path: ${PLAIN_RULE}.`);
+        if (!V.paths.has(k.path))
+            throw bad(`kinds.path ${shown(k.path)}${notListed}`);
         V.kindPath = k.path;
         if (k.sub !== undefined && !isObj(k.sub))
-            throw usage(`'${file}': kinds.sub is not an object.`);
+            throw bad(`kinds.sub is ${shown(k.sub)}, not an object of the paths of sub-kinds by kind.`);
         for (const [t, sp] of Object.entries(k.sub ?? {})) {
-            if (!LABEL.test(t) || typeof sp !== 'string' || !PLAIN_PATH.test(sp))
-                throw usage(`'${file}': a kinds.sub entry is malformed.`);
+            const at = `kinds.sub[${shown(t)}]`;
+            if (!LABEL.test(t))
+                throw bad(`${at}: the kind is not a value: ${VALUE_RULE}.`);
+            if (typeof sp !== 'string' || !PLAIN_PATH.test(sp))
+                throw bad(`${at} ${shown(sp)} is not a plain path: ${PLAIN_RULE}.`);
+            if (!V.paths.has(sp))
+                throw bad(`${at} ${shown(sp)}${notListed}`);
             V.sub.set(t, sp);
         }
     }
-    for (const p of list(v.versions, 'versions')) {
+    if (v.versions !== undefined && !Array.isArray(v.versions))
+        throw bad(`versions is ${shown(v.versions)}, not a list of plain paths.`);
+    const versions = (v.versions ?? []);
+    versions.forEach((p, i) => {
         if (typeof p !== 'string' || !PLAIN_PATH.test(p))
-            throw usage(`'${file}': a version path is not a plain path.`);
+            throw bad(`versions[${i}] ${shown(p)} is not a plain path: ${PLAIN_RULE}.`);
+        if (!V.paths.has(p))
+            throw bad(`versions[${i}] ${shown(p)}${notListed}`);
         if (!V.versions.includes(p))
             V.versions.push(p);
-    }
+    });
     V.list.push({ name: v.name, sha256: createHash('sha256').update(bytes).digest('hex').slice(0, 12), paths: paths.length, values: nValues });
     return V;
 }
+/** The paths a record's kind is read at: the kind path, and each sub-kind's path. A report joins a kind and its
+ *  sub-kind with ':' (kind:subkind), so a value with ':' there could print as the token of another kind. */
+function kindPaths(V) {
+    return V.kindPath === null ? [] : [...new Set([V.kindPath, ...V.sub.values()])];
+}
 /** --allow <path> or --allow <path>=<value>: the person names a key path (and with it every path above it) or a value, to
- *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. */
+ *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. A value
+ *  at a kind path may not hold ':' (S374's closure read, U15): it would merge two kinds of record into one line. */
 export function applyAllow(V, specs) {
     const allowed = [];
+    const kp = kindPaths(V);
     for (const s of specs) {
         const i = s.indexOf('=');
         const p = i < 0 ? s : s.slice(0, i), val = i < 0 ? null : s.slice(i + 1);
         if (!VOCAB_PATH.test(p))
-            throw usage(`--allow '${s}': the path must be written like .message.newField or .list[].name, each name a field name (letters, digits, _ : + -, at most 64; a leading $ or @ allowed).`);
+            throw usage(`--allow '${s}': the path must be written like .message.newField or .list[].name: ${PATH_RULE}.`);
         if (val !== null && !LABEL.test(val))
             throw usage(`--allow '${s}': the value must pass the label rule (at most 64 ASCII letters, digits and . _ : + -).`);
+        if (val !== null && val.includes(':') && kp.includes(p))
+            throw usage(`--allow '${s}': a value at the kind path or at a sub-kind's path (${kp.join(', ')}) may not hold ':', which joins a kind and its sub-kind in a report (kind:subkind), so the value could print as another kind; '${val}' holds one. Such a value cannot be allowed: it prints as (unlisted).`);
         const re = /\.[^.[]+|\[\]/g;
         let m, acc = '';
         while ((m = re.exec(p)) !== null) {
@@ -227,13 +294,18 @@ function getPlain(rec, path) {
     }
     return x;
 }
-/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; a
- *  directory met twice, by its device and inode, read once). Sorted, so a run does not depend on the order the paths were
- *  given or listed in. */
+/** A directory's entries, their names as bytes (encoding 'buffer'), with their types: a name that is not valid UTF-8
+ *  comes back as its bytes, never as text whose U+FFFD can spell another entry's name (S374's closure read, S7).
+ *  (Node gives Buffer names here; the typings of @types/node 20 have no such overload, hence the casts.) */
+const listBytes = (d) => readdirSync(d, { withFileTypes: true, encoding: 'buffer' });
+/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
+ *  entry named .jsonl that is not a regular file counted, not read; a name that is not valid UTF-8 kept by its bytes and
+ *  not read; a directory met twice, by its device and inode, read once, so each entry is counted once). Sorted, so a run
+ *  does not depend on the order the paths were given or listed in. */
 export function collectFiles(paths) {
     const files = new Map(), dirs = new Set();
-    const failed = [];
-    let symlinks = 0;
+    const failed = [], notUtf8 = [];
+    let symlinks = 0, special = 0;
     const addFile = (p, st) => { const id = `${st.dev}:${st.ino}`; if (!files.has(id))
         files.set(id, p); };
     // a depth-first walk with its own stack, in the order a recursive one takes: each entry in its directory's order, a
@@ -254,7 +326,7 @@ export function collectFiles(paths) {
         dirs.add(id);
         let entries;
         try {
-            entries = readdirSync(d, { withFileTypes: true });
+            entries = listBytes(d);
         }
         catch (e) {
             failed.push({ path: d, error: e });
@@ -282,28 +354,39 @@ export function collectFiles(paths) {
                 stack.pop();
                 continue;
             }
-            const e = top.entries[top.i++], full = join(top.d, e.name);
+            const e = top.entries[top.i++], name = e.name.toString('utf8');
+            // a name is opened by its text only when the text gives its bytes back: decoded, any other could name another
+            // entry, a twin whose valid name has U+FFFD where it has bytes that are not UTF-8 (S374's closure read, S7)
+            const valid = Buffer.from(name, 'utf8').equals(e.name), full = join(top.d, name);
             if (e.isSymbolicLink())
                 symlinks++;
+            else if (!valid) {
+                if (e.isDirectory() || name.endsWith('.jsonl'))
+                    notUtf8.push({ dir: top.d, name: e.name, isDir: e.isDirectory() });
+            }
             else if (e.isDirectory())
                 enter(full);
-            else if (e.isFile() && e.name.endsWith('.jsonl')) {
-                try {
-                    addFile(full, statSync(full));
-                }
-                catch (x) {
-                    failed.push({ path: full, error: x });
-                }
+            else if (name.endsWith('.jsonl')) {
+                if (!e.isFile())
+                    special++; // a FIFO (reading it would wait), a socket, a device: counted, never opened
+                else
+                    try {
+                        addFile(full, statSync(full));
+                    }
+                    catch (x) {
+                        failed.push({ path: full, error: x });
+                    }
             }
         }
     }
-    return { files: [...files.values()].sort(), failed, symlinks };
+    return { files: [...files.values()].sort(), failed, symlinks, special, notUtf8 };
 }
 /** One read buffer for every file. */
 const CHUNK = Buffer.allocUnsafe(1 << 20);
 /** Calls onLine(bytes) for each line of the file, split on byte 0x0A (which never occurs inside a UTF-8 sequence; a last
  *  line without a new line is read), or onLine(null) for a line longer than maxLine bytes, whose bytes are passed over as
- *  they stream past and never held. Memory: one chunk, plus at most maxLine bytes of one line. */
+ *  they stream past and never held; onLine returns false to read no further. Memory: one chunk, plus at most maxLine
+ *  bytes of one line. */
 export function readLines(file, maxLine, onLine) {
     const fd = openSync(file, 'r');
     try {
@@ -327,7 +410,8 @@ export function readLines(file, maxLine, onLine) {
                 len += end - start;
                 if (nl < 0)
                     break;
-                onLine(skipping ? null : parts.length === 1 ? parts[0] : Buffer.concat(parts));
+                if (onLine(skipping ? null : parts.length === 1 ? parts[0] : Buffer.concat(parts)) === false)
+                    return;
                 parts = [];
                 len = 0;
                 skipping = false;
@@ -345,14 +429,34 @@ const tally = (c, fi) => { c[0]++; if (c[2] !== fi) {
     c[2] = fi;
     c[1]++;
 } };
+/** Is this the first line of what ltms shapes writes: a report's (k "shapes", its format ltms-shapes/...) or an
+ *  --unlisted list's (k "unlisted-review", "send":false)? Read as JSON, a byte-order mark before it passed over. */
+function isShapesOutput(line) {
+    let s = line.toString('utf8');
+    if (s.charCodeAt(0) === 0xfeff)
+        s = s.slice(1);
+    let o;
+    try {
+        o = JSON.parse(s);
+    }
+    catch {
+        return false;
+    }
+    if (!isObj(o))
+        return false;
+    const family = SHAPES_FORMAT.slice(0, SHAPES_FORMAT.indexOf('/') + 1);
+    return (o.k === 'shapes' && typeof o.format === 'string' && o.format.startsWith(family)) || (o.k === 'unlisted-review' && o.send === false);
+}
 /** Reads the files, one at a time, each line alone, and counts. Per record: the version in force (the value at the first
- *  version path the record has, if N.N.N; (withheld) for a value of another form; else the version before it in the same
- *  file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key the vocabulary
- *  holds is counted at its path and walked, any other is counted at the .* of the object it is in, and the walk stops
- *  there. A file whose reading throws counts as failed; what was read of it before is counted. */
+ *  version path the record has, if it follows the version rule; (withheld) for any other value; else the version before
+ *  it in the same file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key
+ *  the vocabulary holds is counted at its path and walked, any other is counted at the .* of the object it is in, and
+ *  the walk stops there. A file whose reading throws counts as failed; what was read of it before is counted. A file
+ *  whose first line is a report's or an --unlisted list's is ltms shapes' own output: nothing of it is read, and it is
+ *  listed in skipped. */
 export function readShapes(V, files, opts) {
     const S = {
-        filesRead: 0, filesFailed: 0, failures: [], records: 0, blank: 0, notJson: 0, notObject: 0, tooLong: 0,
+        filesRead: 0, filesFailed: 0, skipped: [], failures: [], records: 0, blank: 0, notJson: 0, notObject: 0, tooLong: 0,
         versions: new Map(), kinds: new Map(), lines: new Map(),
         unlisted: opts.unlisted ? new Map() : null, unlistedValues: opts.unlisted ? new Map() : null,
     };
@@ -371,7 +475,35 @@ export function readShapes(V, files, opts) {
             L.sub.set(key, (s = [0, 0, -1]));
         tally(s, fi);
     };
-    const kindOf = (rec) => {
+    /** --unlisted only: a value the vocabulary lacks at a path, for the person's own review; past the 2048 kept at a path,
+     *  its occurrence is counted as a name's is (S374's closure read, S5). */
+    const keepValue = (path, v, fi) => {
+        if (!unlVals)
+            return;
+        let u = unlVals.get(path);
+        if (!u)
+            unlVals.set(path, (u = { names: new Map(), overflow: 0 }));
+        let e = u.names.get(v);
+        if (!e) {
+            if (u.names.size >= SHAPES_NAMES_PER_PATH) {
+                u.overflow++;
+                return;
+            }
+            u.names.set(v, (e = [0, 0, -1]));
+        }
+        tally(e, fi);
+    };
+    // --unlisted: the paths a kind is read at (the kind path, each sub-kind's) where the walk keeps no value, so that the
+    // reading of the kind keeps it there: a path with no value list (the walk keeps a value only at a path that lists
+    // values), or one the walk does not reach (a step of it that paths does not list). Where the walk keeps a value, the
+    // reading of the kind does not, so each is counted once (S374's closure read, U1).
+    const walkReaches = (p) => { let acc = ''; for (const step of p.slice(1).split('.')) {
+        acc += '.' + step;
+        if (!V.paths.has(acc))
+            return false;
+    } return true; };
+    const kindKeeps = new Set(unlVals ? kindPaths(V).filter((p) => !(V.values.has(p) && walkReaches(p))) : []);
+    const kindOf = (rec, fi) => {
         if (!V.kindPath)
             return ALL;
         const t = getPlain(rec, V.kindPath);
@@ -379,15 +511,26 @@ export function readShapes(V, files, opts) {
             return NONE;
         if (typeof t !== 'string')
             return NOT_STRING;
-        if (!V.values.get(V.kindPath)?.has(t))
+        if (!V.values.get(V.kindPath)?.has(t)) {
+            if (kindKeeps.has(V.kindPath))
+                keepValue(V.kindPath, t, fi);
             return UNLISTED;
+        }
         const sp = V.sub.get(t);
         if (!sp)
             return t;
+        // the sub-kind as the kind path gives its own: (none), (not a string), a listed value, or (unlisted) (S374's
+        // closure read, U14)
         const s = getPlain(rec, sp);
         if (s === undefined)
-            return t;
-        return typeof s === 'string' && V.values.get(sp)?.has(s) ? `${t}:${s}` : `${t}:${UNLISTED}`;
+            return `${t}:${NONE}`;
+        if (typeof s !== 'string')
+            return `${t}:${NOT_STRING}`;
+        if (V.values.get(sp)?.has(s))
+            return `${t}:${s}`;
+        if (kindKeeps.has(sp))
+            keepValue(sp, s, fi);
+        return `${t}:${UNLISTED}`;
     };
     const note = (L, v, fi, ver, path) => {
         L.n++;
@@ -407,18 +550,8 @@ export function readShapes(V, files, opts) {
             if (vs) {
                 const ok = vs.has(v);
                 bump(L, 'values', ok ? v : UNLISTED, fi);
-                if (!ok && unlVals && path !== null) { // --unlisted only: the value itself, for the person's own review
-                    let m = unlVals.get(path);
-                    if (!m)
-                        unlVals.set(path, (m = new Map()));
-                    let e = m.get(v);
-                    if (!e) {
-                        if (m.size >= NAMES_PER_PATH)
-                            return;
-                        m.set(v, (e = [0, 0, -1]));
-                    }
-                    tally(e, fi);
-                }
+                if (!ok && path !== null)
+                    keepValue(path, v, fi); // --unlisted only: the value itself, for the person's own review
             }
         }
         else if (typeof v === 'number')
@@ -441,7 +574,7 @@ export function readShapes(V, files, opts) {
                 unl.set(star, (u = { names: new Map(), overflow: 0 }));
             let e = u.names.get(name);
             if (!e) {
-                if (u.names.size >= NAMES_PER_PATH) {
+                if (u.names.size >= SHAPES_NAMES_PER_PATH) {
                     u.overflow++;
                     return;
                 }
@@ -486,9 +619,18 @@ export function readShapes(V, files, opts) {
         }
     };
     files.forEach((file, fi) => {
-        let ver = NONE;
+        let ver = NONE, first = true, own = false;
         try {
             readLines(file, opts.maxLine, (buf) => {
+                // a first line that is a report's or an --unlisted list's: ltms shapes' own output (saved inside the folder it
+                // reads, say), not a transcript; nothing of it is read or counted (S374's closure read, U5)
+                if (first) {
+                    first = false;
+                    if (buf !== null && isShapesOutput(buf)) {
+                        own = true;
+                        return false;
+                    }
+                }
                 if (buf === null) {
                     S.tooLong++;
                     return;
@@ -518,7 +660,7 @@ export function readShapes(V, files, opts) {
                         break;
                     }
                 }
-                const kind = kindOf(rec);
+                const kind = kindOf(rec, fi);
                 let K = S.kinds.get(kind);
                 if (!K)
                     S.kinds.set(kind, (K = { n: 0, f: 0, last: -1, vers: new Map() }));
@@ -537,7 +679,10 @@ export function readShapes(V, files, opts) {
                 tally(vv, fi);
                 walk(rec, kind, fi, ver);
             });
-            S.filesRead++;
+            if (own)
+                S.skipped.push(file);
+            else
+                S.filesRead++;
         }
         catch (e) {
             S.filesFailed++;
@@ -548,18 +693,30 @@ export function readShapes(V, files, opts) {
 }
 // ---- the report -----------------------------------------------------------------------------------------------------
 const vkey = (v) => v.split('.').map(Number);
+/** Numeric order; equal numbers by their text. The version rule gives each version one spelling, so two never tie; the
+ *  text decides if a rule ever lets two spellings of one number through (1.2.3, 01.2.3), so that no order of the files
+ *  or of the records, which decides where each was met first, reaches a report (S374's closure read, S4). */
 const vcmp = (a, b) => { const x = vkey(a), y = vkey(b); for (let i = 0; i < 3; i++)
     if (x[i] !== y[i])
-        return x[i] - y[i]; return 0; };
-/** Versions in numeric order, then the other tokens ((none), (withheld)) by their text. */
-const sortVersions = (vs) => [...vs].sort((a, b) => {
+        return x[i] - y[i]; return cmp(a, b); };
+/** THE BUILDER'S ORDERS, each one function, which buildReport sorts by and the check (checkRows) holds a report to.
+ *  Versions: in numeric order (equal numbers by their text), then the other tokens ((none), (withheld)) by their text. */
+const versionOrder = (a, b) => {
     const sa = VERSION.test(a), sb = VERSION.test(b);
     return sa && sb ? vcmp(a, b) : sa ? -1 : sb ? 1 : cmp(a, b);
-});
+};
+const sortVersions = (vs) => [...vs].sort(versionOrder);
+/** Path lines: by kind, then by path. */
+const pathOrder = (a, b) => cmp(a.kind, b.kind) || cmp(a.path, b.path);
+/** A path line's maps of counts, in the order the line gives them. */
+const GROUPS = ['types', 'strings', 'numbers', 'booleans', 'lengths', 'values'];
+/** A map's keys: (rare) last; before it, an array's lengths in the order of their buckets, any other label by its text. */
+const groupOrder = (g) => (a, b) => Number(a === RARE) - Number(b === RARE) || (g === 'lengths' ? CAP_LABELS.indexOf(a) - CAP_LABELS.indexOf(b) : cmp(a, b));
 /** The report of a run. Every count becomes a bucket; a path line seen in fewer than floor files is not printed and is
  *  counted in its kind's rare line; a sub-count over fewer than floor files folds into (rare). The lines are sorted
- *  (versions in numeric order, then kinds, then paths by kind and path, then the rare lines), and their fields come in a
- *  fixed order, so the same files give the same bytes whatever the order of the files and of the keys in each record. */
+ *  (versions in numeric order, equal numbers by their text, then kinds, then paths by kind and path, then the rare
+ *  lines), and their fields come in a fixed order, so the same files give the same bytes whatever the order of the files
+ *  and of the keys in each record. */
 export function buildReport(V, S, floor, allowed) {
     const F = floor, out = [];
     out.push({
@@ -579,7 +736,7 @@ export function buildReport(V, S, floor, allowed) {
     }
     const rare = new Map();
     let pathLines = 0, printed = 0, belowFloor = 0;
-    const lines = [...S.lines.values()].sort((a, b) => cmp(a.kind, b.kind) || cmp(a.path, b.path));
+    const lines = [...S.lines.values()].sort(pathOrder);
     for (const L of lines) {
         pathLines++;
         if (L.f < F) {
@@ -608,13 +765,11 @@ export function buildReport(V, S, floor, allowed) {
             else
                 m.set(RARE, (m.get(RARE) ?? 0) + n);
         }
-        for (const g of ['types', 'strings', 'numbers', 'booleans', 'lengths', 'values']) {
+        for (const g of GROUPS) {
             const m = groups.get(g);
             if (!m)
                 continue;
-            const order = g === 'lengths' ? CAP_LABELS : null;
-            const keys = [...m.keys()].sort((a, b) => Number(a === RARE) - Number(b === RARE) || (order ? order.indexOf(a) - order.indexOf(b) : cmp(a, b)));
-            o[g] = Object.fromEntries(keys.map((x) => [x, bucket(m.get(x))]));
+            o[g] = Object.fromEntries([...m.keys()].sort(groupOrder(g)).map((x) => [x, bucket(m.get(x))]));
         }
         if (L.names)
             o.names = capped(L.names.size);
@@ -627,19 +782,35 @@ export function buildReport(V, S, floor, allowed) {
     out.push({ k: 'end', lines: out.length + 1 });
     return { lines: out, pathLines, printed, belowFloor };
 }
+// ---- the closed language: one check for the writer and for --check ---------------------------------------------------
+/** Each line kind's fields, in the format's order: a path line has its first five always, and each of the rest when it
+ *  has something to say there. Its keys give the line kinds, in the order a report gives them. */
+const LINE_FIELDS = {
+    shapes: ['k', 'format', 'vocabulary', 'floor', 'allowed', 'files', 'lines'],
+    version: ['k', 'v', 'records', 'files'],
+    kind: ['k', 'kind', 'records', 'files', 'versions'],
+    path: ['k', 'kind', 'path', 'n', 'files', 'first', 'last', ...GROUPS, 'names'],
+    rare: ['k', 'kind', 'paths', 'n'],
+    end: ['k', 'lines'],
+};
+const PATH_REQUIRED = 5;
+const LINE_KINDS = Object.keys(LINE_FIELDS);
+/** The first line's files and lines, in order. */
+const HEADER_FILES = ['read', 'failed'], HEADER_LINES = ['records', 'blank', 'notJson', 'notObject', 'tooLong'];
 /** The language a report of this vocabulary and allowed list is written in. `expect`, at the write, is the run's floor
  *  and its number of lines. */
 export function shapesLanguage(V, allowed, expect) {
+    // exactly what kindOf can give: a kind that has a sub-kind's path never prints alone
     const kindTokens = new Set([NONE, NOT_STRING, UNLISTED, ALL]);
     if (V.kindPath)
         for (const t of V.values.get(V.kindPath) ?? []) {
-            kindTokens.add(t);
             const sp = V.sub.get(t);
-            if (sp) {
-                kindTokens.add(`${t}:${UNLISTED}`);
-                for (const s of V.values.get(sp) ?? [])
-                    kindTokens.add(`${t}:${s}`);
+            if (!sp) {
+                kindTokens.add(t);
+                continue;
             }
+            for (const s of [UNLISTED, NONE, NOT_STRING, ...(V.values.get(sp) ?? [])])
+                kindTokens.add(`${t}:${s}`);
         }
     return { V, allowed: [...allowed], kindTokens, floor: expect?.floor ?? null, lines: expect?.lines ?? null };
 }
@@ -656,44 +827,64 @@ const isVersionToken = (v) => typeof v === 'string' && (VERSION.test(v) || v ===
 const isVersion = (v) => typeof v === 'string' && VERSION.test(v);
 const inList = (list) => (k) => k === RARE || list.includes(k);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-/** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words (the
- *  field or the line kind that failed), never a part of the line. */
+/** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words, never
+ *  a part of the line: 'not an object'; 'k' (no line kind of the format); 'fields' (one missing, or one its kind does
+ *  not have); or the name of the field that failed (S374's closure read, U10). */
 export function checkLine(o, Lg) {
     if (!isObj(o))
         return 'not an object';
     switch (o.k) {
         case 'shapes': {
-            if (!keysAre(o, ['k', 'format', 'vocabulary', 'floor', 'allowed', 'files', 'lines']))
+            if (!keysAre(o, LINE_FIELDS.shapes))
                 return 'fields';
             if (o.format !== SHAPES_FORMAT)
                 return 'format';
             if (!Array.isArray(o.vocabulary) || !same(o.vocabulary, Lg.V.list))
                 return 'vocabulary';
-            if (typeof o.floor !== 'number' || !Number.isInteger(o.floor) || o.floor < 1 || (Lg.floor !== null && o.floor !== Lg.floor))
+            // a floor --floor takes: a whole number from 2 that a double holds exactly (S374's closure read, S3 and U6)
+            if (typeof o.floor !== 'number' || !Number.isSafeInteger(o.floor) || o.floor < SHAPES_MIN_FLOOR || (Lg.floor !== null && o.floor !== Lg.floor))
                 return 'floor';
             if (!Array.isArray(o.allowed) || !same(o.allowed, Lg.allowed))
                 return 'allowed';
-            if (!keysAre(o.files, ['read', 'failed']) || !Object.values(o.files).every(isBucket))
+            if (!keysAre(o.files, HEADER_FILES) || !Object.values(o.files).every(isBucket))
                 return 'files';
-            if (!keysAre(o.lines, ['records', 'blank', 'notJson', 'notObject', 'tooLong']) || !Object.values(o.lines).every(isBucket))
+            if (!keysAre(o.lines, HEADER_LINES) || !Object.values(o.lines).every(isBucket))
                 return 'lines';
             return null;
         }
         case 'version':
-            if (!keysAre(o, ['k', 'v', 'records', 'files']) || !isVersionToken(o.v) || !isBucket(o.records) || !isBucket(o.files))
-                return 'version';
+            if (!keysAre(o, LINE_FIELDS.version))
+                return 'fields';
+            if (!isVersionToken(o.v))
+                return 'v';
+            if (!isBucket(o.records))
+                return 'records';
+            if (!isBucket(o.files))
+                return 'files';
             return null;
         case 'kind':
-            if (!keysAre(o, ['k', 'kind', 'records', 'files', 'versions']) || typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind) || !isBucket(o.records) || !isBucket(o.files))
+            if (!keysAre(o, LINE_FIELDS.kind))
+                return 'fields';
+            if (typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind))
                 return 'kind';
+            if (!isBucket(o.records))
+                return 'records';
+            if (!isBucket(o.files))
+                return 'files';
             if (!bucketMap(o.versions, isVersionToken))
-                return 'kind.versions';
+                return 'versions';
             return null;
         case 'path': {
-            if (!keysAre(o, ['k', 'kind', 'path', 'n', 'files'], ['first', 'last', 'types', 'strings', 'numbers', 'booleans', 'lengths', 'values', 'names']))
-                return 'path fields';
-            if (typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind) || !validPath(Lg, o.path) || !isBucket(o.n) || !isBucket(o.files))
+            if (!keysAre(o, LINE_FIELDS.path.slice(0, PATH_REQUIRED), LINE_FIELDS.path.slice(PATH_REQUIRED)))
+                return 'fields';
+            if (typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind))
+                return 'kind';
+            if (!validPath(Lg, o.path))
                 return 'path';
+            if (!isBucket(o.n))
+                return 'n';
+            if (!isBucket(o.files))
+                return 'files';
             const path = o.path;
             if (Object.hasOwn(o, 'first') && !isVersion(o.first))
                 return 'first';
@@ -719,66 +910,206 @@ export function checkLine(o, Lg) {
             return null;
         }
         case 'rare':
-            if (!keysAre(o, ['k', 'kind', 'paths', 'n']) || typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind) || !isBucket(o.paths) || !isBucket(o.n))
-                return 'rare';
+            if (!keysAre(o, LINE_FIELDS.rare))
+                return 'fields';
+            if (typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind))
+                return 'kind';
+            if (!isBucket(o.paths))
+                return 'paths';
+            if (!isBucket(o.n))
+                return 'n';
             return null;
         case 'end':
-            if (!keysAre(o, ['k', 'lines']) || typeof o.lines !== 'number' || !Number.isInteger(o.lines) || (Lg.lines !== null && o.lines !== Lg.lines))
-                return 'end';
+            if (!keysAre(o, LINE_FIELDS.end))
+                return 'fields';
+            if (typeof o.lines !== 'number' || !Number.isInteger(o.lines) || (Lg.lines !== null && o.lines !== Lg.lines))
+                return 'lines';
             return null;
-        default: return 'unknown line kind';
+        default: return 'k';
     }
 }
-/** THE WRITE GUARD, and the only way a report leaves this module: each line is turned into the text that will be
- *  written, that text is parsed back and checked against the language, and only that text is written: what is checked is
- *  exactly what goes out (an object whose JSON is not its own fields, through an inherited toJSON say, cannot pass as one
- *  line and be written as another: S374's closure read, S1). A line that fails is not written. `write` is given the text
- *  in parts of at most 1,000 lines. */
-export function writeReport(lines, Lg, write) {
-    const done = { written: 0, refused: 0, reasons: [], bytes: 0 };
-    let text = '', held = 0;
-    const flush = () => { if (text) {
-        done.bytes += Buffer.byteLength(text);
-        write(text);
-    } text = ''; held = 0; };
-    lines.forEach((o, i) => {
-        let s;
+/** An empty line, or one of white space only. */
+const BLANK = /^\s*$/;
+/** The words of the report as a whole, beside checkLine's: a line that is 'blank' or 'not JSON'; a line that is in the
+ *  language alone but not where it stands
+ *  ('first line': line 1 is not a first line; 'second first line'; 'end before the last line'; 'order': out of the
+ *  format's order of line kinds, or of its kind's order; 'repeat': the same key as the line of its kind before it;
+ *  'under the floor': a path line in fewer files than the floor), one not written as the builder writes it ('form'), and
+ *  the end ('cut': the last line is not an end line; 'count': the end line does not count the report's lines). */
+export const CHECK_WORDS = ['blank', 'not JSON', 'first line', 'second first line', 'end before the last line', 'order', 'repeat', 'under the floor', 'form', 'cut', 'count'];
+/** The builder's order of two lines of one kind (version, kind, path or rare), by their key: 0 for the same key. */
+function lineOrder(a, b) {
+    if (a.k === 'version')
+        return versionOrder(a.v, b.v);
+    if (a.k === 'path')
+        return pathOrder(a, b);
+    return cmp(a.kind, b.kind);
+}
+/** The largest count a bucket stands for: 0, 1, or the top of lo-hi. */
+const bucketTop = (b) => Number(b.slice(b.indexOf('-') + 1));
+/** A line as the builder writes it: its fields in the format's order (LINE_FIELDS), each map's keys in the builder's
+ *  order, JSON.stringify's spelling. For a line checkLine passed; anything else is taken as it is, never thrown on. */
+function canonicalText(o) {
+    const pick = (m, keys) => (isObj(m) ? Object.fromEntries(keys.filter((k) => Object.hasOwn(m, k)).map((k) => [k, m[k]])) : m);
+    const sorted = (m, order) => (isObj(m) ? Object.fromEntries(Object.keys(m).sort(order).map((k) => [k, m[k]])) : m);
+    const c = pick(o, LINE_FIELDS[o.k] ?? []);
+    if (o.k === 'shapes') {
+        c.files = pick(o.files, HEADER_FILES);
+        c.lines = pick(o.lines, HEADER_LINES);
+    }
+    else if (o.k === 'kind')
+        c.versions = sorted(o.versions, versionOrder);
+    else if (o.k === 'path')
+        for (const g of GROUPS)
+            if (Object.hasOwn(c, g))
+                c[g] = sorted(c[g], groupOrder(g));
+    return JSON.stringify(c);
+}
+/** THE CHECK OF A REPORT WHOLE, the same at the write and at --check (S374's closure read, S3 and U6). `rows` are its
+ *  lines' text (null: a line that has none, an object JSON cannot write). Each line alone: JSON, an object, in the
+ *  language (checkLine), and written byte for byte as the builder writes it (canonicalText: its fields in the format's
+ *  order, each map's keys in the builder's order, each key once, no space, JSON's own spelling of every string and
+ *  number). Then each line in its place: line 1 the first line, and no other; the line kinds in the format's order
+ *  (shapes, version, kind, path, rare, end); within each kind, the lines strictly in the builder's order, so none
+ *  repeats; a path line in at least the floor's files; one end line, the last, that counts the lines. A line that fails
+ *  alone is not held to its place. Returns the problems, by line; none when the report is in the language. */
+export function checkRows(rows, Lg) {
+    const n = rows.length;
+    if (!n)
+        return [{ line: 1, why: 'first line' }];
+    const read = rows.map((r) => {
+        let o;
+        if (r === null)
+            return 'not JSON';
+        if (BLANK.test(r))
+            return 'blank';
         try {
-            s = JSON.stringify(o);
+            o = JSON.parse(r);
         }
         catch {
-            s = undefined;
+            return 'not JSON';
         }
-        const why = typeof s === 'string' ? checkLine(JSON.parse(s), Lg) : 'not JSON';
-        if (why !== null || typeof s !== 'string') {
-            done.refused++;
-            done.reasons.push({ line: i + 1, why: why ?? 'not JSON' });
-            return;
-        }
-        text += s + '\n';
-        done.written++;
-        if (++held >= 1000)
-            flush();
+        const why = checkLine(o, Lg);
+        if (why !== null)
+            return why;
+        return canonicalText(o) === r ? o : 'form';
     });
-    flush();
+    const head = read[0];
+    // the floor: at the write, the run's; at --check, the one the first line states, when that line is in the language
+    const floor = Lg.floor ?? (typeof head === 'object' ? head.floor : null);
+    const problems = [];
+    let prev = null;
+    read.forEach((o, i) => {
+        let why = null;
+        if (typeof o === 'string')
+            why = o;
+        else if (i === 0)
+            why = o.k === 'shapes' ? null : 'first line';
+        else if (o.k === 'shapes')
+            why = 'second first line';
+        else if (o.k === 'end' && i !== n - 1)
+            why = 'end before the last line';
+        else {
+            const d = prev === null ? 1 : LINE_KINDS.indexOf(o.k) - LINE_KINDS.indexOf(prev.k);
+            const c = d === 0 && prev !== null ? lineOrder(prev, o) : 0;
+            if (d < 0 || c > 0)
+                why = 'order';
+            else if (d === 0 && c === 0)
+                why = 'repeat';
+            else if (o.k === 'path' && floor !== null && bucketTop(o.files) < floor)
+                why = 'under the floor';
+        }
+        if (why !== null)
+            problems.push({ line: i + 1, why });
+        else
+            prev = o;
+    });
+    const last = read[n - 1];
+    if (typeof last === 'object') {
+        if (last.k !== 'end')
+            problems.push({ line: n, why: 'cut' });
+        else if (last.lines !== n)
+            problems.push({ line: n, why: 'count' });
+    }
+    return problems;
+}
+/** THE WRITE GUARD, and the only way a report leaves this module. Each line is turned into the text that will be
+ *  written; the report, that text, is checked whole (checkRows: each line parsed back and checked against the language,
+ *  and each in its place) before any of it is written; and only that text is written: what is checked is exactly what
+ *  goes out (an object whose JSON is not its own fields, through an inherited toJSON say, cannot pass as one line and be
+ *  written as another: S374's closure read, S1). A report with any problem is not written at all: no part of a report
+ *  out of the language (a line repeated, say) leaves, and which lines failed cannot be read from what does. `write` is
+ *  given the text in parts of at most 1,000 lines. */
+export function writeReport(lines, Lg, write) {
+    const rows = lines.map((o) => {
+        try {
+            const s = JSON.stringify(o);
+            return typeof s === 'string' ? s : null;
+        }
+        catch {
+            return null;
+        }
+    });
+    const reasons = checkRows(rows, Lg);
+    const done = { written: 0, refused: new Set(reasons.map((p) => p.line)).size, reasons, bytes: 0 };
+    if (reasons.length)
+        return done;
+    for (let i = 0; i < rows.length; i += 1000) {
+        const part = rows.slice(i, i + 1000), text = part.join('\n') + '\n';
+        write(text);
+        done.written += part.length;
+        done.bytes += Buffer.byteLength(text);
+    }
     return done;
 }
-/** --check: is every token of this report in its language? The language is the vocabulary given and the report's own
- *  allowed list (its first line); every line is checked as the writer checks it, and the last line must be an end line
- *  that counts the report's lines. */
+/** --check: is this report, every token of it and every line in its place, in its language? The language is the
+ *  vocabulary given and the report's own allowed list (its first line); the report is checked whole as the writer checks
+ *  it (checkRows), its floor the one its first line states. It cannot tell whether ltms wrote it, nor whether its counts
+ *  are true. What ltms never writes, and an editor or a shell can add (S374's closure read, U10), is named for what it
+ *  is: a byte-order mark before line 1, a carriage return at the end of a line (CR LF), blank lines after the last line;
+ *  each is a problem, and is taken off for the rest of the check, so that the lines are checked as they would be without
+ *  it. */
 export function checkReport(text, V) {
+    const own = [];
+    if (text.charCodeAt(0) === 0xfeff) {
+        own.push({ line: 1, why: 'byte-order mark' });
+        text = text.slice(1);
+    }
     const rows = text.split('\n');
     if (rows[rows.length - 1] === '')
         rows.pop();
+    const all = rows.length;
+    let cr = -1;
+    rows.forEach((r, i) => { if (r.endsWith('\r')) {
+        if (cr < 0)
+            cr = i;
+        rows[i] = r.slice(0, -1);
+    } });
+    if (cr >= 0)
+        own.push({ line: cr + 1, why: 'carriage return' });
+    let n = rows.length;
+    while (n > 0 && BLANK.test(rows[n - 1]))
+        n--;
+    if (n === 0)
+        return { k: 'not-a-report', why: all ? 'blank' : 'empty' };
+    if (n < all)
+        own.push({ line: n + 1, why: 'blank at the end' });
+    rows.length = n;
+    if (BLANK.test(rows[0]))
+        return { k: 'not-a-report', why: 'blank' };
     let header;
     try {
         header = JSON.parse(rows[0]);
     }
     catch {
-        header = null;
+        return { k: 'not-a-report', why: 'not JSON' };
     }
-    if (!isObj(header) || header.k !== 'shapes' || !Array.isArray(header.allowed))
-        return { k: 'not-a-report' };
+    if (!isObj(header))
+        return { k: 'not-a-report', why: 'not an object' };
+    if (header.k === 'unlisted-review')
+        return { k: 'not-a-report', why: 'unlisted' };
+    if (header.k !== 'shapes' || !Array.isArray(header.allowed))
+        return { k: 'not-a-report', why: 'not a first line' };
     let allowed;
     try {
         allowed = applyAllow(V, header.allowed.filter((s) => typeof s === 'string'));
@@ -788,35 +1119,15 @@ export function checkReport(text, V) {
             return { k: 'bad-allowed' };
         throw e;
     }
-    const Lg = shapesLanguage(V, allowed);
-    const problems = [];
-    rows.forEach((r, i) => {
-        let o;
-        try {
-            o = JSON.parse(r);
-        }
-        catch {
-            o = undefined;
-        }
-        const why = checkLine(o, Lg);
-        if (why !== null)
-            problems.push({ line: i + 1, why });
-    });
-    let last;
-    try {
-        last = JSON.parse(rows[rows.length - 1]);
-    }
-    catch {
-        last = null;
-    }
-    if (!isObj(last) || last.k !== 'end' || last.lines !== rows.length)
-        problems.push({ line: rows.length, why: 'end' });
-    return { k: 'checked', lines: rows.length, problems, allowed };
+    const problems = [...own, ...checkRows(rows, shapesLanguage(V, allowed))].sort((a, b) => a.line - b.line);
+    return { k: 'checked', lines: n, rows: all, problems, allowed };
 }
 /** --unlisted: NOT a report. The names and values the vocabulary lacks, read from the transcripts as written, for the
  *  person's own review before an --allow; every line says "send":false, and --check refuses the list. Exact counts. A
- *  name that cannot be a path step (a file path, say) gets "allow":null: it can never be allowed. */
-export function reviewLines(S) {
+ *  name that cannot be a path step (a file path, say), or a value --allow refuses (not a label; ':' at a kind path),
+ *  gets "allow":null: it can never be allowed. */
+export function reviewLines(S, V) {
+    const kp = kindPaths(V);
     const out = [{ k: 'unlisted-review', send: false, note: 'names the vocabulary does not hold, for your own review: do not send this list. To print one in a report, rerun with --allow <path>.' }];
     const unl = S.unlisted ?? new Map(), vals = S.unlistedValues ?? new Map();
     for (const star of [...unl.keys()].sort(cmp)) {
@@ -829,11 +1140,41 @@ export function reviewLines(S) {
             out.push({ k: 'unlisted-more', send: false, at: star, n: u.overflow });
     }
     for (const vp of [...vals.keys()].sort(cmp)) {
-        const m = vals.get(vp);
-        for (const value of [...m.keys()].sort(cmp)) {
-            const [n, f] = m.get(value);
-            out.push({ k: 'unlisted-value', send: false, at: vp, value, n, files: f, allow: LABEL.test(value) ? `${vp}=${value}` : null });
+        const u = vals.get(vp);
+        for (const value of [...u.names.keys()].sort(cmp)) {
+            const [n, f] = u.names.get(value);
+            const allowable = LABEL.test(value) && !(value.includes(':') && kp.includes(vp));
+            out.push({ k: 'unlisted-value', send: false, at: vp, value, n, files: f, allow: allowable ? `${vp}=${value}` : null });
         }
+        if (u.overflow)
+            out.push({ k: 'unlisted-more', send: false, at: vp, n: u.overflow });
     }
     return out;
+}
+export function reviewTotals(lines) {
+    const t = { names: 0, namePaths: 0, values: 0, valuePaths: 0, moreNames: 0, moreNamePaths: 0, moreValues: 0, moreValuePaths: 0 };
+    const np = new Set(), vp = new Set();
+    for (const o of lines) {
+        if (o.k === 'unlisted') {
+            t.names++;
+            np.add(o.at);
+        }
+        else if (o.k === 'unlisted-value') {
+            t.values++;
+            vp.add(o.at);
+        }
+        else if (o.k === 'unlisted-more' && typeof o.n === 'number') {
+            if (String(o.at).endsWith('.*')) {
+                t.moreNames += o.n;
+                t.moreNamePaths++;
+            }
+            else {
+                t.moreValues += o.n;
+                t.moreValuePaths++;
+            }
+        }
+    }
+    t.namePaths = np.size;
+    t.valuePaths = vp.size;
+    return t;
 }
