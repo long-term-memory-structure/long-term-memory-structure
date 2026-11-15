@@ -370,7 +370,8 @@ export function collectFiles(paths) {
 const CHUNK = Buffer.allocUnsafe(1 << 20);
 /** Calls onLine(bytes) for each line of the file, split on byte 0x0A (which never occurs inside a UTF-8 sequence; a last
  *  line without a new line is read), or onLine(null) for a line longer than maxLine bytes, whose bytes are passed over as
- *  they stream past and never held. Memory: one chunk, plus at most maxLine bytes of one line. */
+ *  they stream past and never held; onLine returns false to read no further. Memory: one chunk, plus at most maxLine
+ *  bytes of one line. */
 export function readLines(file, maxLine, onLine) {
     const fd = openSync(file, 'r');
     try {
@@ -394,7 +395,8 @@ export function readLines(file, maxLine, onLine) {
                 len += end - start;
                 if (nl < 0)
                     break;
-                onLine(skipping ? null : parts.length === 1 ? parts[0] : Buffer.concat(parts));
+                if (onLine(skipping ? null : parts.length === 1 ? parts[0] : Buffer.concat(parts)) === false)
+                    return;
                 parts = [];
                 len = 0;
                 skipping = false;
@@ -412,14 +414,34 @@ const tally = (c, fi) => { c[0]++; if (c[2] !== fi) {
     c[2] = fi;
     c[1]++;
 } };
+/** Is this the first line of what ltms shapes writes: a report's (k "shapes", its format ltms-shapes/...) or an
+ *  --unlisted list's (k "unlisted-review", "send":false)? Read as JSON, a byte-order mark before it passed over. */
+function isShapesOutput(line) {
+    let s = line.toString('utf8');
+    if (s.charCodeAt(0) === 0xfeff)
+        s = s.slice(1);
+    let o;
+    try {
+        o = JSON.parse(s);
+    }
+    catch {
+        return false;
+    }
+    if (!isObj(o))
+        return false;
+    const family = SHAPES_FORMAT.slice(0, SHAPES_FORMAT.indexOf('/') + 1);
+    return (o.k === 'shapes' && typeof o.format === 'string' && o.format.startsWith(family)) || (o.k === 'unlisted-review' && o.send === false);
+}
 /** Reads the files, one at a time, each line alone, and counts. Per record: the version in force (the value at the first
  *  version path the record has, if it follows the version rule; (withheld) for any other value; else the version before
  *  it in the same file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key
  *  the vocabulary holds is counted at its path and walked, any other is counted at the .* of the object it is in, and
- *  the walk stops there. A file whose reading throws counts as failed; what was read of it before is counted. */
+ *  the walk stops there. A file whose reading throws counts as failed; what was read of it before is counted. A file
+ *  whose first line is a report's or an --unlisted list's is ltms shapes' own output: nothing of it is read, and it is
+ *  listed in skipped. */
 export function readShapes(V, files, opts) {
     const S = {
-        filesRead: 0, filesFailed: 0, failures: [], records: 0, blank: 0, notJson: 0, notObject: 0, tooLong: 0,
+        filesRead: 0, filesFailed: 0, skipped: [], failures: [], records: 0, blank: 0, notJson: 0, notObject: 0, tooLong: 0,
         versions: new Map(), kinds: new Map(), lines: new Map(),
         unlisted: opts.unlisted ? new Map() : null, unlistedValues: opts.unlisted ? new Map() : null,
     };
@@ -582,9 +604,18 @@ export function readShapes(V, files, opts) {
         }
     };
     files.forEach((file, fi) => {
-        let ver = NONE;
+        let ver = NONE, first = true, own = false;
         try {
             readLines(file, opts.maxLine, (buf) => {
+                // a first line that is a report's or an --unlisted list's: ltms shapes' own output (saved inside the folder it
+                // reads, say), not a transcript; nothing of it is read or counted (S374's closure read, U5)
+                if (first) {
+                    first = false;
+                    if (buf !== null && isShapesOutput(buf)) {
+                        own = true;
+                        return false;
+                    }
+                }
                 if (buf === null) {
                     S.tooLong++;
                     return;
@@ -633,7 +664,10 @@ export function readShapes(V, files, opts) {
                 tally(vv, fi);
                 walk(rec, kind, fi, ver);
             });
-            S.filesRead++;
+            if (own)
+                S.skipped.push(file);
+            else
+                S.filesRead++;
         }
         catch (e) {
             S.filesFailed++;

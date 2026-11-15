@@ -72,8 +72,9 @@ export interface ShapesFiles {
 export declare function collectFiles(paths: readonly string[]): ShapesFiles;
 /** Calls onLine(bytes) for each line of the file, split on byte 0x0A (which never occurs inside a UTF-8 sequence; a last
  *  line without a new line is read), or onLine(null) for a line longer than maxLine bytes, whose bytes are passed over as
- *  they stream past and never held. Memory: one chunk, plus at most maxLine bytes of one line. */
-export declare function readLines(file: string, maxLine: number, onLine: (line: Buffer | null) => void): void;
+ *  they stream past and never held; onLine returns false to read no further. Memory: one chunk, plus at most maxLine
+ *  bytes of one line. */
+export declare function readLines(file: string, maxLine: number, onLine: (line: Buffer | null) => boolean | void): void;
 /** A count: its occurrences, its files, and the last file it was counted in (by its number in the run). */
 export type ShapesCount = [n: number, f: number, last: number];
 /** What one (kind, path) line has counted. */
@@ -122,6 +123,9 @@ export interface ShapesRun {
     filesRead: number;
     /** Files that could not be read, or whose reading stopped with an error. */
     filesFailed: number;
+    /** Files not read, being ltms shapes' own output, not transcripts: their first line is a report's or an --unlisted
+     *  list's (S374's closure read, U5). Neither read nor failed. */
+    skipped: string[];
     /** Those files, with their errors. */
     failures: {
         file: string;
@@ -161,7 +165,9 @@ export interface ShapesReadOptions {
  *  version path the record has, if it follows the version rule; (withheld) for any other value; else the version before
  *  it in the same file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key
  *  the vocabulary holds is counted at its path and walked, any other is counted at the .* of the object it is in, and
- *  the walk stops there. A file whose reading throws counts as failed; what was read of it before is counted. */
+ *  the walk stops there. A file whose reading throws counts as failed; what was read of it before is counted. A file
+ *  whose first line is a report's or an --unlisted list's is ltms shapes' own output: nothing of it is read, and it is
+ *  listed in skipped. */
 export declare function readShapes(V: ShapesVocabulary, files: readonly string[], opts: ShapesReadOptions): ShapesRun;
 /** A line of a report, as built and as written: one JSON object whose `k` names its kind. */
 export type ShapesLine = Record<string, unknown>;

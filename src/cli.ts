@@ -2260,7 +2260,7 @@ const SHAPES_VALUES: Readonly<Record<string, string>> = {
 
 const SHAPES_HELP = `ltms shapes <path>... [--supplier <name> | --vocabulary <file>] [--floor <n>]
             [--allow <path>[=<value>]]... [--max-line <bytes>]
-ltms shapes --check <report.jsonl> [--supplier <name> | --vocabulary <file>]
+ltms shapes --check <report> [--supplier <name> | --vocabulary <file>]
 ltms shapes --unlisted <path>... [--supplier <name> | --vocabulary <file>]
             [--allow <path>[=<value>]]... [--max-line <bytes>]
 
@@ -2271,12 +2271,14 @@ maintainers of ltms, say): the report is checked against its closed language
 whole, every line and the place of each, before any of it is written, so a
 defect in the reading can make a count wrong but cannot put a word of a
 transcript in it.
-  ltms shapes ~/.claude/projects/-home-me-my-app > shapes.jsonl
-  ltms shapes --check shapes.jsonl
-A path is a transcript, or a directory: every .jsonl under it, at any depth.
-Symbolic links met under a directory are counted, not followed, and a
-directory met twice (the same device and inode) is read once. Each line is
-read alone, as JSON.
+  ltms shapes ~/.claude/projects/-home-me-my-app > shapes.txt
+  ltms shapes --check shapes.txt
+Save the report outside the folder you read, under a name that does not end
+in .jsonl. A path is a transcript, or a directory: every .jsonl under it, at
+any depth. Symbolic links met under a directory are counted, not followed,
+and a directory met twice (the same device and inode) is read once. A file
+whose first line is a report's or an --unlisted list's is not read: a
+warning names it. Each line is read alone, as JSON.
 
 Every string in a report is one of:
   - the report's own field names and words, such as (unlisted) and (rare);
@@ -2445,7 +2447,7 @@ function readShapesArgs(args: string[]): ShapesArgs | number {
   for (let i = 0; i < args.length; i++) {
     const x = args[i];
     if (!ended && x === '--') { ended = true; continue; }
-    if (!ended && x === '-') return usage(`reading from standard input ('-') is not supported. Give the transcripts' folder or files, e.g. ltms shapes ~/.claude/projects/<project> > shapes.jsonl`);
+    if (!ended && x === '-') return usage(`reading from standard input ('-') is not supported. Give the transcripts' folder or files, e.g. ltms shapes ~/.claude/projects/<project> > shapes.txt`);
     if (ended || !x.startsWith('-')) { a.paths.push(x); continue; }
     if (x === '--help' || x === '-h') { out(SHAPES_HELP); return 0; }
     if (x === '--version' || x === '-v') return printVersion();
@@ -2481,7 +2483,7 @@ function readShapesArgs(args: string[]): ShapesArgs | number {
     return a;
   }
   if (a.unlisted && a.floor !== null) return usage('--unlisted lists every name, in any number of files: it takes no --floor.');
-  if (!a.paths.length) return usage(`no paths: give the transcripts or their folder (every .jsonl under a directory is read), e.g. ltms shapes ~/.claude/projects/<project> > shapes.jsonl`);
+  if (!a.paths.length) return usage(`no paths: give the transcripts or their folder (every .jsonl under a directory is read), e.g. ltms shapes ~/.claude/projects/<project> > shapes.txt`);
   return a;
 }
 
@@ -2525,6 +2527,11 @@ function shapesRun(args: string[]): number {
   S.filesFailed += found.failed.length;
   if (!found.files.length && !found.failed.length) err(`ltms shapes: warning: no .jsonl file was found under the paths given, so the ${a.unlisted ? 'list' : 'report'} counts nothing. ${TRANSCRIPTS_HINT}`);
   if (found.symlinks) err(`ltms shapes: ${plural(found.symlinks, 'symbolic link', 'symbolic links')} met under the directories given ${found.symlinks === 1 ? 'was' : 'were'} not followed.`);
+  if (S.skipped.length) {
+    // ltms shapes' own output, not transcripts: not read, counted and named (S374's closure read, U5)
+    const n = S.skipped.length, named = S.skipped.slice(0, 4).map((f) => `'${f}'`), more = n - named.length;
+    err(`ltms shapes: warning: ${n === 1 ? '1 file under the paths given is a report of ltms shapes or an --unlisted list, not a transcript, so it was' : `${n} files under the paths given are reports of ltms shapes or --unlisted lists, not transcripts, so they were`} not read: ${more ? `${named.join(', ')} and ${more} more` : listed(named)}. Save a report outside the folder you read, under a name that does not end in .jsonl.`);
+  }
   const secs = (): string => ((Date.now() - started) / 1000).toFixed(1);
 
   if (a.unlisted) {

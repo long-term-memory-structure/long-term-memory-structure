@@ -1650,3 +1650,48 @@ test('shapes: a write to stdout that fails (a reader that stopped before the end
   assert.match(flat(readFileSync(join(root, 'README.md'), 'utf8')), /when the write to stdout failed: a reader that stopped before the end/);
   assert.match(flat(spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout), /when the write to stdout failed \(a reader that stopped before the end/);
 });
+
+// U5 (S374's closure read): a report saved inside the folder it reads (the README's example, run from that folder) was
+// read back as a transcript by the next run: its lines counted as records, a kind and a version (none) added, files
+// read 5 for 3, and neither run said so; an --unlisted list the same, its field names listed as names. A file whose first
+// line is a report's or an --unlisted list's is now skipped: not read, counted and named in a warning. The README's and
+// --help's example save the report under a name that does not end in .jsonl, and say to keep it outside the folder read.
+test("shapes: a file whose first line is a report's or an --unlisted list's is not read as a transcript: it is skipped, counted and named in a warning; the README's and --help's example save the report under a name that is not .jsonl, outside the folder read", () => {
+  const dir = tmp();
+  try {
+    const p = join(dir, 'p');
+    mkdirSync(p);
+    for (const f of ['cc-a.jsonl', 'cc-b.jsonl', 'cc-c.jsonl']) copyFileSync(FX(f), join(p, f));
+    const alone = shapes([p]), list = shapes(['--unlisted', p]);
+    assert.equal(alone.code, 0, alone.err);
+    assert.equal(list.code, 0, list.err);
+    // the report and the list saved inside the folder they read, as .jsonl
+    writeFileSync(join(p, 'shapes.jsonl'), alone.out);
+    writeFileSync(join(p, 'list.jsonl'), list.out);
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const warning = new RegExp(`^ltms shapes: warning: 2 files under the paths given are reports of ltms shapes or --unlisted lists, not transcripts, so they were not read: '${esc(join(p, 'list.jsonl'))}' and '${esc(join(p, 'shapes.jsonl'))}'\\. Save a report outside the folder you read, under a name that does not end in \\.jsonl\\.$`, 'm');
+    const r = shapes([p]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, alone.out, 'the report of the transcripts alone, byte for byte');
+    assert.match(r.err, warning, r.err);
+    assert.match(r.err, /^ltms shapes: 3 files read \(0 failed\), /m);
+    const u = shapes(['--unlisted', p]);
+    assert.equal(u.out, list.out, 'the list of the transcripts alone');
+    assert.match(u.err, warning, u.err);
+    // named on the command line, too
+    const named = shapes([join(p, 'shapes.jsonl'), join(p, 'cc-a.jsonl')]);
+    assert.equal(named.out, shapes([join(p, 'cc-a.jsonl')]).out);
+    assert.match(named.err, new RegExp(`^ltms shapes: warning: 1 file under the paths given is a report of ltms shapes or an --unlisted list, not a transcript, so it was not read: '${esc(join(p, 'shapes.jsonl'))}'\\.`, 'm'));
+  } finally { rm(dir); }
+  // the example: the report is saved under a name that does not end in .jsonl, and the section says to keep it outside
+  // the folder read; --help's example and the usage messages the same
+  const whole = readFileSync(join(root, 'README.md'), 'utf8');
+  const section = whole.slice(whole.indexOf('### `ltms shapes'), whole.indexOf('\n## ', whole.indexOf('### `ltms shapes')));
+  const sh = /```sh\n([\s\S]*?)```/.exec(section)?.[1] ?? '';
+  assert.match(sh, /^ltms shapes \S+ > (\S+)$/m, 'the example saves the report');
+  assert.doesNotMatch(sh, /\.jsonl\b/, `the example names no .jsonl: ${sh}`);
+  assert.match(section.replace(/\s+/g, ' '), /save the report outside the folder you read/i);
+  const help = spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout;
+  assert.doesNotMatch(help, /> \S*\.jsonl|<report\.jsonl>/, '--help names no .jsonl for a report');
+  for (const args of [[], ['-', ...CC]]) assert.doesNotMatch(shapes(args).err, /> \S*\.jsonl/, `the usage message of ltms shapes ${args.join(' ')}`);
+});

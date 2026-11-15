@@ -455,11 +455,11 @@ An entry of a hit's `at`:
 A report of what transcripts are made of, never what they say: their kinds of record, key paths, JSON types, classes of strings and numbers, how many of each, and the versions of the program that wrote them. It is made to be sent, to the maintainers of ltms or of anything else that reads the format, since it holds none of the transcripts' content: the report is checked against its closed language whole, every line and the place of each, before any of it is written, and none of a report that fails is written, so a defect in the reading can make a count wrong but cannot put a word of a transcript in the report.
 
 ```sh
-ltms shapes ~/.claude/projects/-home-me-my-app > shapes.jsonl
-ltms shapes --check shapes.jsonl
+ltms shapes ~/.claude/projects/-home-me-my-app > shapes.txt
+ltms shapes --check shapes.txt
 ```
 
-A path is a transcript, or a directory: every `.jsonl` file under it, at any depth, as `search` finds them (symbolic links met there counted, not followed; a directory met twice, by its device and inode, read once; each file once). Each line is read alone, and parsed as JSON. The report does not depend on the order of the files, or of the keys in a record: the same files give the same bytes.
+Save the report outside the folder you read, under a name that does not end in `.jsonl`. A path is a transcript, or a directory: every `.jsonl` file under it, at any depth, as `search` finds them (symbolic links met there counted, not followed; a directory met twice, by its device and inode, read once; each file once). A file whose first line is a report's (`k` `shapes`) or an `--unlisted` list's (`k` `unlisted-review`) is ltms shapes' own output, not a transcript: it is not read, and a warning names it. Each line is read alone, and parsed as JSON. The report does not depend on the order of the files, or of the keys in a record: the same files give the same bytes.
 
 **What a report holds.** Every string in it is one of these:
 
@@ -533,6 +533,7 @@ Exit status: 0 when every file was read and every line was written to stdout; 1 
 - One supplier per report: a file of another program read under Claude Code's vocabulary merges its kinds with Claude Code's where they share a name.
 - The vocabulary goes stale: a record type or a field that Claude Code adds after it was built prints as `(unlisted)` or `*` until the vocabulary names it, or you `--allow` it. It was built from ltms 0.2.2's docs and parser, and names Claude Code's records as that release knew them.
 - Under a directory, a pin directory and set-aside copies are read like any `.jsonl` file: they hold copies, so give the paths that hold each transcript once.
+- A report saved inside the folder it reads, as a `.jsonl`, is skipped by the next run, with a warning; but the shell makes the file before ltms reads the folder, so `ltms shapes . > shapes.jsonl`, run inside the folder, reads the empty `shapes.jsonl` as a transcript (one file more in `files.read`, no record): save the report outside the folder, under another name.
 - Memory: one read buffer of 1 MiB, at most `--max-line` bytes of one line and what it parses to, and the counts, which grow with the kinds and paths the vocabulary names, not with the files, and also with the distinct versions met, which are not capped: each path line keeps the versions it occurs under (to print the first and the last), so memory and time grow with the distinct versions times the path lines; and the report, held whole until it is written, grows with the distinct versions times the kinds (a version line each, and a key in each kind line's `versions`). Measured on one machine (Node 26): one project's 1,088 transcripts (2.6 GB, 552,545 records, its sessions' subagents and workflows among them) in 26.6 s, at a peak of 188 MiB resident; the report, 276 lines and 57,673 bytes. And 20,000 synthetic records of two kinds in 4 files, each record of a version of its own: with 4 path lines, a peak of 93 MiB and a report of 20,008 lines (1.46 MB), where one version for all gives 67 MiB and 9 lines; with 90 path lines, 191 MiB and 4.2 s, where one version gives 67 MiB and 1.0 s, and a report hardly larger than with 4 (20,094 lines, 1.48 MB).
 
 #### The vocabulary file
