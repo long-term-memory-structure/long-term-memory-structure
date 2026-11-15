@@ -1,7 +1,7 @@
 ---
 name: ltms
 description: Find what an earlier Claude Code session did, or what this one did before a compaction, by file and line address, without loading whole transcripts (npm package long-term-memory-structure). Lists the sessions and the turns that hold given words. Use before asking the user to repeat something, or when a summary lacks a detail.
-allowed-tools: Bash(npx -y long-term-memory-structure@0.2 index *) Bash(npx -y long-term-memory-structure@0.2 skeleton *) Bash(npx -y long-term-memory-structure@0.2 search *) Bash(npx -y long-term-memory-structure@0.2 stats *) Bash(ltms index *) Bash(ltms skeleton *) Bash(ltms search *) Bash(ltms stats *)
+allowed-tools: Bash(npx -y long-term-memory-structure@0.3 index *) Bash(npx -y long-term-memory-structure@0.3 skeleton *) Bash(npx -y long-term-memory-structure@0.3 search *) Bash(npx -y long-term-memory-structure@0.3 stats *) Bash(ltms index *) Bash(ltms skeleton *) Bash(ltms search *) Bash(ltms stats *)
 ---
 
 # ltms: list the sessions, find the turn, read the line
@@ -11,15 +11,15 @@ Claude Code writes each session to a transcript, `<session id>.jsonl`, in a proj
 output only as a preview: the rest is in a file Claude Code deletes by its own age). ltms prints where things are, a
 file and a line, never what they say.
 
-Run it as `npx -y long-term-memory-structure@0.2 <command>`. Where `ltms --version` prints 0.2.x, `ltms <command>`
+Run it as `npx -y long-term-memory-structure@0.3 <command>`. Where `ltms --version` prints 0.3.x, `ltms <command>`
 is the same and needs no network. The ltms commands it prints (`next`, and those in its messages) are spelled `ltms`:
-where ltms is not installed, put `npx -y long-term-memory-structure@0.2` in its place. Never `npx ltms`: that name is
+where ltms is not installed, put `npx -y long-term-memory-structure@0.3` in its place. Never `npx ltms`: that name is
 not this package.
 
 ## 1. List the sessions
 
 ```sh
-npx -y long-term-memory-structure@0.2 index ~/.claude/projects/<project>
+npx -y long-term-memory-structure@0.3 index ~/.claude/projects/<project>
 ```
 
 With no path, `index` prints this directory's project folder and the command to run. This session's own transcript
@@ -36,7 +36,7 @@ Bash tool keeps only a preview: follow `next` instead.
 ## 2. One session's turns
 
 ```sh
-npx -y long-term-memory-structure@0.2 skeleton <path>
+npx -y long-term-memory-structure@0.3 skeleton <path>
 ```
 
 One line per turn (`a`, the address of its prompt) and per tool call (`ok`; `ek`, the error class of a failed one;
@@ -45,7 +45,7 @@ One line per turn (`a`, the address of its prompt) and per tool call (`ok`; `ek`
 ## 3. Search
 
 ```sh
-npx -y long-term-memory-structure@0.2 search 'migration rollback' ~/.claude/projects/<project> --max 5
+npx -y long-term-memory-structure@0.3 search 'migration rollback' ~/.claude/projects/<project> --max 5
 ```
 
 The query comes first, as one quoted argument; every word of it must be in the turn. The first line is the coverage.
@@ -73,7 +73,7 @@ included, and what you read enters your context.
 - On a large folder a command can run past the Bash tool's 2-minute timeout: name one project's folder, or give the
   command a longer timeout.
 - Never write into `~/.claude/projects/`. Claude Code deletes transcripts after 30 days by default
-  (`cleanupPeriodDays`); to keep them, the user runs `ltms pin` (`npx -y long-term-memory-structure@0.2 pin --help`).
+  (`cleanupPeriodDays`); to keep them, the user runs `ltms pin` (`npx -y long-term-memory-structure@0.3 pin --help`).
 - To show the maintainers what transcripts are made of without sending them, the user runs `ltms shapes`
-  (`npx -y long-term-memory-structure@0.2 shapes --help`): record kinds, key paths and types, never their content. The
+  (`npx -y long-term-memory-structure@0.3 shapes --help`): record kinds, key paths and types, never their content. The
   user reads its first line and runs its `--check` before sending; its `--unlisted` list is never sent.
