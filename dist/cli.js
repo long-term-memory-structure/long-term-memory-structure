@@ -2736,11 +2736,12 @@ transcript in it.
   ltms shapes --check shapes.txt
 Save the report outside the folder you read, under a name that does not end
 in .jsonl. A path is a transcript, or a directory: every .jsonl under it, at
-any depth. Symbolic links met under a directory are counted, not followed,
-as is an entry named .jsonl that is not a regular file (a pipe, a socket),
-and a directory met twice (the same device and inode) is read once. A file
-whose first line is a report's or an --unlisted list's is not read: a
-warning names it. Each line is read alone, as JSON.
+any depth. Under a directory, symbolic links are counted, not followed; an
+entry named .jsonl that is not a regular file (a pipe, a socket) is counted,
+not read; a name that is not valid UTF-8 is reported by its bytes (\\xHH) and
+counted as failed; a directory met twice (the same device and inode) is read
+once. A file whose first line is a report's or an --unlisted list's is not
+read: a warning names it. Each line is read alone, as JSON.
 
 Every string in a report is one of:
   - the report's own field names and words, such as (unlisted) and (rare);
@@ -3033,15 +3034,20 @@ function shapesRun(args) {
     const found = collectFiles(a.paths);
     for (const f of found.failed)
         err(isReadError(f.error) ? cannotRead('shapes', f.path, f.error) : `ltms shapes: cannot read '${f.path}' (${internalError(f.error)}).`);
+    // a name that is not valid UTF-8, as search reports one: by its bytes, counted as failed (S374's closure read, S7)
+    for (const b of found.notUtf8) {
+        const at = `'${join(b.dir, escapedName(b.name))}'`;
+        err(`ltms shapes: cannot read ${b.isDir ? `the directory ${at}` : at} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${b.isDir ? 'the files under it are' : 'it is'} not read. Give it a UTF-8 name to read it; ls -b${dashFor([b.dir])} ${q(b.dir)} shows the name.`);
+    }
     const S = readShapes(V, found.files, { maxLine: a.maxLine ?? SHAPES_MAX_LINE, unlisted: a.unlisted });
     for (const f of S.failures) {
         err(isReadError(f.error) ? cannotRead('shapes', f.file, f.error)
             : `ltms shapes: '${f.file}': stopped with an internal error (${internalError(f.error)}), so it counts as failed, and the report counts what was read of it before. This is a bug in ltms; the other files are read as usual.`);
     }
-    S.filesFailed += found.failed.length;
+    S.filesFailed += found.failed.length + found.notUtf8.length;
     // the entries named .jsonl that are not regular files, counted as search counts them (S374's closure read, U13)
     const special = found.special === 1 ? '1 entry named .jsonl $ is not a regular file, such as a pipe or a socket, and was not read' : `${found.special} entries named .jsonl $ are not regular files, such as pipes or sockets, and were not read`;
-    if (!found.files.length && !found.failed.length)
+    if (!found.files.length && !found.failed.length && !found.notUtf8.length)
         err(`ltms shapes: warning: no .jsonl file was found under the paths given${found.special ? ` (${special.replace('$', 'there')})` : ''}, so the ${a.unlisted ? 'list' : 'report'} counts nothing. ${TRANSCRIPTS_HINT}`);
     else if (found.special)
         err(`ltms shapes: warning: ${special.replace('$', 'under the directories given')}.`);

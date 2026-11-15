@@ -1729,3 +1729,65 @@ test("shapes: an entry named .jsonl under a directory that is not a regular file
     assert.doesNotMatch(o.err, /entries? named \.jsonl under the directories given/, `said once: ${o.err}`);
   } finally { await new Promise((resolve) => server.close(resolve)); rm(dir); }
 });
+
+// S7 (S374's closure read): directories were listed with names as text, so a name that is not valid UTF-8 came back
+// with U+FFFD in place of its bytes, and was opened by that text: a file reported "no such file or directory" under a
+// name it does not have, and beside a twin whose valid name decodes the same (U+FFFD.jsonl), the twin was read in its
+// place and the file skipped without a word (exit 0, 0 failed); a twin directory took its place the same way, and a
+// twin symbolic link was followed. Directories are now listed with names as bytes: a name that survives UTF-8 is read
+// by it, and any other (a directory, or a name ending in .jsonl) is reported as search reports one, its bytes written
+// as \xHH, and counted as failed; its symbolic links are counted, never followed.
+test("shapes: a name under a directory that is not valid UTF-8 is reported by its bytes (as \\xHH) and counted as failed, never opened by a decoded name: alone, and beside a twin whose valid name decodes the same (a file, a directory, a symbolic link)", { skip: process.platform !== 'linux' && 'names that are not UTF-8 are made here on Linux' }, () => {
+  const dir = tmp();
+  try {
+    const BSLASH = String.fromCharCode(92), FFFD = String.fromCharCode(0xfffd);
+    const bytes = (...parts) => Buffer.concat(parts.map((x) => (Buffer.isBuffer(x) ? x : Buffer.from(x))));
+    const FF = Buffer.from([0xff]), E9 = Buffer.from([0xe9]);
+    const rec = (type) => JSON.stringify({ type }) + '\n';
+    const kindsOf = (r) => r.lines.filter((o) => o.k === 'kind').map((o) => o.kind);
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const said = (d, name, isDir) => new RegExp(`^ltms shapes: cannot read ${isDir ? 'the directory ' : ''}'${esc(join(d, name))}' \\(the bytes of its name that are not printable ASCII written as ${esc(BSLASH)}xHH\\): its name is not valid UTF-8, and ltms reads paths as text, so ${isDir ? 'the files under it are' : 'it is'} not read\\. Give it a UTF-8 name to read it; ls -b '${esc(d)}' shows the name\\.$`, 'm');
+    const folder = (name) => { const d = join(dir, name); mkdirSync(d); return d; };
+    // alone: \xff.jsonl, beside ok.jsonl
+    const solo = folder('solo');
+    writeFileSync(bytes(solo, '/', FF, '.jsonl'), rec('queue-operation'));
+    writeFileSync(join(solo, 'ok.jsonl'), rec('user'));
+    const a = shapes([solo]);
+    assert.equal(a.code, 1, a.err);
+    assert.match(a.err, said(solo, `${BSLASH}xff.jsonl`, false), a.err);
+    assert.deepEqual([a.lines[0].files.read, a.lines[0].files.failed], ['1', '1']);
+    assert.ok(!a.err.includes(FFFD), `no name decoded: ${a.err}`);
+    // a twin file: U+FFFD.jsonl, valid, decodes as \xff.jsonl does; each is itself: the twin read, the other failed
+    const twin = folder('twin');
+    writeFileSync(bytes(twin, '/', FF, '.jsonl'), rec('queue-operation'));
+    writeFileSync(join(twin, `${FFFD}.jsonl`), rec('file-history-snapshot'));
+    const t = shapes([twin]);
+    assert.equal(t.code, 1, t.err);
+    assert.match(t.err, said(twin, `${BSLASH}xff.jsonl`, false), t.err);
+    assert.deepEqual(kindsOf(t), ['file-history-snapshot'], 'the twin is read, and the file whose name is not UTF-8 is not');
+    assert.deepEqual([t.lines[0].files.read, t.lines[0].files.failed], ['1', '1']);
+    // a twin directory: d\xe9 and d U+FFFD
+    const dt = folder('dir-twin');
+    mkdirSync(bytes(dt, '/d', E9));
+    writeFileSync(bytes(dt, '/d', E9, '/a.jsonl'), rec('last-prompt'));
+    mkdirSync(join(dt, `d${FFFD}`));
+    writeFileSync(join(dt, `d${FFFD}`, 'b.jsonl'), rec('ai-title'));
+    const d = shapes([dt]);
+    assert.equal(d.code, 1, d.err);
+    assert.match(d.err, said(dt, `d${BSLASH}xe9`, true), d.err);
+    assert.deepEqual(kindsOf(d), ['ai-title']);
+    assert.deepEqual([d.lines[0].files.read, d.lines[0].files.failed], ['1', '1']);
+    // a twin symbolic link, to a file outside the folder: counted, not followed
+    const outside = folder('outside');
+    writeFileSync(join(outside, 'target.jsonl'), rec('mode'));
+    const tl = folder('twin-link');
+    writeFileSync(bytes(tl, '/', FF, '.jsonl'), rec('queue-operation'));
+    symlinkSync(join(outside, 'target.jsonl'), join(tl, `${FFFD}.jsonl`));
+    const l = shapes([tl]);
+    assert.equal(l.code, 1, l.err);
+    assert.match(l.err, said(tl, `${BSLASH}xff.jsonl`, false), l.err);
+    assert.match(l.err, /^ltms shapes: 1 symbolic link met under the directories given was not followed\.$/m);
+    assert.deepEqual(kindsOf(l), [], 'the link is not followed: no mode');
+    assert.deepEqual([l.lines[0].files.read, l.lines[0].files.failed], ['0', '1']);
+  } finally { rm(dir); }
+});

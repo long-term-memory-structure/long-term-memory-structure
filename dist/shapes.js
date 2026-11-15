@@ -294,13 +294,17 @@ function getPlain(rec, path) {
     }
     return x;
 }
+/** A directory's entries, their names as bytes (encoding 'buffer'), with their types: a name that is not valid UTF-8
+ *  comes back as its bytes, never as text whose U+FFFD can spell another entry's name (S374's closure read, S7).
+ *  (Node gives Buffer names here; the typings of @types/node 20 have no such overload, hence the casts.) */
+const listBytes = (d) => readdirSync(d, { withFileTypes: true, encoding: 'buffer' });
 /** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
- *  entry named .jsonl that is not a regular file counted, not read; a directory met twice, by its device and inode, read
- *  once, so each entry is counted once). Sorted, so a run does not depend on the order the paths were given or listed
- *  in. */
+ *  entry named .jsonl that is not a regular file counted, not read; a name that is not valid UTF-8 kept by its bytes and
+ *  not read; a directory met twice, by its device and inode, read once, so each entry is counted once). Sorted, so a run
+ *  does not depend on the order the paths were given or listed in. */
 export function collectFiles(paths) {
     const files = new Map(), dirs = new Set();
-    const failed = [];
+    const failed = [], notUtf8 = [];
     let symlinks = 0, special = 0;
     const addFile = (p, st) => { const id = `${st.dev}:${st.ino}`; if (!files.has(id))
         files.set(id, p); };
@@ -322,7 +326,7 @@ export function collectFiles(paths) {
         dirs.add(id);
         let entries;
         try {
-            entries = readdirSync(d, { withFileTypes: true });
+            entries = listBytes(d);
         }
         catch (e) {
             failed.push({ path: d, error: e });
@@ -350,12 +354,19 @@ export function collectFiles(paths) {
                 stack.pop();
                 continue;
             }
-            const e = top.entries[top.i++], full = join(top.d, e.name);
+            const e = top.entries[top.i++], name = e.name.toString('utf8');
+            // a name is opened by its text only when the text gives its bytes back: decoded, any other could name another
+            // entry, a twin whose valid name has U+FFFD where it has bytes that are not UTF-8 (S374's closure read, S7)
+            const valid = Buffer.from(name, 'utf8').equals(e.name), full = join(top.d, name);
             if (e.isSymbolicLink())
                 symlinks++;
+            else if (!valid) {
+                if (e.isDirectory() || name.endsWith('.jsonl'))
+                    notUtf8.push({ dir: top.d, name: e.name, isDir: e.isDirectory() });
+            }
             else if (e.isDirectory())
                 enter(full);
-            else if (e.name.endsWith('.jsonl')) {
+            else if (name.endsWith('.jsonl')) {
                 if (!e.isFile())
                     special++; // a FIFO (reading it would wait), a socket, a device: counted, never opened
                 else
@@ -368,7 +379,7 @@ export function collectFiles(paths) {
             }
         }
     }
-    return { files: [...files.values()].sort(), failed, symlinks, special };
+    return { files: [...files.values()].sort(), failed, symlinks, special, notUtf8 };
 }
 /** One read buffer for every file. */
 const CHUNK = Buffer.allocUnsafe(1 << 20);

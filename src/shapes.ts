@@ -284,27 +284,37 @@ export interface ShapesFiles {
   /** The entries named .jsonl under the directories given that are not regular files (a FIFO, a socket, a device):
    *  counted, not read (S374's closure read, U13). */
   special: number;
+  /** The entries under the directories given whose names are not valid UTF-8, a directory or a name that ends in
+   *  .jsonl: its directory, its name's bytes, and whether it is a directory. Not read (ltms reads paths as text, and
+   *  such a name, decoded, can name another entry), each a failure (S374's closure read, S7). */
+  notUtf8: { dir: string; name: Buffer; isDir: boolean }[];
 }
+/** A directory's entry, its name as bytes. */
+type ByteDirent = Omit<Dirent, 'name'> & { name: Buffer };
+/** A directory's entries, their names as bytes (encoding 'buffer'), with their types: a name that is not valid UTF-8
+ *  comes back as its bytes, never as text whose U+FFFD can spell another entry's name (S374's closure read, S7).
+ *  (Node gives Buffer names here; the typings of @types/node 20 have no such overload, hence the casts.) */
+const listBytes = (d: string): ByteDirent[] => readdirSync(d, { withFileTypes: true, encoding: 'buffer' } as unknown as { withFileTypes: true }) as unknown as ByteDirent[];
 /** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
- *  entry named .jsonl that is not a regular file counted, not read; a directory met twice, by its device and inode, read
- *  once, so each entry is counted once). Sorted, so a run does not depend on the order the paths were given or listed
- *  in. */
+ *  entry named .jsonl that is not a regular file counted, not read; a name that is not valid UTF-8 kept by its bytes and
+ *  not read; a directory met twice, by its device and inode, read once, so each entry is counted once). Sorted, so a run
+ *  does not depend on the order the paths were given or listed in. */
 export function collectFiles(paths: readonly string[]): ShapesFiles {
   const files = new Map<string, string>(), dirs = new Set<string>();
-  const failed: ShapesFailure[] = [];
+  const failed: ShapesFailure[] = [], notUtf8: ShapesFiles['notUtf8'] = [];
   let symlinks = 0, special = 0;
   const addFile = (p: string, st: Stats): void => { const id = `${st.dev}:${st.ino}`; if (!files.has(id)) files.set(id, p); };
   // a depth-first walk with its own stack, in the order a recursive one takes: each entry in its directory's order, a
   // directory entered where it is met
-  const stack: { d: string; entries: Dirent[]; i: number }[] = [];
+  const stack: { d: string; entries: ByteDirent[]; i: number }[] = [];
   const enter = (d: string): void => {
     let st: Stats;
     try { st = lstatSync(d); } catch (e) { failed.push({ path: d, error: e }); return; }
     const id = `${st.dev}:${st.ino}`;
     if (dirs.has(id)) return;
     dirs.add(id);
-    let entries: Dirent[];
-    try { entries = readdirSync(d, { withFileTypes: true }); } catch (e) { failed.push({ path: d, error: e }); return; }
+    let entries: ByteDirent[];
+    try { entries = listBytes(d); } catch (e) { failed.push({ path: d, error: e }); return; }
     stack.push({ d, entries, i: 0 });
   };
   for (const p of paths) {
@@ -315,16 +325,20 @@ export function collectFiles(paths: readonly string[]): ShapesFiles {
     while (stack.length) {
       const top = stack[stack.length - 1];
       if (top.i >= top.entries.length) { stack.pop(); continue; }
-      const e = top.entries[top.i++], full = join(top.d, e.name);
+      const e = top.entries[top.i++], name = e.name.toString('utf8');
+      // a name is opened by its text only when the text gives its bytes back: decoded, any other could name another
+      // entry, a twin whose valid name has U+FFFD where it has bytes that are not UTF-8 (S374's closure read, S7)
+      const valid = Buffer.from(name, 'utf8').equals(e.name), full = join(top.d, name);
       if (e.isSymbolicLink()) symlinks++;
+      else if (!valid) { if (e.isDirectory() || name.endsWith('.jsonl')) notUtf8.push({ dir: top.d, name: e.name, isDir: e.isDirectory() }); }
       else if (e.isDirectory()) enter(full);
-      else if (e.name.endsWith('.jsonl')) {
+      else if (name.endsWith('.jsonl')) {
         if (!e.isFile()) special++;   // a FIFO (reading it would wait), a socket, a device: counted, never opened
         else try { addFile(full, statSync(full)); } catch (x) { failed.push({ path: full, error: x }); }
       }
     }
   }
-  return { files: [...files.values()].sort(), failed, symlinks, special };
+  return { files: [...files.values()].sort(), failed, symlinks, special, notUtf8 };
 }
 
 /** One read buffer for every file. */
