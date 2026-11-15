@@ -1901,3 +1901,31 @@ test("shapes (0.3.1, k2): with --vocabulary, the closing line says to read the r
     }
   } finally { rm(dir); }
 });
+
+// k5 (S375's known issues, for 0.3.1): the loader took a kinds.sub entry for a kind that values does not list at the
+// kind path. Such a kind prints as (unlisted) before its sub-kind's path is read, so the entry could never apply, and the
+// vocabulary said what a report does not do. It is refused now (exit 2), its message naming the entry as the loader's
+// other refusals do; the vocabularies of this repository pass, and the README states the rule.
+test('shapes (0.3.1, k5): a vocabulary whose kinds.sub names a kind that values does not list at the kind path is refused (exit 2), the message naming the entry; the vocabulary that ships and the two sketches pass', () => {
+  const base = JSON.parse(readFileSync(DOCS, 'utf8'));
+  const variant = (fn) => { const v = structuredClone(base); fn(v); return v; };
+  const cases = [
+    ['a sub-kind for a kind values does not list', variant((v) => { v.kinds.sub.zqnotakind = '.subtype'; }), 'zqnotakind'],
+    ['no value list at the kind path: the first entry', variant((v) => { delete v.values['.type']; }), 'system'],
+    ["a kind listed at another path's values only", variant((v) => { v.kinds.sub.text = '.subtype'; }), 'text'],
+  ];
+  const dir = tmp();
+  try {
+    cases.forEach(([what, v, kind], i) => {
+      const f = join(dir, `k5-${i}.json`);
+      writeFileSync(f, JSON.stringify(v));
+      const r = shapes(['--vocabulary', f, ...CC]);
+      assert.deepEqual([r.code, r.out, r.err], [2, '', `ltms shapes: '${f}': kinds.sub["${kind}"]: the kind is not a value that values lists at the kind path, values[".type"]; a sub-kind's path is read only for a kind listed there.\n`], what);
+    });
+  } finally { rm(dir); }
+  for (const f of [DOCS, CODEX_V, GEMINI_V]) assert.doesNotThrow(() => SH.loadVocabulary(f), f);
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const part = readme.slice(readme.indexOf('#### The vocabulary file'), readme.indexOf('\n#', readme.indexOf('#### The vocabulary file') + 1)).replace(/\s+/g, ' ');
+  assert.match(part, /every kind in `kinds\.sub` must be a value that `values` lists at `kinds\.path`/, "the README's rules");
+  assert.match(part, /or a kind in `kinds\.sub` that `values` does not list at `kinds\.path`/, "the README's refusals");
+});

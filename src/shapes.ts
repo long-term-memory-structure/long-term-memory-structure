@@ -169,8 +169,9 @@ function shown(x: unknown): string {
 
 /** Reads a vocabulary file (ltms-shapes-vocabulary/0). A file that cannot be read throws its own error; one that is not a
  *  vocabulary, that holds a field the format does not name (at its top or in kinds), whose path, name or value breaks
- *  the rules, or that names in kinds, versions or values a path that paths does not list, is a usage error whose
- *  message names the entry by its field and index (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]). */
+ *  the rules, that names in kinds, versions or values a path that paths does not list, or that names in kinds.sub a kind
+ *  that values does not list at the kind path, is a usage error whose message names the entry by its field and index
+ *  (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]). */
 export function loadVocabulary(file: string): ShapesVocabulary {
   const bytes = readFileSync(file);
   let v: unknown;
@@ -217,6 +218,9 @@ export function loadVocabulary(file: string): ShapesVocabulary {
     for (const [t, sp] of Object.entries(k.sub ?? {})) {
       const at = `kinds.sub[${shown(t)}]`;
       if (!LABEL.test(t)) throw bad(`${at}: the kind is not a value: ${VALUE_RULE}.`);
+      // a kind values does not list at the kind path prints as (unlisted) before its sub-kind's path is read (kindOf),
+      // so such an entry could never apply (S375's known issue k5)
+      if (!V.values.get(k.path)?.has(t)) throw bad(`${at}: the kind is not a value that values lists at the kind path, values[${shown(k.path)}]; a sub-kind's path is read only for a kind listed there.`);
       if (typeof sp !== 'string' || !PLAIN_PATH.test(sp)) throw bad(`${at} ${shown(sp)} is not a plain path: ${PLAIN_RULE}.`);
       if (!V.paths.has(sp)) throw bad(`${at} ${shown(sp)}${notListed}`);
       V.sub.set(t, sp);

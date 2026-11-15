@@ -3,6 +3,7 @@
 ## Unreleased (0.3.1)
 
 - `ltms shapes --vocabulary`: the closing line says to read the words of the vocabulary given, naming its file as it was given, beside the report's allowed list, as the README and `--help` say; it named the allowed list alone.
+- `ltms shapes --vocabulary`: a vocabulary whose `kinds.sub` names a kind that `values` does not list at `kinds.path` is refused (exit 2), the message naming the entry (`kinds.sub["event"]`), as the README and `--help` now say; it was taken, and the entry could never apply, since such a kind prints as `(unlisted)` before its sub-kind is read.
 
 ## 0.3.0 (2026-11-16)
 

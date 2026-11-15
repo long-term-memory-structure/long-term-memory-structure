@@ -2775,8 +2775,9 @@ program and version wrote the transcripts.
 --vocabulary <file>   a vocabulary file instead (its format,
                       ltms-shapes-vocabulary/0, is in the README's section
                       on ltms shapes: The vocabulary file). A field it does
-                      not name, or a path in kinds, versions or values that
-                      paths does not list, is a usage error
+                      not name, a path in kinds, versions or values that
+                      paths does not list, or a kind in kinds.sub that
+                      values does not list at kinds.path, is a usage error
 --floor <n>           the files a path must be seen in to be printed
                       (default ${SHAPES_FLOOR}; a whole number from ${SHAPES_MIN_FLOOR} to
                       ${Number.MAX_SAFE_INTEGER})
