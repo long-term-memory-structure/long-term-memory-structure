@@ -3018,52 +3018,90 @@ function shapesRun(args) {
     err(`ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. Before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>${vocabularyArg}`);
     return S.filesFailed || w.refused ? 1 : 0;
 }
-/** --check: every line of a report against its language (the vocabulary given, the report's own allowed list). */
+/** --check: every line of a report against its language (the vocabulary given, the report's own allowed list). Each
+ *  message says what is wrong in plain words, by the line and the field that failed or the place it stands in, and
+ *  never holds a part of the report (S374's closure read, U10). */
 function shapesCheck(file, V) {
-    let text;
+    let bytes;
     try {
-        text = readFileSync(file, 'utf8');
+        bytes = readFileSync(file);
     }
     catch (e) {
         err(`ltms shapes --check: cannot read '${file}' (${isReadError(e) ? e.code : internalError(e)}).`);
         return 1;
     }
-    const r = checkReport(text, V);
+    const at = `ltms shapes --check: '${file}'`;
+    // UTF-16 (a shell's > can write it): its byte-order mark, then two bytes a character; ltms writes UTF-8
+    if (bytes.length >= 2 && ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff))) {
+        const hex = (b) => b.toString(16).toUpperCase();
+        err(`${at}: it starts with the bytes ${hex(bytes[0])} ${hex(bytes[1])}, the byte-order mark of UTF-16, and ltms writes a report in UTF-8: save it as UTF-8 without a byte-order mark.`);
+        return 1;
+    }
+    const r = checkReport(bytes.toString('utf8'), V);
     if (r.k === 'not-a-report') {
-        err(`ltms shapes --check: '${file}': its first line is not a report's (k "shapes", with an allowed list), so it is not a report. An --unlisted list is not one either: it is never sent.`);
+        const what = {
+            empty: 'the file is empty: it is not a report',
+            blank: 'its first line is blank, so the file is not a report: a report\'s first line is its shapes line (k "shapes")',
+            'not JSON': 'its first line is not JSON, so the file is not a report',
+            'not an object': 'its first line is JSON, but not an object, so the file is not a report',
+            unlisted: 'it is an --unlisted list, which is for your own review and never sent: it is not a report. Make the report without --unlisted',
+            'not a first line': 'its first line is not a report\'s first line (k "shapes", with an allowed list), so the file is not a report',
+        };
+        err(`${at}: ${what[r.why]}.`);
         return 1;
     }
     if (r.k === 'bad-allowed') {
-        err(`ltms shapes --check: '${file}': its first line's allowed list holds an entry that is not an --allow argument (a path, or a path and a value, by the rules --allow takes).`);
+        err(`${at}: its first line's allowed list holds an entry that is not an --allow argument (a path, or a path and a value, by the rules --allow takes).`);
         return 1;
     }
     const named = V.list.map((v) => `${v.name}@${v.sha256}`).join(', ');
     // a line in the language alone, but not in its place, or not written as ltms writes it (S374's closure read, S3 and U6)
     const place = {
-        'first line': 'it is not a first line (k "shapes")',
-        'second first line': 'it is a second first line (k "shapes"): a report has one, its first',
-        'end before the last line': 'it is an end line before the last line: a report has one end line, its last',
-        order: "it is out of the format's order: a report's lines come shapes, version, kind, path, rare, end, and the lines of each kind in ltms's order (versions in numeric order, kinds by their text, paths by kind and then path)",
-        repeat: 'it repeats the line of its kind before it (the same version, kind, or kind and path): a report has one line for each',
-        'under the floor': 'it is a path line in fewer files than the floor the first line states: ltms prints no such line',
-        form: "it is not written as ltms writes a line: its fields in the format's order, each map's keys in ltms's order, each key once, no space",
+        'first line': 'is not a first line (k "shapes")',
+        'second first line': 'is a second first line (k "shapes"): a report has one, its first',
+        'end before the last line': 'is an end line before the last line: a report has one end line, its last',
+        order: "is out of the format's order: a report's lines come shapes, version, kind, path, rare, end, and the lines of each kind in ltms's order (versions in numeric order, kinds by their text, paths by kind and then path)",
+        repeat: 'repeats the line of its kind before it (the same version, kind, or kind and path): a report has one line for each',
+        'under the floor': 'is a path line in fewer files than the floor the first line states: ltms prints no such line',
+        form: "is not written as ltms writes a line: its fields in the format's order, each map's keys in ltms's order, each key once, no space",
     };
     const cut = (p) => p.why === 'cut' || p.why === 'count';
-    const say = (p) => (cut(p)
-        ? `the last line is not an end line that counts the report's ${r.lines} lines: the report is cut, or was edited`
-        : p.why === 'vocabulary' && p.line === 1
-            ? `the first line names another vocabulary than the one given, ${named}: give the one the report was made with (--vocabulary <file>)`
-            : place[p.why] ?? `its ${p.why} is not in the report's language`);
+    const say = (p) => {
+        const n = p.line, blanks = r.rows - r.lines;
+        switch (p.why) {
+            case 'byte-order mark': return `line 1 starts with a byte-order mark (U+FEFF), which ltms never writes: save the file as UTF-8 without one, or remove its first 3 bytes (tail -c +4 ${q(file)} > <a new file>)`;
+            case 'carriage return': return `the file's lines end with CR LF (the first, line ${n}), which ltms never writes: make them end with LF alone (dos2unix ${q(file)}, or the line-ending setting of the editor that saved it)`;
+            case 'blank at the end': return blanks === 1
+                ? `line ${n} is blank: the file ends with a blank line after its end line, which ltms never writes; delete it`
+                : `lines ${n} to ${n + blanks - 1} are blank: the file ends with blank lines after its end line, which ltms never writes; delete them`;
+            case 'blank': return `line ${n} is blank`;
+            case 'not JSON': return `line ${n} is not JSON`;
+            case 'not an object': return `line ${n} is JSON, but not an object`;
+            case 'k': return `line ${n}: its k is not one of the format's line kinds (shapes, version, kind, path, rare, end)`;
+            case 'fields': return `line ${n}: its fields are not those of its line kind: one is missing, or is not one the format gives it`;
+            case 'cut':
+            case 'count': return `line ${n}: the last line is not an end line that counts the report's ${r.lines} lines: the report is cut, or was edited`;
+        }
+        if (n === 1 && p.why === 'vocabulary')
+            return `line 1 names another vocabulary than the one given, ${named}: give the one the report was made with (--vocabulary <file>)`;
+        if (n === 1 && p.why === 'floor')
+            return `line 1: its floor is not a whole number of files from ${SHAPES_MIN_FLOOR} to ${Number.MAX_SAFE_INTEGER}`;
+        if (n === 1 && p.why === 'allowed')
+            return 'line 1: its allowed list is not the one ltms makes of the --allow it names: each entry a string, sorted, none twice';
+        if (Object.hasOwn(place, p.why))
+            return `line ${n} ${place[p.why]}`;
+        return `line ${n}: field "${p.why}" holds a value the report's language does not allow there`;
+    };
     const shown = r.problems.filter((p, i) => i < 20 || cut(p));
     for (const p of shown)
-        err(`ltms shapes --check: line ${p.line}: ${say(p)}.`);
+        err(`ltms shapes --check: ${say(p)}.`);
     if (r.problems.length > shown.length)
         err(`ltms shapes --check: and ${r.problems.length - shown.length} more.`);
     if (r.problems.length) {
-        err(`ltms shapes --check: '${file}': ${plural(r.problems.length, 'problem', 'problems')}; do not send it as it is.`);
+        err(`${at}: ${plural(r.problems.length, 'problem', 'problems')}; do not send it as it is.`);
         return 1;
     }
-    err(`ltms shapes --check: '${file}': ${r.lines} lines, every token in the report's language and every line in its place (vocabulary ${named}; allowed: ${r.allowed.length ? r.allowed.join(' ') : 'none'}).`);
+    err(`${at}: ${r.lines} lines, every token in the report's language and every line in its place (vocabulary ${named}; allowed: ${r.allowed.length ? r.allowed.join(' ') : 'none'}).`);
     return 0;
 }
 // ---- ltms records --------------------------------------------------------------------------------------------------

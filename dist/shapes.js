@@ -753,8 +753,9 @@ const isVersionToken = (v) => typeof v === 'string' && (VERSION.test(v) || v ===
 const isVersion = (v) => typeof v === 'string' && VERSION.test(v);
 const inList = (list) => (k) => k === RARE || list.includes(k);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-/** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words (the
- *  field or the line kind that failed), never a part of the line. */
+/** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words, never
+ *  a part of the line: 'not an object'; 'k' (no line kind of the format); 'fields' (one missing, or one its kind does
+ *  not have); or the name of the field that failed (S374's closure read, U10). */
 export function checkLine(o, Lg) {
     if (!isObj(o))
         return 'not an object';
@@ -778,20 +779,38 @@ export function checkLine(o, Lg) {
             return null;
         }
         case 'version':
-            if (!keysAre(o, LINE_FIELDS.version) || !isVersionToken(o.v) || !isBucket(o.records) || !isBucket(o.files))
-                return 'version';
+            if (!keysAre(o, LINE_FIELDS.version))
+                return 'fields';
+            if (!isVersionToken(o.v))
+                return 'v';
+            if (!isBucket(o.records))
+                return 'records';
+            if (!isBucket(o.files))
+                return 'files';
             return null;
         case 'kind':
-            if (!keysAre(o, LINE_FIELDS.kind) || typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind) || !isBucket(o.records) || !isBucket(o.files))
+            if (!keysAre(o, LINE_FIELDS.kind))
+                return 'fields';
+            if (typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind))
                 return 'kind';
+            if (!isBucket(o.records))
+                return 'records';
+            if (!isBucket(o.files))
+                return 'files';
             if (!bucketMap(o.versions, isVersionToken))
-                return 'kind.versions';
+                return 'versions';
             return null;
         case 'path': {
             if (!keysAre(o, LINE_FIELDS.path.slice(0, PATH_REQUIRED), LINE_FIELDS.path.slice(PATH_REQUIRED)))
-                return 'path fields';
-            if (typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind) || !validPath(Lg, o.path) || !isBucket(o.n) || !isBucket(o.files))
+                return 'fields';
+            if (typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind))
+                return 'kind';
+            if (!validPath(Lg, o.path))
                 return 'path';
+            if (!isBucket(o.n))
+                return 'n';
+            if (!isBucket(o.files))
+                return 'files';
             const path = o.path;
             if (Object.hasOwn(o, 'first') && !isVersion(o.first))
                 return 'first';
@@ -817,22 +836,33 @@ export function checkLine(o, Lg) {
             return null;
         }
         case 'rare':
-            if (!keysAre(o, LINE_FIELDS.rare) || typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind) || !isBucket(o.paths) || !isBucket(o.n))
-                return 'rare';
+            if (!keysAre(o, LINE_FIELDS.rare))
+                return 'fields';
+            if (typeof o.kind !== 'string' || !Lg.kindTokens.has(o.kind))
+                return 'kind';
+            if (!isBucket(o.paths))
+                return 'paths';
+            if (!isBucket(o.n))
+                return 'n';
             return null;
         case 'end':
-            if (!keysAre(o, LINE_FIELDS.end) || typeof o.lines !== 'number' || !Number.isInteger(o.lines) || (Lg.lines !== null && o.lines !== Lg.lines))
-                return 'end';
+            if (!keysAre(o, LINE_FIELDS.end))
+                return 'fields';
+            if (typeof o.lines !== 'number' || !Number.isInteger(o.lines) || (Lg.lines !== null && o.lines !== Lg.lines))
+                return 'lines';
             return null;
-        default: return 'unknown line kind';
+        default: return 'k';
     }
 }
-/** The words of the report as a whole, beside checkLine's: a line that is in the language alone but not where it stands
+/** An empty line, or one of white space only. */
+const BLANK = /^\s*$/;
+/** The words of the report as a whole, beside checkLine's: a line that is 'blank' or 'not JSON'; a line that is in the
+ *  language alone but not where it stands
  *  ('first line': line 1 is not a first line; 'second first line'; 'end before the last line'; 'order': out of the
  *  format's order of line kinds, or of its kind's order; 'repeat': the same key as the line of its kind before it;
  *  'under the floor': a path line in fewer files than the floor), one not written as the builder writes it ('form'), and
  *  the end ('cut': the last line is not an end line; 'count': the end line does not count the report's lines). */
-export const CHECK_WORDS = ['first line', 'second first line', 'end before the last line', 'order', 'repeat', 'under the floor', 'form', 'cut', 'count'];
+export const CHECK_WORDS = ['blank', 'not JSON', 'first line', 'second first line', 'end before the last line', 'order', 'repeat', 'under the floor', 'form', 'cut', 'count'];
 /** The builder's order of two lines of one kind (version, kind, path or rare), by their key: 0 for the same key. */
 function lineOrder(a, b) {
     if (a.k === 'version')
@@ -877,11 +907,13 @@ export function checkRows(rows, Lg) {
         let o;
         if (r === null)
             return 'not JSON';
+        if (BLANK.test(r))
+            return 'blank';
         try {
             o = JSON.parse(r);
         }
         catch {
-            o = undefined;
+            return 'not JSON';
         }
         const why = checkLine(o, Lg);
         if (why !== null)
@@ -959,20 +991,51 @@ export function writeReport(lines, Lg, write) {
 /** --check: is this report, every token of it and every line in its place, in its language? The language is the
  *  vocabulary given and the report's own allowed list (its first line); the report is checked whole as the writer checks
  *  it (checkRows), its floor the one its first line states. It cannot tell whether ltms wrote it, nor whether its counts
- *  are true. */
+ *  are true. What ltms never writes, and an editor or a shell can add (S374's closure read, U10), is named for what it
+ *  is: a byte-order mark before line 1, a carriage return at the end of a line (CR LF), blank lines after the last line;
+ *  each is a problem, and is taken off for the rest of the check, so that the lines are checked as they would be without
+ *  it. */
 export function checkReport(text, V) {
+    const own = [];
+    if (text.charCodeAt(0) === 0xfeff) {
+        own.push({ line: 1, why: 'byte-order mark' });
+        text = text.slice(1);
+    }
     const rows = text.split('\n');
     if (rows[rows.length - 1] === '')
         rows.pop();
+    const all = rows.length;
+    let cr = -1;
+    rows.forEach((r, i) => { if (r.endsWith('\r')) {
+        if (cr < 0)
+            cr = i;
+        rows[i] = r.slice(0, -1);
+    } });
+    if (cr >= 0)
+        own.push({ line: cr + 1, why: 'carriage return' });
+    let n = rows.length;
+    while (n > 0 && BLANK.test(rows[n - 1]))
+        n--;
+    if (n === 0)
+        return { k: 'not-a-report', why: all ? 'blank' : 'empty' };
+    if (n < all)
+        own.push({ line: n + 1, why: 'blank at the end' });
+    rows.length = n;
+    if (BLANK.test(rows[0]))
+        return { k: 'not-a-report', why: 'blank' };
     let header;
     try {
         header = JSON.parse(rows[0]);
     }
     catch {
-        header = null;
+        return { k: 'not-a-report', why: 'not JSON' };
     }
-    if (!isObj(header) || header.k !== 'shapes' || !Array.isArray(header.allowed))
-        return { k: 'not-a-report' };
+    if (!isObj(header))
+        return { k: 'not-a-report', why: 'not an object' };
+    if (header.k === 'unlisted-review')
+        return { k: 'not-a-report', why: 'unlisted' };
+    if (header.k !== 'shapes' || !Array.isArray(header.allowed))
+        return { k: 'not-a-report', why: 'not a first line' };
     let allowed;
     try {
         allowed = applyAllow(V, header.allowed.filter((s) => typeof s === 'string'));
@@ -982,7 +1045,8 @@ export function checkReport(text, V) {
             return { k: 'bad-allowed' };
         throw e;
     }
-    return { k: 'checked', lines: rows.length, problems: checkRows(rows, shapesLanguage(V, allowed)), allowed };
+    const problems = [...own, ...checkRows(rows, shapesLanguage(V, allowed))].sort((a, b) => a.line - b.line);
+    return { k: 'checked', lines: n, rows: all, problems, allowed };
 }
 /** --unlisted: NOT a report. The names and values the vocabulary lacks, read from the transcripts as written, for the
  *  person's own review before an --allow; every line says "send":false, and --check refuses the list. Exact counts. A

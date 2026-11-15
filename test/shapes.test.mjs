@@ -540,7 +540,7 @@ test("shapes: --check also refuses a report made with another vocabulary, a firs
     assert.match(ok.err, /: \d+ lines, every token in the report's language and every line in its place \(vocabulary claude-code-docs@[0-9a-f]{12}; allowed: \.zqa \.zqb\)\.\n$/);
     const other = f('good2.jsonl', ls, ['--vocabulary', CODEX_V]);
     assert.equal(other.code, 1);
-    assert.match(other.err, /line 1: the first line names another vocabulary than the one given, codex-sketch@[0-9a-f]{12}/);
+    assert.match(other.err, /line 1 names another vocabulary than the one given, codex-sketch@[0-9a-f]{12}/);
     const head = (fn) => [fn(ls[0]), ...ls.slice(1)];
     assert.equal(f('order.jsonl', head((l) => l.replace('"allowed":[".zqa",".zqb"]', '"allowed":[".zqb",".zqa"]'))).code, 1, 'out of order');
     assert.equal(f('twice.jsonl', head((l) => l.replace('"allowed":[".zqa",".zqb"]', '"allowed":[".zqa",".zqa",".zqb"]'))).code, 1, 'repeated');
@@ -550,11 +550,11 @@ test("shapes: --check also refuses a report made with another vocabulary, a firs
     const kinds = [...ls.slice(0, -1), '{"k":"zq7canary"}', JSON.stringify({ k: 'end', lines: ls.length + 1 })];
     const k = f('kind.jsonl', kinds);
     assert.equal(k.code, 1);
-    assert.match(k.err, new RegExp(`line ${ls.length}: its unknown line kind is not in the report's language`));
+    assert.match(k.err, new RegExp(`line ${ls.length}: its k is not one of the format's line kinds`));
     for (const r of [other, bad, k]) assert.ok(!r.err.includes('zq7canary'), r.err);
     const not = f('not.jsonl', ['not json zq7canary']);
     assert.equal(not.code, 1);
-    assert.match(not.err, /its first line is not a report's/);
+    assert.match(not.err, /its first line is not JSON, so the file is not a report/);
     assert.ok(!not.err.includes('zq7canary'));
     assert.equal(shapes(['--check', join(dir, 'no-such-report.jsonl')]).code, 1);
   } finally { rm(dir); }
@@ -659,7 +659,7 @@ test('shapes: the version rule: N.N.N, its parts of 1 to 4, 1 to 4 and 1 to 6 di
     writeFileSync(join(dir, 'r.jsonl'), edited);
     const c = shapes(['--check', join(dir, 'r.jsonl')]);
     assert.equal(c.code, 1, c.err);
-    assert.match(c.err, /its version is not in the report's language/);
+    assert.match(c.err, /field "v" holds a value the report's language does not allow there/);
     assert.notDeepEqual(validate(edited.split('\n').filter(Boolean).map((l) => JSON.parse(l)), [DOCS]), [], 'the independent validator refuses it too');
   } finally { rm(dir); }
   // the rule as each text states it, read from the text, then applied to the parts at and past each bound
@@ -1001,5 +1001,100 @@ test("shapes: --check and the receiver's validator give one verdict on each hand
     // the reports the writer makes: both accept
     const made = [good, allowGood, shapes(['--floor', '2', ...CC]).out, shapes(['--floor', '9007199254740991', ...CC]).out, shapes(['--vocabulary', DOCS, '--floor', '4', ...CC]).out];
     made.forEach((t, i) => assert.deepEqual(verdict(`w${i}`, t), [0, 0], `a report the writer made (${i}): accepted by both`));
+  } finally { rm(dir); }
+});
+
+// U10 (S374's closure read): --check's messages put a word into "its X is not in the report's language": "its not an
+// object", "its path fields", "its version" when the records count failed and v was intact (not the field); an end line
+// with an extra field got the message of a cut report; a blank line after the end line got two problems, the second
+// "the report is cut, or was edited"; a byte-order mark got "its first line is not a report's ... An --unlisted list is
+// not one either". Each message now says what is wrong in plain words, names the field that failed, and for what ltms
+// never writes (a byte-order mark, a blank line at the end, CR LF, UTF-16) says so and how to remove it, still exit 1.
+test('shapes: --check says what is wrong in plain words, by the line and the field that failed; a byte-order mark, a blank line at the end, CR LF and UTF-16 are named, each with how to remove it', () => {
+  const dir = tmp();
+  try {
+    const good = shapes([...CC]).out, allowGood = shapes(['--allow', '.zqa', '--allow', '.zqb', ...CC]).out;
+    const R = good.slice(0, -1).split('\n'), A = allowGood.slice(0, -1).split('\n');
+    const P = (r) => JSON.parse(r), S = (o) => JSON.stringify(o);
+    const text = (rows) => rows.join('\n') + '\n';
+    const at = (rows, i, fn) => rows.map((r, j) => (j === i ? fn(r) : r));
+    const set = (rows, i, fn) => at(rows, i, (r) => { const o = P(r); fn(o); return S(o); });
+    const find = (pred) => { const i = R.findIndex((r) => pred(P(r))); assert.ok(i > 0, String(pred)); return i; };
+    const path = (g) => find((o) => o.k === 'path' && o[g] && Object.keys(o[g]).some((x) => x !== '(rare)'));
+    const ver = find((o) => o.k === 'version' && /^\d/.test(o.v)), kind = find((o) => o.k === 'kind' && Object.keys(o.versions).length);
+    const p = find((o) => o.k === 'path' && o.first), star = find((o) => o.k === 'path' && o.names), rare = find((o) => o.k === 'rare');
+    const first = (m) => Object.keys(m).find((x) => x !== '(rare)');
+    const n = R.length, f = (i) => i + 1;
+    const BOM = String.fromCharCode(0xfeff);
+    // [what, the file's text, the messages stderr holds (each a regular expression), how many problems]
+    const cases = [
+      ['a line that is not JSON', text(at(R, p, () => 'not json zq7canary')), [new RegExp(`line ${f(p)} is not JSON\\.`)], 1],
+      ['a line that is a JSON array', text(at(R, p, () => '["zq7canary"]')), [new RegExp(`line ${f(p)} is JSON, but not an object\\.`)], 1],
+      ['a line whose k is no line kind', text(set(R, p, (o) => { o.k = 'zq7canary'; })), [new RegExp(`line ${f(p)}: its k is not one of the format's line kinds \\(shapes, version, kind, path, rare, end\\)\\.`)], 1],
+      ['a path line with a field more', text(at(R, p, (r) => r.replace('{"k":"path",', '{"k":"path","zq":"x",'))), [new RegExp(`line ${f(p)}: its fields are not those of its line kind: one is missing, or is not one the format gives it\\.`)], 1],
+      ['the first line with a field more', text(at(R, 0, (r) => r.slice(0, -1) + ',"zq":"x"}')), [/line 1: its fields are not those of its line kind/], 1],
+      ["a version line's records exact", text(set(R, ver, (o) => { o.records = '5'; })), [new RegExp(`line ${f(ver)}: field "records" holds a value the report's language does not allow there\\.`)], 1],
+      ["a kind line's records exact", text(set(R, kind, (o) => { o.records = '5'; })), [new RegExp(`line ${f(kind)}: field "records" holds`)], 1],
+      ["a kind line's versions, a count exact", text(set(R, kind, (o) => { o.versions[first(o.versions)] = '5'; })), [new RegExp(`line ${f(kind)}: field "versions" holds`)], 1],
+      ["a rare line's n exact", text(set(R, rare, (o) => { o.n = '5'; })), [new RegExp(`line ${f(rare)}: field "n" holds`)], 1],
+      ["a path line's n exact", text(set(R, p, (o) => { o.n = '5'; })), [new RegExp(`line ${f(p)}: field "n" holds`)], 1],
+      ...['types', 'strings', 'numbers', 'booleans', 'lengths', 'values'].map((g) => { const i = path(g); return [`a path line's ${g}, a count exact`, text(set(R, i, (o) => { o[g][first(o[g])] = '5'; })), [new RegExp(`line ${f(i)}: field "${g}" holds`)], 1]; }),
+      ["a .* line's names exact", text(set(R, star, (o) => { o.names = '5'; })), [new RegExp(`line ${f(star)}: field "names" holds`)], 1],
+      ["a path line's first not a version", text(set(R, p, (o) => { o.first = 'zq'; })), [new RegExp(`line ${f(p)}: field "first" holds`)], 1],
+      ["a path line's last not a version", text(set(R, p, (o) => { o.last = 'zq'; })), [new RegExp(`line ${f(p)}: field "last" holds`)], 1],
+      ["the first line's files exact", text(set(R, 0, (o) => { o.files.read = '5'; })), [/line 1: field "files" holds/], 1],
+      ["the first line's lines exact", text(set(R, 0, (o) => { o.lines.records = '5'; })), [/line 1: field "lines" holds/], 1],
+      ["the first line's format", text(set(R, 0, (o) => { o.format = 'zq'; })), [/line 1: field "format" holds/], 1],
+      ['floor 0', text(set(R, 0, (o) => { o.floor = 0; })), [/line 1: its floor is not a whole number of files from 2 to 9007199254740991\./], 1],
+      ['the end line with a field more, its count right', text(at(R, n - 1, (r) => r.slice(0, -1) + ',"zq":"x"}')), [new RegExp(`line ${n}: its fields are not those of its line kind`)], 1],
+      ['an end line with a field more in place of a line inside', text(at(R, p, () => S({ k: 'end', lines: n, zq: 'x' }))), [new RegExp(`line ${f(p)}: its fields are not those of its line kind`)], 1],
+      ['allowed out of order', text(set(A, 0, (o) => { o.allowed = ['.zqb', '.zqa']; })), [/line 1: its allowed list is not the one ltms makes of the --allow it names: each entry a string, sorted, none twice\./], 1],
+      ['one blank line after the end line', text(R) + '\n', [new RegExp(`line ${n + 1} is blank: the file ends with a blank line after its end line, which ltms never writes; delete it\\.`)], 1],
+      ['a line of white space after the end line', text(R) + ' \n', [new RegExp(`line ${n + 1} is blank: the file ends with a blank line after its end line`)], 1],
+      ['two blank lines after the end line', text(R) + '\n\n', [new RegExp(`lines ${n + 1} to ${n + 2} are blank: the file ends with blank lines after its end line, which ltms never writes; delete them\\.`)], 1],
+      ['a blank line inside the report', text([...R.slice(0, p), '', ...R.slice(p)]), [new RegExp(`line ${f(p)} is blank\\.`), new RegExp(`the last line is not an end line that counts the report's ${n + 1} lines`)], 2],
+      ['a byte-order mark', BOM + text(R), [/line 1 starts with a byte-order mark \(U\+FEFF\), which ltms never writes: save the file as UTF-8 without one, or remove its first 3 bytes \(tail -c \+4 '[^']+' > <a new file>\)\./], 1],
+      ['CR LF', R.map((r) => r + '\r\n').join(''), [/the file's lines end with CR LF \(the first, line 1\), which ltms never writes: make them end with LF alone \(dos2unix '[^']+', or the line-ending setting of the editor that saved it\)\./], 1],
+      ['a byte-order mark and CR LF', BOM + R.map((r) => r + '\r\n').join(''), [/line 1 starts with a byte-order mark/, /the file's lines end with CR LF/], 2],
+    ];
+    for (const [what, t, messages, count] of cases) {
+      const file = join(dir, 'r.jsonl');
+      writeFileSync(file, t);
+      const r = shapes(['--check', file]);
+      assert.deepEqual([r.code, r.out], [1, ''], `${what}: ${r.err}`);
+      for (const m of messages) assert.match(r.err, m, `${what}: ${r.err}`);
+      assert.match(r.err, new RegExp(`: ${count} ${count === 1 ? 'problem' : 'problems'}; do not send it as it is\\.\\n$`), `${what}: ${r.err}`);
+      assert.doesNotMatch(r.err, / its [a-z. ]+ is not in the report's language|not an object is|line kind is not in/, `${what}: no message of the old wording: ${r.err}`);
+      assert.ok(!r.err.includes('zq7canary') && !r.err.includes('"zq"'), `${what}: no text of the report in the message`);
+    }
+    // what is not a report: each named for what it is
+    const not = [
+      ['an empty file', '', /: the file is empty: it is not a report\./],
+      ['a first line that is not JSON', 'not json zq7canary\n', /: its first line is not JSON, so the file is not a report\./],
+      ['a first line that is blank', '\n' + text(R), /: its first line is blank, so the file is not a report: a report's first line is its shapes line \(k "shapes"\)\./],
+      ['an --unlisted list', shapes(['--unlisted', ...CC]).out, /: it is an --unlisted list, which is for your own review and never sent: it is not a report\. Make the report without --unlisted\./],
+      ['a first line of another kind', text(R.slice(1)), /: its first line is not a report's first line \(k "shapes", with an allowed list\), so the file is not a report\./],
+    ];
+    for (const [what, t, m] of not) {
+      const file = join(dir, 'n.jsonl');
+      writeFileSync(file, t);
+      const r = shapes(['--check', file]);
+      assert.deepEqual([r.code, r.out], [1, ''], `${what}: ${r.err}`);
+      assert.match(r.err, m, `${what}: ${r.err}`);
+      assert.ok(!r.err.includes('zq7canary'), what);
+    }
+    // UTF-16, as Windows PowerShell 5.1's > writes (its byte-order mark, then two bytes a character): named, with the remedy
+    for (const [bom, le] of [[[0xff, 0xfe], true], [[0xfe, 0xff], false]]) {
+      const body = Buffer.from(text(R), 'utf16le');
+      if (!le) body.swap16();
+      const file = join(dir, 'u.jsonl');
+      writeFileSync(file, Buffer.concat([Buffer.from(bom), body]));
+      const r = shapes(['--check', file]);
+      assert.deepEqual([r.code, r.out], [1, ''], r.err);
+      assert.match(r.err, new RegExp(`: it starts with the bytes ${bom.map((b) => b.toString(16).toUpperCase()).join(' ')}, the byte-order mark of UTF-16, and ltms writes a report in UTF-8: save it as UTF-8 without a byte-order mark\\.`), r.err);
+    }
+    // a final new line left off: a report all the same (the format is about lines)
+    writeFileSync(join(dir, 'nl.jsonl'), good.slice(0, -1));
+    assert.equal(shapes(['--check', join(dir, 'nl.jsonl')]).code, 0);
   } finally { rm(dir); }
 });

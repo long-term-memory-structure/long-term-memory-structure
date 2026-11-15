@@ -197,8 +197,9 @@ export declare function shapesLanguage(V: ShapesVocabulary, allowed: readonly st
     floor: number;
     lines: number;
 }): ShapesLanguage;
-/** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words (the
- *  field or the line kind that failed), never a part of the line. */
+/** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words, never
+ *  a part of the line: 'not an object'; 'k' (no line kind of the format); 'fields' (one missing, or one its kind does
+ *  not have); or the name of the field that failed (S374's closure read, U10). */
 export declare function checkLine(o: unknown, Lg: ShapesLanguage): string | null;
 /** A problem of a report: the number of its line, and why, as one of the check's own words (checkLine's, or one of the
  *  report as a whole: CHECK_WORDS), never a part of the line. */
@@ -208,7 +209,8 @@ export interface ShapesProblem {
     /** Why it is not in the language. */
     why: string;
 }
-/** The words of the report as a whole, beside checkLine's: a line that is in the language alone but not where it stands
+/** The words of the report as a whole, beside checkLine's: a line that is 'blank' or 'not JSON'; a line that is in the
+ *  language alone but not where it stands
  *  ('first line': line 1 is not a first line; 'second first line'; 'end before the last line'; 'order': out of the
  *  format's order of line kinds, or of its kind's order; 'repeat': the same key as the line of its kind before it;
  *  'under the floor': a path line in fewer files than the floor), one not written as the builder writes it ('form'), and
@@ -245,13 +247,19 @@ export declare function writeReport(lines: readonly unknown[], Lg: ShapesLanguag
 /** What --check found in a report file. */
 export type ShapesCheck = {
     k: 'not-a-report';
+    /** Why: the file is empty; its first line is blank, not JSON, or JSON but not an object; it is an --unlisted list
+     *  (its first line's k is unlisted-review); or its first line is no report's first line. */
+    why: 'empty' | 'blank' | 'not JSON' | 'not an object' | 'unlisted' | 'not a first line';
 } | {
     k: 'bad-allowed';
 } | {
     k: 'checked';
-    /** The lines read. */
+    /** The report's lines, checked: the file's lines but the blank lines at its end. */
     lines: number;
-    /** Each problem, by its line's number and why (checkRows' words). */
+    /** The file's lines, those blank lines among them. */
+    rows: number;
+    /** Each problem, by its line's number and why (checkRows' words, and the file's own: 'byte-order mark',
+     *  'carriage return', 'blank at the end'), in the order of the lines. */
     problems: ShapesProblem[];
     /** The allowed list of its first line, as read. */
     allowed: string[];
@@ -259,7 +267,10 @@ export type ShapesCheck = {
 /** --check: is this report, every token of it and every line in its place, in its language? The language is the
  *  vocabulary given and the report's own allowed list (its first line); the report is checked whole as the writer checks
  *  it (checkRows), its floor the one its first line states. It cannot tell whether ltms wrote it, nor whether its counts
- *  are true. */
+ *  are true. What ltms never writes, and an editor or a shell can add (S374's closure read, U10), is named for what it
+ *  is: a byte-order mark before line 1, a carriage return at the end of a line (CR LF), blank lines after the last line;
+ *  each is a problem, and is taken off for the rest of the check, so that the lines are checked as they would be without
+ *  it. */
 export declare function checkReport(text: string, V: ShapesVocabulary): ShapesCheck;
 /** --unlisted: NOT a report. The names and values the vocabulary lacks, read from the transcripts as written, for the
  *  person's own review before an --allow; every line says "send":false, and --check refuses the list. Exact counts. A
