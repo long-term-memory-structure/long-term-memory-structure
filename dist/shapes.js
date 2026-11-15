@@ -322,17 +322,23 @@ export function collectFiles(paths) {
     const stack = [];
     /** Enters directory d in a path's walk: `entered`, the directories that walk has entered; `met`, for one met under the
      *  path given, the directory it was met in and its name (a directory met again is counted once by them); `count`,
-     *  whether a failure to read it is one to count (not when it was counted under another path given). */
-    const enter = (d, entered, met, count) => {
+     *  whether a failure to read it is one to count (not when it was counted under another path given); `given`, for the
+     *  path given, its stat, which follows a symbolic link to the directory it names (a directory met under it is read by
+     *  lstat: a link there is counted, never entered). A directory is known by its own device and inode, as search knows
+     *  it, never by a link's. */
+    const enter = (d, entered, met, count, given) => {
         let st;
-        try {
-            st = lstatSync(d);
-        }
-        catch (e) {
-            if (count)
-                failed.push({ path: d, error: e });
-            return;
-        }
+        if (given)
+            st = given;
+        else
+            try {
+                st = lstatSync(d);
+            }
+            catch (e) {
+                if (count)
+                    failed.push({ path: d, error: e });
+                return;
+            }
         const id = `${st.dev}:${st.ino}`;
         if (entered.has(id)) {
             if (met !== null)
@@ -367,7 +373,7 @@ export function collectFiles(paths) {
             continue;
         }
         const entered = new Set();
-        enter(p, entered, null, true);
+        enter(p, entered, null, true, st);
         while (stack.length) {
             const top = stack[stack.length - 1];
             if (top.i >= top.entries.length) {

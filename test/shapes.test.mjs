@@ -2082,3 +2082,50 @@ test("shapes (0.3.1, k17): its messages that call an error a bug in ltms (outsid
     assert.deepEqual(wrong, [], `each message says: ${said}`);
   } finally { rm(dir); rm(build); }
 });
+
+// k15, the path given through a symbolic link (found after 51f7454): shapes knew a path given by lstat, so a link to a
+// directory was known by the link's own device and inode, where search knows the directory's (stat). A directory met
+// again under it was not counted (search counts it), and the directory given also as itself was listed twice, each entry
+// of it counted twice. A path given is now known by its directory's device and inode, as search knows it.
+test('shapes (0.3.1, k15): a path given through a symbolic link is known by its directory\'s device and inode, as search knows it: a directory met again under it is counted, and the directory given also as itself is listed once (a stubbed stat)', () => {
+  const dir = tmp();
+  try {
+    const A = join(dir, 'A'), loop = join(A, 'loop'), link = join(dir, 'link');
+    mkdirSync(loop, { recursive: true });
+    writeFileSync(join(A, 's.jsonl'), AGAIN_REC(1));
+    writeFileSync(join(loop, 'x.jsonl'), AGAIN_REC(2));
+    symlinkSync(A, link);
+    const stub = join(dir, 'same-inode.cjs');
+    writeFileSync(stub, [
+      "const fs = require('node:fs');",
+      '// the directories LTMS_TEST_ALIAS names report the device and inode of LTMS_TEST_TARGET, to stat and lstat alike',
+      "for (const name of ['statSync', 'lstatSync']) {",
+      '  const real = fs[name];',
+      '  fs[name] = function (p, o) { const s = real.apply(this, arguments); if ((process.env.LTMS_TEST_ALIAS ?? "").split(",").includes(String(p))) { const t = real.call(this, process.env.LTMS_TEST_TARGET, o); s.dev = t.dev; s.ino = t.ino; } return s; };',
+      '}',
+      "require('node:module').syncBuiltinESMExports();", ''].join('\n'));
+    const run = (cmd, args, alias) => spawnSync(process.execPath, ['-r', stub, CLI, cmd, ...args], { encoding: 'utf8', env: { ...process.env, LTMS_TEST_ALIAS: alias, LTMS_TEST_TARGET: A } });
+    // the link given: link/loop is A met again, as search says
+    const viaLink = run('shapes', [link], join(link, 'loop'));
+    assert.equal(viaLink.status, 0, viaLink.stderr);
+    assert.deepEqual(warningsOf(viaLink.stderr, 'shapes'), [`ltms shapes: warning: ${AGAIN_WORDS(1)}.`]);
+    assert.match(viaLink.stderr, /^ltms shapes: 1 file read \(0 failed\), 1 record; /m);
+    const s = run('search', ['zqvword', link], join(link, 'loop'));
+    assert.deepEqual(warningsOf(s.stderr, 'search'), [`ltms search: warning: ${AGAIN_WORDS(1)}.`]);
+  } finally { rm(dir); }
+  // the directory given through a link and as itself: listed once, so its entry that is not a regular file counts once
+  const d2 = tmp();
+  try {
+    const T = join(d2, 'T');
+    mkdirSync(T);
+    writeFileSync(join(T, 'a.jsonl'), AGAIN_REC(1));
+    const fifo = spawnSync('mkfifo', [join(T, 'pipe.jsonl')]);
+    assert.equal(fifo.status, 0, 'mkfifo');
+    symlinkSync(T, join(d2, 'link'));
+    for (const args of [[join(d2, 'link'), T], [T, join(d2, 'link')]]) {
+      const r = shapes(args);
+      assert.equal(r.code, 0, r.err);
+      assert.deepEqual(warningsOf(r.err, 'shapes'), ['ltms shapes: warning: 1 entry named .jsonl under the directories given is not a regular file, such as a pipe or a socket, and was not read.'], args.join(' '));
+    }
+  } finally { rm(d2); }
+});

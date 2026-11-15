@@ -321,10 +321,14 @@ export function collectFiles(paths: readonly string[]): ShapesFiles {
   const stack: { d: string; id: string; entries: ByteDirent[]; i: number; fresh: boolean }[] = [];
   /** Enters directory d in a path's walk: `entered`, the directories that walk has entered; `met`, for one met under the
    *  path given, the directory it was met in and its name (a directory met again is counted once by them); `count`,
-   *  whether a failure to read it is one to count (not when it was counted under another path given). */
-  const enter = (d: string, entered: Set<string>, met: string | null, count: boolean): void => {
+   *  whether a failure to read it is one to count (not when it was counted under another path given); `given`, for the
+   *  path given, its stat, which follows a symbolic link to the directory it names (a directory met under it is read by
+   *  lstat: a link there is counted, never entered). A directory is known by its own device and inode, as search knows
+   *  it, never by a link's. */
+  const enter = (d: string, entered: Set<string>, met: string | null, count: boolean, given?: Stats): void => {
     let st: Stats;
-    try { st = lstatSync(d); } catch (e) { if (count) failed.push({ path: d, error: e }); return; }
+    if (given) st = given;
+    else try { st = lstatSync(d); } catch (e) { if (count) failed.push({ path: d, error: e }); return; }
     const id = `${st.dev}:${st.ino}`;
     if (entered.has(id)) { if (met !== null) again.add(met); return; }
     entered.add(id);
@@ -339,7 +343,7 @@ export function collectFiles(paths: readonly string[]): ShapesFiles {
     try { st = statSync(p); } catch (e) { failed.push({ path: p, error: e }); continue; }
     if (!st.isDirectory()) { addFile(p, st); continue; }
     const entered = new Set<string>();
-    enter(p, entered, null, true);
+    enter(p, entered, null, true, st);
     while (stack.length) {
       const top = stack[stack.length - 1];
       if (top.i >= top.entries.length) { stack.pop(); continue; }
