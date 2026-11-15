@@ -1929,3 +1929,41 @@ test('shapes (0.3.1, k5): a vocabulary whose kinds.sub names a kind that values 
   assert.match(part, /every kind in `kinds\.sub` must be a value that `values` lists at `kinds\.path`/, "the README's rules");
   assert.match(part, /or a kind in `kinds\.sub` that `values` does not list at `kinds\.path`/, "the README's refusals");
 });
+
+// k11 (S375's known issues, for 0.3.1): a count map's keys that are whole numbers come first, in numeric order, since a
+// JavaScript object lists its array-index keys so whatever the order they were put in; the writer writes that order and
+// --check holds a report to it (byte for byte, since S3), where groupOrder's comment and the README's format note said
+// "by their text" and "ltms's order". The words now state the order; the format stays ltms-shapes/0. The keys 10, 9, 007
+// and abc, allowed at a value path, print as 9, 10, then 007 and abc (007 is not an array index: it has a leading 0).
+test("shapes (0.3.1, k11): a map's keys that are array indices come first, in numeric order, then the others by their text, as the writer writes them and --check holds them; the README's format note says so", () => {
+  const dir = tmp();
+  try {
+    const roles = ['10', '9', '007', 'abc'];
+    const rec = (role) => ({ type: 'user', message: { role } });
+    const d = putFiles(dir, 'k11', { a: roles.map(rec), b: roles.map(rec), c: roles.map(rec) });
+    const r = shapes([...roles.flatMap((x) => ['--allow', `.message.role=${x}`]), d]);
+    assert.equal(r.code, 0, r.err);
+    const rows = r.out.split('\n').filter(Boolean);
+    const at = rows.findIndex((l) => l.startsWith('{"k":"path","kind":"user","path":".message.role",'));
+    assert.ok(at > 0, r.out);
+    // the keys in the order the text gives them, read from the bytes (JSON.parse would list them as JavaScript does)
+    const keysAsWritten = (row) => [.../"values":\{([^}]*)\}/.exec(row)[1].matchAll(/"([^"]*)":"[^"]*"/g)].map((m) => m[1]);
+    assert.deepEqual(keysAsWritten(rows[at]), ['9', '10', '007', 'abc'], rows[at]);
+    // --check holds a report to that order: the same report passes, and its map written by the keys' text alone fails
+    const report = join(dir, 'k11.txt');
+    writeFileSync(report, r.out);
+    const ok = spawnSync(process.execPath, [CLI, 'shapes', '--check', report], { encoding: 'utf8' });
+    assert.equal(ok.status, 0, ok.stderr);
+    const byText = [...rows];
+    byText[at] = rows[at].replace(/"values":\{[^}]*\}/, '"values":{"007":"2-3","10":"2-3","9":"2-3","abc":"2-3"}');
+    assert.notEqual(byText[at], rows[at]);
+    writeFileSync(report, byText.join('\n') + '\n');
+    const bad = spawnSync(process.execPath, [CLI, 'shapes', '--check', report], { encoding: 'utf8' });
+    assert.equal(bad.status, 1, bad.stderr);
+    assert.match(bad.stderr, new RegExp(`^ltms shapes --check: line ${at + 1} is not written as ltms writes a line`, 'm'));
+  } finally { rm(dir); }
+  // the README's format note states that order
+  const whole = readFileSync(join(root, 'README.md'), 'utf8');
+  const section = whole.slice(whole.indexOf('### `ltms shapes'), whole.indexOf('\n## ', whole.indexOf('### `ltms shapes'))).replace(/\s+/g, ' ');
+  assert.match(section, /the keys that are array indices \(a whole number from 0 to 4294967294 written without leading zeros\) first, in numeric order, then the others by their text/, "the README's format note");
+});

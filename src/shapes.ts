@@ -643,7 +643,13 @@ const sortVersions = (vs: Iterable<string>): string[] => [...vs].sort(versionOrd
 const pathOrder = (a: { kind: string; path: string }, b: { kind: string; path: string }): number => cmp(a.kind, b.kind) || cmp(a.path, b.path);
 /** A path line's maps of counts, in the order the line gives them. */
 const GROUPS = ['types', 'strings', 'numbers', 'booleans', 'lengths', 'values'];
-/** A map's keys: (rare) last; before it, an array's lengths in the order of their buckets, any other label by its text. */
+/** THE ORDER OF A MAP'S KEYS, as the builder writes them and the check holds a report to: the keys that are array indices
+ *  (a whole number from 0 to 4294967294 written without leading zeros) first, in numeric order, then the others by their
+ *  text, but an array's lengths in the order of their buckets, and (rare) last. This function gives the second part: the
+ *  map is an object, built in its order (buildReport, and canonicalText for the check), and a JavaScript object lists
+ *  its array-index keys first, in numeric order, whatever the order they were put in. So a value at a value path that is
+ *  such a number comes first: 10, 9, 007 and abc are written 9, 10, 007, abc (007 is not one: it has a leading 0). The
+ *  order is ltms-shapes/0's; a pure text order would be another format's (S375's known issue k11). */
 const groupOrder = (g: string) => (a: string, b: string): number =>
   Number(a === RARE) - Number(b === RARE) || (g === 'lengths' ? CAP_LABELS.indexOf(a) - CAP_LABELS.indexOf(b) : cmp(a, b));
 

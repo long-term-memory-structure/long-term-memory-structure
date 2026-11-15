@@ -494,7 +494,7 @@ The lines come in this order, each one JSON object whose `k` says what it is:
 | `rare` | one line per kind with path lines under the floor: `kind`; `paths`, how many; `n`, their occurrences. Which paths they were is not said |
 | `end` | the last line: `lines`, the lines of the report, this one included, so a cut report shows |
 
-Each kind's lines come in ltms's order, none twice: the versions in numeric order, then `(none)` and `(withheld)`; the kind lines and the rare lines by kind; the path lines by kind, then path. Each line is written as ltms writes it: its fields in the order above, each map's keys in ltms's order (`(rare)` last), each key once, no space.
+Each kind's lines come in ltms's order, none twice: the versions in numeric order, then `(none)` and `(withheld)`; the kind lines and the rare lines by kind; the path lines by kind, then path. Each line is written as ltms writes it: its fields in the order above; each map's keys in ltms's order: the keys that are array indices (a whole number from 0 to 4294967294 written without leading zeros) first, in numeric order, then the others by their text (an array's lengths by their buckets), `(rare)` last, so the values `10`, `9`, `007` and `abc` come as `9`, `10`, `007`, `abc`; each key once; no space.
 
 An example, on the canary fixtures of the tests (synthetic transcripts in which a planted token stands in every channel a leak could use, written by [`test/make-shapes-fixtures.mjs`](https://github.com/long-term-memory-structure/long-term-memory-structure/blob/v0.3.0/test/make-shapes-fixtures.mjs): `node test/make-shapes-fixtures.mjs test/shapes-fixtures`), run from the repository's root (the package does not ship `test/`):
 
