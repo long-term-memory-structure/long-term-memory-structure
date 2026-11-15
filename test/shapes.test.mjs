@@ -1791,3 +1791,27 @@ test("shapes: a name under a directory that is not valid UTF-8 is reported by it
     assert.deepEqual([l.lines[0].files.read, l.lines[0].files.failed], ['0', '1']);
   } finally { rm(dir); }
 });
+
+// U2 (S374's closure read): the report is "made to be sent", and its steps ended at "Before you send it": nothing in
+// the README's section, --help or the closing line said where, how, or that the place is public. The place is now named
+// in all three: an issue in ltms's repository (package.json's bugs.url), the report file attached, with the program and
+// version that wrote the transcripts; and an issue there is said to be public.
+test("shapes: where to send a report, in the README's section, in --help and in the closing line: an issue at package.json's bugs.url, the report file attached, with the program and version that wrote the transcripts; and that an issue there is public", () => {
+  const issues = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).bugs?.url;
+  assert.match(issues ?? '', /^https:\/\/github\.com\/[^/]+\/[^/]+\/issues$/, "package.json's bugs.url");
+  const flat = (s) => s.replace(/\s+/g, ' ');
+  const whole = readFileSync(join(root, 'README.md'), 'utf8');
+  const section = flat(whole.slice(whole.indexOf('### `ltms shapes'), whole.indexOf('\n## ', whole.indexOf('### `ltms shapes'))));
+  const help = flat(spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout);
+  const r = shapes([...CC]);
+  assert.equal(r.code, 0, r.err);
+  const closing = r.err.split('\n').find((l) => /^ltms shapes: \d+ files read/.test(l)) ?? '';
+  for (const [where, text] of [["the README's section", section], ['--help', help], ['the closing line', closing]]) {
+    assert.ok(text.includes(issues), `${where} names ${issues}: ${where === 'the closing line' ? text : ''}`);
+    assert.match(text, /open an issue at/i, `${where}: open an issue`);
+    assert.match(text, /attach the report file/, `${where}: attach the report file`);
+    assert.match(text, /which program and version wrote the transcripts/, `${where}: which program and version wrote the transcripts`);
+    assert.match(text, /public/, `${where}: an issue there is public`);
+  }
+  assert.match(closing, /ltms shapes --check <the report>$/, 'the closing line still ends with the check');
+});

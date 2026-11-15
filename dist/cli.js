@@ -2709,6 +2709,9 @@ async function pinMain(argv) {
 /** The vocabularies that ship with ltms, by the name --supplier takes: files of the package's vocab/, beside dist/. */
 const SHAPES_SUPPLIERS = { 'claude-code': 'claude-code.docs.json' };
 const SHAPES_SUPPLIER = 'claude-code';
+/** Where a report is sent: the issues of ltms's repository, package.json's bugs.url (a test holds the two equal). An
+ *  issue there is public (S374's closure read, U2). */
+const SHAPES_SEND_TO = 'https://github.com/long-term-memory-structure/long-term-memory-structure/issues';
 const SHAPES_OPTIONS = '--supplier, --vocabulary, --floor, --allow, --max-line, --check, --unlisted, --help and --version';
 /** What each option that takes a value takes, for the message when it is given none. */
 const SHAPES_VALUES = {
@@ -2761,7 +2764,10 @@ files than the floor is not printed (its kind's rare line counts it), and a
 count over fewer files than the floor is added into (rare). Before you send
 a report, read its first line's allowed list (the only words in it you
 chose, but those of a vocabulary you gave with --vocabulary: read that file
-too), and run ltms shapes --check on it.
+too), and run ltms shapes --check on it. To send it, open an issue at
+${SHAPES_SEND_TO}
+(it is public: anyone can read it), attach the report file, and write which
+program and version wrote the transcripts.
 
 --supplier <name>     the vocabulary that ships with ltms for that program:
                       claude-code (the default), built from ltms's own
@@ -3102,7 +3108,7 @@ function shapesRun(args) {
             err(`${head}${shapesCut('report', e, linesIn(reportParts, parts), w.written)} A cut report fails ltms shapes --check: do not send it.`);
             return;
         }
-        err(`${head}the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. Before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>${vocabularyArg}`);
+        err(`${head}the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. To send it, open an issue at ${SHAPES_SEND_TO} (it is public: anyone can read it), attach the report file, and write which program and version wrote the transcripts; before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>${vocabularyArg}`);
     });
     return S.filesFailed ? 1 : 0;
 }
