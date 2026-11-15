@@ -1,7 +1,7 @@
 {
   "format": "ltms-shapes-vocabulary/0",
   "name": "claude-code-docs",
-  "source": "ltms 0.2.2 (fa57b3c): docs/library.md, section 'The records, as Claude Code writes them'; src/parser.ts, RecordType, SystemRecord.subtype and BlockType. Public: both ship in the npm package. Added in 0.3.0, the attachment type queued_command: docs/library.md, SearchKind (and src/search.ts); it also occurs in Claude Code's own program file, version 2.1.293 (sha256 8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978), 91 times in quotes.",
+  "source": "ltms 0.2.2 (fa57b3c): docs/library.md, section 'The records, as Claude Code writes them'; src/parser.ts, RecordType, SystemRecord.subtype and BlockType. Public: both are in ltms's public repository, at the tag v0.2.2. Added in 0.3.0, the attachment type queued_command: docs/library.md, SearchKind (and src/search.ts); it also occurs in Claude Code's own program file, version 2.1.293 (sha256 8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978), 91 times in quotes.",
   "kinds": { "path": ".type", "sub": { "system": ".subtype", "attachment": ".attachment.type" } },
   "versions": [".version"],
   "paths": [

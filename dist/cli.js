@@ -3079,7 +3079,7 @@ function shapesRun(args) {
         const more = t.moreNamePaths + t.moreValuePaths
             ? `; past the first ${SHAPES_NAMES_PER_PATH} at a path, ${plural(t.moreNames, 'occurrence', 'occurrences')} of names (at ${plural(t.moreNamePaths, 'path', 'paths')}) and ${t.moreValues} of values (at ${plural(t.moreValuePaths, 'path', 'paths')}) are counted on unlisted-more lines, not listed`
             : ', every one met';
-        const head = `ltms shapes --unlisted: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; `;
+        const head = `ltms shapes --unlisted: ${plural(S.filesRead, 'file', 'files')} read (${S.filesFailed} failed), ${plural(S.records, 'record', 'records')}; `;
         // the closing line once every line is written; at a write that fails, what was cut instead (S374's closure read, U9)
         outParts(reviewParts, (e, parts) => {
             if (e) {
@@ -3099,10 +3099,10 @@ function shapesRun(args) {
         // the report is checked whole before any of it is written: none of a report that fails is
         const first = w.reasons[0];
         err(`ltms shapes: ${plural(w.refused, 'line', 'lines')} failed the report's own language at the write, so none of the report was written (the first, line ${first.line}: ${first.why}). This is a bug in ltms.`);
-        err(`ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; no report was written; ${secs()} s.`);
+        err(`ltms shapes: ${plural(S.filesRead, 'file', 'files')} read (${S.filesFailed} failed), ${plural(S.records, 'record', 'records')}; no report was written; ${secs()} s.`);
         return 1;
     }
-    const head = `ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; `;
+    const head = `ltms shapes: ${plural(S.filesRead, 'file', 'files')} read (${S.filesFailed} failed), ${plural(S.records, 'record', 'records')}; `;
     // the closing line once every line is written, so it never claims a line that was not; at a write that fails, what
     // was cut instead, exit 1 (S374's closure read, U9)
     outParts(reportParts, (e, parts) => {

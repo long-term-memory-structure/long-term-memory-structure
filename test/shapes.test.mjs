@@ -479,7 +479,7 @@ test('shapes: the write guard refuses each line that holds a token outside the l
       if (w.written !== 0 || wrote !== '' || JSON.stringify(w.reasons) !== JSON.stringify([{ line: at, why: word }])) { wrong.push(`${what}: the module wrote ${w.written} lines, reasons ${JSON.stringify(w.reasons)}, not line ${at}: ${word}`); continue; }
       // the command, its builder giving these lines: exit 1, nothing on stdout, and stderr saying this, and nothing more
       const r = plantedRun(build, lines, [join(tiny, 't.jsonl')]);
-      const said = new RegExp(`^ltms shapes: 1 line failed the report's own language at the write, so none of the report was written \\(the first, line ${at}: ${esc(word)}\\)\\. This is a bug in ltms\\.\\nltms shapes: 1 files read \\(0 failed\\), 1 records; no report was written; \\d+\\.\\d s\\.\\n$`);
+      const said = new RegExp(`^ltms shapes: 1 line failed the report's own language at the write, so none of the report was written \\(the first, line ${at}: ${esc(word)}\\)\\. This is a bug in ltms\\.\\nltms shapes: 1 file read \\(0 failed\\), 1 record; no report was written; \\d+\\.\\d s\\.\\n$`);
       if (r.code !== 1 || r.out !== '' || !said.test(r.err)) wrong.push(`${what}: the command exits ${r.code}, ${r.out.length} bytes on stdout, stderr ${JSON.stringify(r.err)}`);
     }
     assert.deepEqual(wrong, [], 'each planted line refused at the write, by its rule\'s word, at its line');
@@ -1521,7 +1521,7 @@ test('shapes --unlisted: past the 2048 values kept at a path, the occurrences of
  *  occurrences of names, their paths, of values, their paths] (null when it says every one met was listed); null when
  *  the line does not state them so. */
 function closingTotals(err) {
-  const m = /^ltms shapes --unlisted: \d+ files read \(\d+ failed\), \d+ records; listed: (\d+) names? \(at (\d+) \.\* paths?\) and (\d+) values? \(at (\d+) paths?\) the vocabulary does not hold, as the transcripts write them(?:, every one met|; past the first 2048 at a path, (\d+) occurrences? of names \(at (\d+) paths?\) and (\d+) of values \(at (\d+) paths?\) are counted on unlisted-more lines, not listed); /m.exec(err);
+  const m = /^ltms shapes --unlisted: \d+ files? read \(\d+ failed\), \d+ records?; listed: (\d+) names? \(at (\d+) \.\* paths?\) and (\d+) values? \(at (\d+) paths?\) the vocabulary does not hold, as the transcripts write them(?:, every one met|; past the first 2048 at a path, (\d+) occurrences? of names \(at (\d+) paths?\) and (\d+) of values \(at (\d+) paths?\) are counted on unlisted-more lines, not listed); /m.exec(err);
   if (!m) return null;
   return [m.slice(1, 5).map(Number), m[5] === undefined ? null : m.slice(5, 9).map(Number)];
 }
@@ -1805,7 +1805,7 @@ test("shapes: where to send a report, in the README's section, in --help and in 
   const help = flat(spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout);
   const r = shapes([...CC]);
   assert.equal(r.code, 0, r.err);
-  const closing = r.err.split('\n').find((l) => /^ltms shapes: \d+ files read/.test(l)) ?? '';
+  const closing = r.err.split('\n').find((l) => /^ltms shapes: \d+ files? read/.test(l)) ?? '';
   for (const [where, text] of [["the README's section", section], ['--help', help], ['the closing line', closing]]) {
     assert.ok(text.includes(issues), `${where} names ${issues}: ${where === 'the closing line' ? text : ''}`);
     assert.match(text, /open an issue at/i, `${where}: open an issue`);
@@ -1833,4 +1833,44 @@ test("README: shapes' section links each repository file it names (the fixtures'
   const files = links.filter((u) => u.startsWith(`${web}/blob/`)).map((u) => u.slice(`${web}/blob/`.length).replace(/^[^/]+\//, '').replace(/#.*$/, ''));
   assert.ok(files.length >= named.length);
   for (const f of files) assert.ok(existsSync(join(root, f)), `the section links ${f}, a file of the repository`);
+});
+
+test('shapes (S375, G3\'s new issue): the receiver\'s validator runs from a folder whose name has a space, and through a symbolic link: it refuses a planted token, never exits 0 with nothing said', () => {
+  const d = mkdtempSync(join(tmpdir(), 'ltms-validate-'));
+  try {
+    const spaced = join(d, 'a folder with spaces');
+    mkdirSync(spaced);
+    const v = join(spaced, 'shapes-validate.mjs');
+    copyFileSync(join(root, 'test', 'shapes-validate.mjs'), v);
+    const link = join(d, 'linked-validate.mjs');
+    symlinkSync(v, link);
+    // a report whose first line carries a word outside the language
+    const report = join(d, 'planted.jsonl');
+    const r0 = spawnSync(process.execPath, [CLI, 'shapes', ...CC], { encoding: 'utf8', cwd: root });
+    assert.equal(r0.status, 0, r0.stderr);
+    writeFileSync(report, r0.stdout.replace('"format":"ltms-shapes/0"', '"format":"zqplantedtoken"'));
+    for (const script of [v, link]) {
+      const r = spawnSync(process.execPath, [script, report, DOCS], { encoding: 'utf8' });
+      assert.equal(r.status, 1, `${script}: status ${r.status}, stderr ${JSON.stringify(r.stderr)}`);
+      assert.match(r.stderr, /token\(s\) outside the language/, script);
+    }
+  } finally { rmSync(d, { recursive: true, force: true }); }
+});
+
+test('shapes (S375, G2\'s and G3\'s new issues): the closing lines count in the singular where it is one; the vocabulary\'s source says no file ships in the package that the package does not ship', () => {
+  const d = mkdtempSync(join(tmpdir(), 'ltms-one-'));
+  try {
+    const f = join(d, 'one.jsonl');
+    writeFileSync(f, '{"type":"user","message":{"content":"x"}}\n');
+    for (const args of [[f], ['--unlisted', f]]) {
+      const r = spawnSync(process.execPath, [CLI, 'shapes', ...args], { encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stderr, /: 1 file read \(0 failed\), 1 record; /, args.join(' '));
+    }
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    const source = JSON.parse(readFileSync(DOCS, 'utf8')).source;
+    if (/ship in the npm package|ships in the npm package/.test(source)) {
+      for (const named of source.match(/\b(?:docs|src)\/[\w.-]+/g) ?? []) assert.ok(pkg.files.some((x) => named === x || named.startsWith(x + '/')), `the vocabulary's source says ${named} ships in the package; package.json's files do not hold it`);
+    }
+  } finally { rmSync(d, { recursive: true, force: true }); }
 });

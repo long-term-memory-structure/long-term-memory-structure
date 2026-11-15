@@ -505,7 +505,7 @@ ltms shapes test/shapes-fixtures/cc-a.jsonl test/shapes-fixtures/cc-b.jsonl test
 It prints 113 lines; among them:
 
 ```
-{"k":"shapes","format":"ltms-shapes/0","vocabulary":[{"name":"claude-code-docs","sha256":"5ba1489112e5","paths":80,"values":38}],"floor":3,"allowed":[],"files":{"read":"4-7","failed":"0"},"lines":{"records":"32-63","blank":"2-3","notJson":"2-3","notObject":"1","tooLong":"0"}}
+{"k":"shapes","format":"ltms-shapes/0","vocabulary":[{"name":"claude-code-docs","sha256":"636dd37ef637","paths":80,"values":38}],"floor":3,"allowed":[],"files":{"read":"4-7","failed":"0"},"lines":{"records":"32-63","blank":"2-3","notJson":"2-3","notObject":"1","tooLong":"0"}}
 {"k":"version","v":"2.1.300","records":"16-31","files":"1"}
 {"k":"version","v":"(none)","records":"4-7","files":"4-7"}
 {"k":"version","v":"(withheld)","records":"4-7","files":"1"}

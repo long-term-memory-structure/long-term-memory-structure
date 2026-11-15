@@ -22,7 +22,8 @@
 //     exactly JSON.stringify of what it parses to (a key given twice, a space, an escape, a carriage return or another
 //     spelling of a number fails). The command line uses it, so it no longer drops blank lines.
 //   node test/shapes-validate.mjs <report.jsonl> <vocabulary.json>...     exit 0 when every token is allowed
-import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -212,7 +213,9 @@ export function validateText(text, vocabFiles) {
   return [...problems, ...validate(lines, vocabFiles)];
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// run as a script: the URL of the script's real path, so a folder whose name has a space (%20 in the URL) or a link to
+// the script is not taken for an import, which ran nothing and exited 0 (S375, G3's new issue)
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const [report, ...vocabs] = process.argv.slice(2);
   const text = readFileSync(report, 'utf8');
   const p = validateText(text, vocabs);
