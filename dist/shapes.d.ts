@@ -108,9 +108,10 @@ export interface ShapesKindCount {
 }
 /** The names (or values) the vocabulary lacks at one path, for the local review list. */
 export interface ShapesUnlisted {
-    /** Per name, its count; at most 2048 names. */
+    /** Per name (or value), its count; at most 2048, the first met. */
     names: Map<string, ShapesCount>;
-    /** The occurrences of the names past the 2048 kept. */
+    /** The occurrences of the names (or values) past the 2048 kept: counted, not kept (S374's closure read, S5, for the
+     *  values). */
     overflow: number;
 }
 /** What reading the files counted. */
@@ -145,7 +146,7 @@ export interface ShapesRun {
     /** --unlisted only: per value path, the values the vocabulary lacks: at a path that lists values, as the walk meets
      *  them; at the kind path and a sub-kind's path, as the reading of the kind meets them where the walk keeps none (no
      *  list there, or a path it does not reach). */
-    unlistedValues: Map<string, Map<string, ShapesCount>> | null;
+    unlistedValues: Map<string, ShapesUnlisted> | null;
 }
 /** How to read. */
 export interface ShapesReadOptions {

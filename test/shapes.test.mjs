@@ -1473,3 +1473,41 @@ test("shapes --unlisted: the values met at the kind path and at a sub-kind's pat
   const help = spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout.replace(/\s+/g, ' ');
   assert.match(help, /attachment:\(unlisted\)/, "--help's kind row");
 });
+
+/** Writes each file of `files` ({name: [lines]}) under a new folder `d` of `dir`, its lines joined, each ended by a new
+ *  line; returns that folder. */
+function putLines(dir, d, files) {
+  mkdirSync(join(dir, d));
+  for (const [f, lines] of Object.entries(files)) writeFileSync(join(dir, d, f), lines.join('\n') + '\n');
+  return join(dir, d);
+}
+const range = (a, b) => Array.from({ length: b - a }, (_, i) => a + i);
+
+// S5 (S374's closure read): past the 2048 values kept at a value path, --unlisted dropped every other one without a line
+// or a count: 2048 and 2049 distinct values gave the same bytes, and a value met 10,000 times after the first 2048 was on
+// no line, where the names past the 2048 kept at a .* path are counted on an unlisted-more line. Values past the cap are
+// now counted as names are: an unlisted-more line at the value path, its n the occurrences not listed.
+test('shapes --unlisted: past the 2048 values kept at a path, the occurrences of the others are counted on an unlisted-more line at that path, as the names past the 2048 kept at a .* path are; at 2048 distinct values there is none, at 2049 one of n 1', () => {
+  const dir = tmp();
+  try {
+    const v = (i) => `zv${String(i).padStart(4, '0')}`;
+    const rec = (type) => JSON.stringify({ type });
+    // 2048 values once each in a.jsonl; in b.jsonl, 52 more once each and one more 10 times: 62 occurrences past the cap
+    const over = putLines(dir, 'over', { 'a.jsonl': range(0, 2048).map((i) => rec(v(i))), 'b.jsonl': [...range(2048, 2100).map((i) => rec(v(i))), ...Array(10).fill(rec('zzmany'))] });
+    const u = shapes(['--unlisted', over]);
+    assert.equal(u.code, 0, u.err);
+    const at = u.lines.filter((o) => o.at === '.type');
+    assert.deepEqual(at.filter((o) => o.k === 'unlisted-value').map((o) => o.value), range(0, 2048).map(v), 'the first 2048 values met are listed');
+    assert.deepEqual(at.filter((o) => o.k === 'unlisted-more'), [{ k: 'unlisted-more', send: false, at: '.type', n: 62 }], 'the occurrences past them, counted at the value path');
+    assert.deepEqual(u.lines.at(-1), { k: 'unlisted-more', send: false, at: '.type', n: 62 }, "after the path's values");
+    // the boundary: 2048 distinct values are all listed, with no more-line; 2049 give one occurrence past the cap
+    const exact = shapes(['--unlisted', putLines(dir, 'exact', { 'a.jsonl': range(0, 2048).map((i) => rec(v(i))) })]);
+    const one = shapes(['--unlisted', putLines(dir, 'one', { 'a.jsonl': range(0, 2049).map((i) => rec(v(i))) })]);
+    assert.deepEqual(exact.lines.filter((o) => o.k === 'unlisted-more'), [], '2048 values');
+    assert.deepEqual(one.lines.filter((o) => o.k === 'unlisted-more'), [{ k: 'unlisted-more', send: false, at: '.type', n: 1 }], '2049 values');
+  } finally { rm(dir); }
+  // --help and the README say what an unlisted-more line counts: names or values
+  const help = spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout.replace(/\s+/g, ' ');
+  assert.match(help, /unlisted-more \(the occurrences past the first 2048 names or values at a path\)/);
+  assert.match(readFileSync(join(root, 'README.md'), 'utf8').replace(/\s+/g, ' '), /`unlisted-more` \(the occurrences past the first 2048 names or values at a path/);
+});

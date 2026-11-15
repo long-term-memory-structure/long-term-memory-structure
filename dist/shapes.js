@@ -438,18 +438,21 @@ export function readShapes(V, files, opts) {
             L.sub.set(key, (s = [0, 0, -1]));
         tally(s, fi);
     };
-    /** --unlisted only: a value the vocabulary lacks at a path, for the person's own review. */
+    /** --unlisted only: a value the vocabulary lacks at a path, for the person's own review; past the 2048 kept at a path,
+     *  its occurrence is counted as a name's is (S374's closure read, S5). */
     const keepValue = (path, v, fi) => {
         if (!unlVals)
             return;
-        let m = unlVals.get(path);
-        if (!m)
-            unlVals.set(path, (m = new Map()));
-        let e = m.get(v);
+        let u = unlVals.get(path);
+        if (!u)
+            unlVals.set(path, (u = { names: new Map(), overflow: 0 }));
+        let e = u.names.get(v);
         if (!e) {
-            if (m.size >= NAMES_PER_PATH)
+            if (u.names.size >= NAMES_PER_PATH) {
+                u.overflow++;
                 return;
-            m.set(v, (e = [0, 0, -1]));
+            }
+            u.names.set(v, (e = [0, 0, -1]));
         }
         tally(e, fi);
     };
@@ -1088,12 +1091,14 @@ export function reviewLines(S, V) {
             out.push({ k: 'unlisted-more', send: false, at: star, n: u.overflow });
     }
     for (const vp of [...vals.keys()].sort(cmp)) {
-        const m = vals.get(vp);
-        for (const value of [...m.keys()].sort(cmp)) {
-            const [n, f] = m.get(value);
+        const u = vals.get(vp);
+        for (const value of [...u.names.keys()].sort(cmp)) {
+            const [n, f] = u.names.get(value);
             const allowable = LABEL.test(value) && !(value.includes(':') && kp.includes(vp));
             out.push({ k: 'unlisted-value', send: false, at: vp, value, n, files: f, allow: allowable ? `${vp}=${value}` : null });
         }
+        if (u.overflow)
+            out.push({ k: 'unlisted-more', send: false, at: vp, n: u.overflow });
     }
     return out;
 }

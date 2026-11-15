@@ -2833,7 +2833,7 @@ The last line, k "end":
 The --unlisted list, never a report:
   k             unlisted-review (the first line, with a note), unlisted (a
                 name), unlisted-more (the occurrences past the first 2048
-                names at a path), unlisted-value (a value)
+                names or values at a path), unlisted-value (a value)
   send          false
   note          on the first line: what the list is, and not to send it
   at            the .* path the name was merged into, or the path of the

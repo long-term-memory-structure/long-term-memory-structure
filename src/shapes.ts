@@ -387,9 +387,10 @@ export interface ShapesKindCount {
 }
 /** The names (or values) the vocabulary lacks at one path, for the local review list. */
 export interface ShapesUnlisted {
-  /** Per name, its count; at most 2048 names. */
+  /** Per name (or value), its count; at most 2048, the first met. */
   names: Map<string, ShapesCount>;
-  /** The occurrences of the names past the 2048 kept. */
+  /** The occurrences of the names (or values) past the 2048 kept: counted, not kept (S374's closure read, S5, for the
+   *  values). */
   overflow: number;
 }
 /** What reading the files counted. */
@@ -421,7 +422,7 @@ export interface ShapesRun {
   /** --unlisted only: per value path, the values the vocabulary lacks: at a path that lists values, as the walk meets
    *  them; at the kind path and a sub-kind's path, as the reading of the kind meets them where the walk keeps none (no
    *  list there, or a path it does not reach). */
-  unlistedValues: Map<string, Map<string, ShapesCount>> | null;
+  unlistedValues: Map<string, ShapesUnlisted> | null;
 }
 /** How to read. */
 export interface ShapesReadOptions {
@@ -455,13 +456,14 @@ export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: 
     if (!s) L.sub.set(key, (s = [0, 0, -1]));
     tally(s, fi);
   };
-  /** --unlisted only: a value the vocabulary lacks at a path, for the person's own review. */
+  /** --unlisted only: a value the vocabulary lacks at a path, for the person's own review; past the 2048 kept at a path,
+   *  its occurrence is counted as a name's is (S374's closure read, S5). */
   const keepValue = (path: string, v: string, fi: number): void => {
     if (!unlVals) return;
-    let m = unlVals.get(path);
-    if (!m) unlVals.set(path, (m = new Map()));
-    let e = m.get(v);
-    if (!e) { if (m.size >= NAMES_PER_PATH) return; m.set(v, (e = [0, 0, -1])); }
+    let u = unlVals.get(path);
+    if (!u) unlVals.set(path, (u = { names: new Map(), overflow: 0 }));
+    let e = u.names.get(v);
+    if (!e) { if (u.names.size >= NAMES_PER_PATH) { u.overflow++; return; } u.names.set(v, (e = [0, 0, -1])); }
     tally(e, fi);
   };
   // --unlisted: the paths a kind is read at (the kind path, each sub-kind's) where the walk keeps no value, so that the
@@ -965,7 +967,7 @@ export function checkReport(text: string, V: ShapesVocabulary): ShapesCheck {
 export function reviewLines(S: ShapesRun, V: ShapesVocabulary): ShapesLine[] {
   const kp = kindPaths(V);
   const out: ShapesLine[] = [{ k: 'unlisted-review', send: false, note: 'names the vocabulary does not hold, for your own review: do not send this list. To print one in a report, rerun with --allow <path>.' }];
-  const unl = S.unlisted ?? new Map<string, ShapesUnlisted>(), vals = S.unlistedValues ?? new Map<string, Map<string, ShapesCount>>();
+  const unl = S.unlisted ?? new Map<string, ShapesUnlisted>(), vals = S.unlistedValues ?? new Map<string, ShapesUnlisted>();
   for (const star of [...unl.keys()].sort(cmp)) {
     const u = unl.get(star) as ShapesUnlisted;
     for (const name of [...u.names.keys()].sort(cmp)) {
@@ -975,12 +977,13 @@ export function reviewLines(S: ShapesRun, V: ShapesVocabulary): ShapesLine[] {
     if (u.overflow) out.push({ k: 'unlisted-more', send: false, at: star, n: u.overflow });
   }
   for (const vp of [...vals.keys()].sort(cmp)) {
-    const m = vals.get(vp) as Map<string, ShapesCount>;
-    for (const value of [...m.keys()].sort(cmp)) {
-      const [n, f] = m.get(value) as ShapesCount;
+    const u = vals.get(vp) as ShapesUnlisted;
+    for (const value of [...u.names.keys()].sort(cmp)) {
+      const [n, f] = u.names.get(value) as ShapesCount;
       const allowable = LABEL.test(value) && !(value.includes(':') && kp.includes(vp));
       out.push({ k: 'unlisted-value', send: false, at: vp, value, n, files: f, allow: allowable ? `${vp}=${value}` : null });
     }
+    if (u.overflow) out.push({ k: 'unlisted-more', send: false, at: vp, n: u.overflow });
   }
   return out;
 }
