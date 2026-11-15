@@ -18,6 +18,7 @@
 - One supplier per report: files of another program read under Claude Code's vocabulary merge their kinds with Claude Code's where the names are the same.
 - The vocabulary goes stale: it names Claude Code's records as ltms 0.2.2's docs and parser knew them, and a record type or a field added since prints as `(unlisted)` or `*`, until `--allow` names it or a later vocabulary does.
 - Kinds and versions are not floored: a kind seen in one file shows, as a kind.
+- Versions are not capped: memory and time grow with the distinct versions met times the path lines (each path line keeps its own, for its first and last), and the report with the distinct versions times the kinds (README, Limits, Memory).
 - Under a directory, pin directories and set-aside copies are read like any other `.jsonl` file (`index` passes over them).
 - Not in this release: a merge of several reports into one, and a shorter report of the kinds and versions only.
 
