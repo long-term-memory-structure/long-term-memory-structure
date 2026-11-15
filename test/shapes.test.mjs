@@ -1309,3 +1309,58 @@ test("shapes: --allow's rule for a name, in --help, the README and the usage mes
     }
   } finally { rm(dir); }
 });
+
+// S9 (S374's closure read): the README said that two reports of the same transcripts, taken on different days, differ
+// only where a count crosses a power of two. A report holds no time, so the same files give the same bytes on any day;
+// the reports differ when the files do, and then by more than their buckets: lines appear (a version, a kind, a path that
+// reaches the floor), lines go (paths whose files fall under the floor when a file is removed), a path line's first or
+// last version moves, and the end line, which counts the lines exactly, changes. The test makes each happen on synthetic
+// files, a day apart, and the README's sentence names each.
+test("README: what tells apart two reports of the same transcripts on different days: the same files give the same bytes; as files grow or one is removed, each way the reports differ here is one the README names", () => {
+  const dir = tmp();
+  try {
+    let n = 0;
+    const rec = (type, version, extra = {}) => JSON.stringify({ type, version, uuid: `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`, message: { role: 'user', content: 'hi' }, ...extra });
+    const write = (name, files) => { const d = join(dir, name); mkdirSync(d); for (const [f, ls] of Object.entries(files)) writeFileSync(join(d, `${f}.jsonl`), ls.join('\n') + '\n'); return d; };
+    const day1 = { a: [rec('user', '2.1.300'), rec('user', '2.1.300', { permissionMode: 'x' })], b: [rec('user', '2.1.300'), rec('user', '2.1.300', { permissionMode: 'x' })], c: [rec('user', '2.1.300')] };
+    // a day later: c has grown, under a later version, with a kind of record not seen before and a key that now reaches
+    // the floor of 3 files; and two days later, a is gone (as the 30-day cleanup removes a transcript)
+    const day2 = { ...day1, c: [...day1.c, rec('user', '2.1.400', { permissionMode: 'x' }), rec('ai-title', '2.1.400'), rec('user', '2.1.400')] };
+    const day3 = { b: day2.b, c: day2.c };
+    const [r1, r2, r3] = [write('day1', day1), write('day2', day2), write('day3', day3)].map((d) => shapes([d]));
+    for (const r of [r1, r2, r3]) assert.equal(r.code, 0, r.err);
+    assert.equal(shapes([join(dir, 'day1')]).out, r1.out, 'the same files: the same bytes');
+    const key = (o) => (o.k === 'version' ? `version ${o.v}` : o.k === 'path' ? `path ${o.kind} ${o.path}` : `${o.k} ${o.kind ?? ''}`);
+    const BUCKETS = ['records', 'files', 'n', 'paths'];
+    const seen = new Set();
+    for (const [a, b] of [[r1, r2], [r2, r3]]) {
+      const A = new Map(a.lines.map((o) => [key(o), o])), B = new Map(b.lines.map((o) => [key(o), o]));
+      for (const [k, o] of B) if (!A.has(k)) seen.add(`a ${o.k} line appears`);
+      for (const [k, o] of A) if (!B.has(k)) seen.add(`a ${o.k} line goes`);
+      for (const [k, o] of B) {
+        const p = A.get(k);
+        if (!p || o.k === 'end') continue;
+        if (p.first !== o.first || p.last !== o.last) seen.add('first or last moves');
+        if (BUCKETS.some((f) => f in o && p[f] !== o[f]) || (o.k === 'shapes' && JSON.stringify(p.lines) !== JSON.stringify(o.lines))) seen.add('a count crosses a power of two');
+      }
+      if (a.lines.at(-1).lines !== b.lines.at(-1).lines) seen.add('the end line counts other lines');
+    }
+    for (const w of ['a version line appears', 'a kind line appears', 'a path line appears', 'a path line goes', 'first or last moves', 'a count crosses a power of two', 'the end line counts other lines']) assert.ok(seen.has(w), `the files make it happen: ${w} (seen: ${[...seen].join('; ')})`);
+    // the README's sentence names each
+    const readme = readFileSync(join(root, 'README.md'), 'utf8').replace(/\s+/g, ' ');
+    const at = readme.indexOf('**What a report still says.**');
+    const para = readme.slice(at, readme.indexOf('**Before you send one.**', at));
+    assert.ok(at > 0 && para.length > 100, "the README's paragraph on what a report still says");
+    assert.doesNotMatch(para, /differ only where a count crosses a power of two/, 'the sentence S9 found false is gone');
+    const NAMES = {
+      'a version line appears': /a kind, a version, a path\b[^.;]*appears/, 'a kind line appears': /a kind, a version, a path\b[^.;]*appears/,
+      'a path line appears': /a path\b[^.;]*crosses the floor/, 'a path line goes': /disappears/, 'first or last moves': /`first` or `last` version moves/,
+      'a count crosses a power of two': /where a count crosses a power of two/, 'the end line counts other lines': /in `end`, which counts the lines exactly/,
+      // a kind's rare line comes and goes with its paths under the floor; a kind or a version goes with its last file
+      'a rare line appears': /appears, disappears or crosses the floor/, 'a rare line goes': /appears, disappears or crosses the floor/,
+      'a kind line goes': /a kind, a version\b[^.;]*disappears/, 'a version line goes': /a kind, a version\b[^.;]*disappears/,
+    };
+    for (const w of seen) assert.match(para, NAMES[w] ?? /^$/, `the README names it: ${w}`);
+    assert.match(para, /holds no time: the same files give the same bytes on any day/);
+  } finally { rm(dir); }
+});
