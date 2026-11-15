@@ -33,6 +33,9 @@ export const SHAPES_VOCABULARY_FORMAT = 'ltms-shapes-vocabulary/0';
 export const SHAPES_MAX_LINE = 64 * 1024 * 1024;
 /** The number of files a path must be seen in to be printed, unless --floor says otherwise. */
 export const SHAPES_FLOOR = 3;
+/** The least floor --floor takes, and a report's first line may state; the largest is Number.MAX_SAFE_INTEGER (a floor is
+ *  a whole number a double holds exactly, never one it rounds: S374's closure read, U7). */
+export const SHAPES_MIN_FLOOR = 2;
 
 /** The core's label rule, a copy of cli.ts's (test/shapes.test.mjs holds the two equal). A value printed in a report
  *  (a vocabulary value, an allowed one) must pass it. */

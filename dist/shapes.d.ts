@@ -6,6 +6,9 @@ export declare const SHAPES_VOCABULARY_FORMAT = "ltms-shapes-vocabulary/0";
 export declare const SHAPES_MAX_LINE: number;
 /** The number of files a path must be seen in to be printed, unless --floor says otherwise. */
 export declare const SHAPES_FLOOR = 3;
+/** The least floor --floor takes, and a report's first line may state; the largest is Number.MAX_SAFE_INTEGER (a floor is
+ *  a whole number a double holds exactly, never one it rounds: S374's closure read, U7). */
+export declare const SHAPES_MIN_FLOOR = 2;
 /** A usage error: the run cannot start as given (exit 2). Its message is ltms's own, and quotes only what was given. */
 export declare class ShapesUsageError extends Error {
     constructor(message: string);

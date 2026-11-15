@@ -476,7 +476,7 @@ A key the vocabulary does not hold prints as `*`, and nothing below it is read: 
 |---|---|
 | `--supplier <name>` | the vocabulary that ships with ltms for that program: `claude-code`, the default and the only one so far |
 | `--vocabulary <file>` | a vocabulary file instead, in the format [The vocabulary file](#the-vocabulary-file) gives (`ltms-shapes-vocabulary/0`): its name and sha256 go in the first line |
-| `--floor <n>` | the files a path must be seen in to be printed: 3 unless set, 2 or more |
+| `--floor <n>` | the files a path must be seen in to be printed: 3 unless set; a whole number from 2 to 9007199254740991 |
 | `--allow <path>` | print this key path, written like `.message.newField` or `.list[].name`, and every path above it; repeatable. Each step is a name by the rule in [The vocabulary file](#the-vocabulary-file): an optional `$` or `@`, then an ASCII letter or `_`, then ASCII letters, digits and `_ : + -`, at most 64 after the `$` or `@` |
 | `--allow <path>=<value>` | print this value at this path (a value by the label rule); repeatable. At the kind path or a sub-kind's path (`.type`, `.subtype`, `.attachment.type`), the value may not hold `:`, which joins a kind and its sub-kind in a report (`system:turn_duration`): such a value is a usage error |
 | `--max-line <bytes>` | the longest line read: 64 MiB unless set; from 1024 to the longest string this Node can hold (536,870,888 on Node 26). A longer line is counted (`tooLong`) as its bytes pass, never held or read |

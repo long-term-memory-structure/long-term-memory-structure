@@ -420,7 +420,7 @@ test('shapes: usage errors: exit 2, nothing on stdout, and the message names wha
     [['--supplier', 'zqnone', ...CC], /no vocabulary ships with ltms for 'zqnone': the suppliers are claude-code\. To read with a vocabulary of your own, give --vocabulary <file>/],
     [['--frob', ...CC], /unknown option '--frob'\. The options are --supplier, --vocabulary, --floor, --allow, --max-line, --check, --unlisted, --help and --version/],
     [['-', ...CC], /reading from standard input \('-'\) is not supported/],
-    [['--floor', '1', ...CC], /--floor takes a whole number of files, 2 or more \(the default is 3\); '1' is not one/],
+    [['--floor', '1', ...CC], /--floor takes a whole number of files from 2 to 9007199254740991 \(the default is 3\); '1' is not one/],
     [['--floor', '0x10', ...CC], /'0x10' is not one/],
     [['--max-line', '1023', ...CC], /--max-line takes a number of bytes from 1024 to \d+/],
     [['--unlisted=1', ...CC], /--unlisted takes no value; '--unlisted=1' gives it one/],
@@ -757,4 +757,40 @@ test("shapes: --help names every word of the language that the README's section 
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
   const arch = readme.slice(readme.indexOf('## The architecture'), readme.indexOf('\n## ', readme.indexOf('## The architecture') + 1));
   assert.match(arch, /every name and value in it comes from a vocabulary that ships with ltms, or from the vocabulary you give with `--vocabulary`, or from your own `--allow`/);
+});
+
+// U7 (S374's closure read): --floor took any run of digits and applied the double nearest to it, without a word:
+// 9007199254740993 became 9007199254740992 and 10^20 - 1 became 10^20 in the first line, and a floor of 310 digits became
+// Infinity, a line refused at the write ("a bug in ltms", exit 1) for what is a usage error. A floor is now a whole
+// number from 2 to 9007199254740991 (2^53 - 1, the largest whole number a double holds with every one below it), and the
+// help, the README and the usage message state that range: read from each text, it is the one the command applies.
+test('shapes: --floor takes a whole number of files from 2 to 9007199254740991, as --help, the README and the usage message state; past it, a usage error (no floor is rounded)', () => {
+  for (const v of ['9007199254740993', '9007199254740992', '99999999999999999999', '1' + '0'.repeat(21), '9'.repeat(310)]) {
+    const r = shapes(['--floor', v, ...CC]);
+    assert.deepEqual([r.code, r.out], [2, ''], `--floor ${v.length > 30 ? v.slice(0, 12) + '... (' + v.length + ' digits)' : v}: ${r.err}`);
+    assert.ok(r.err.includes(`'${v}' is not one`), r.err);
+  }
+  // the range as each text states it, then applied at and past each end
+  const flat = (t) => t.replace(/\s+/g, ' ');
+  const help = flat(spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout);
+  const readme = flat(readFileSync(join(root, 'README.md'), 'utf8'));
+  const message = shapes(['--floor', '1', ...CC]).err;
+  const noValue = shapes(['--floor']).err;
+  const stated = [['--help', help, /--floor <n> the files a path must be seen in to be printed \(default 3; a whole number from (\d+) to (\d+)\)/],
+    ['README', readme, /\| `--floor <n>` \| the files a path must be seen in to be printed: 3 unless set; a whole number from (\d+) to (\d+) \|/],
+    ['the usage message', message, /--floor takes a whole number of files from (\d+) to (\d+) \(the default is 3\); '1' is not one\./],
+    ['the message for --floor with no value', noValue, /--floor needs a value after it: a whole number of files from (\d+) to (\d+), the files a path must be seen in to be printed\./]].map(([where, text, re]) => {
+    const m = re.exec(text);
+    assert.ok(m, `${where} states the range: ${text.slice(0, 300)}`);
+    return [where, m.slice(1)];
+  });
+  for (const [where, range] of stated) assert.deepEqual(range, ['2', '9007199254740991'], `${where} states the range the command applies`);
+  const [lo, hi] = stated[0][1];
+  assert.equal(shapes(['--floor', String(Number(lo) - 1), ...CC]).code, 2, 'below the range');
+  assert.equal(shapes(['--floor', lo, ...CC]).code, 0, 'its least');
+  const top = shapes(['--floor', hi, ...CC]);
+  assert.equal(top.code, 0, top.err);
+  assert.ok(top.out.startsWith('{"k":"shapes",') && top.out.includes(`,"floor":${hi},`), 'the first line states the floor given, digit for digit');
+  assert.match(top.err, new RegExp(`under the floor of ${hi} files`));
+  assert.equal(shapes(['--floor', (BigInt(hi) + 1n).toString(), ...CC]).code, 2, 'past the range');
 });

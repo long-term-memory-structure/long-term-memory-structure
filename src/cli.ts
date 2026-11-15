@@ -33,7 +33,7 @@ import type { SearchCounts, SearchKind, SearchNotSearched, SearchQuery, SearchRe
 import { indexTranscript } from './session.js';
 import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
 import type { PinCheckDone, PinCoverage, PinDone, PinLogLine, PinRefusal } from './pin.js';
-import { applyAllow, buildReport, checkReport, collectFiles, loadVocabulary, readShapes, reviewLines, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE } from './shapes.js';
+import { applyAllow, buildReport, checkReport, collectFiles, loadVocabulary, readShapes, reviewLines, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE, SHAPES_MIN_FLOOR } from './shapes.js';
 import type { ShapesVocabulary } from './shapes.js';
 import { recordsOf, RECORD_KINDS } from './records.js';
 
@@ -2234,7 +2234,7 @@ const SHAPES_OPTIONS = '--supplier, --vocabulary, --floor, --allow, --max-line, 
 const SHAPES_VALUES: Readonly<Record<string, string>> = {
   '--supplier': `the program whose vocabulary to read (${Object.keys(SHAPES_SUPPLIERS).join(', ')})`,
   '--vocabulary': 'a vocabulary file',
-  '--floor': 'the files a path must be seen in to be printed, 2 or more',
+  '--floor': `a whole number of files from ${SHAPES_MIN_FLOOR} to ${Number.MAX_SAFE_INTEGER}, the files a path must be seen in to be printed`,
   '--allow': 'a key path to print, such as .message.newField, or a path and a value, .type=newType',
   '--max-line': 'the longest line to read, in bytes',
   '--check': 'the report to check',
@@ -2288,7 +2288,8 @@ too), and run ltms shapes --check on it.
                       not name, or a path in kinds, versions or values that
                       paths does not list, is a usage error
 --floor <n>           the files a path must be seen in to be printed
-                      (default 3; 2 or more)
+                      (default ${SHAPES_FLOOR}; a whole number from ${SHAPES_MIN_FLOOR} to
+                      ${Number.MAX_SAFE_INTEGER})
 --allow <path>        print this key path, written like .message.newField or
                       .list[].name, and every path above it; repeatable
 --allow <path>=<value>
@@ -2423,7 +2424,9 @@ function readShapesArgs(args: string[]): ShapesArgs | number {
       if (!Object.hasOwn(SHAPES_SUPPLIERS, v)) return usage(`no vocabulary ships with ltms for '${v}': the suppliers are ${Object.keys(SHAPES_SUPPLIERS).join(', ')}. To read with a vocabulary of your own, give --vocabulary <file>.`);
       a.supplier = v;
     } else if (name === '--floor') {
-      if (!/^\d+$/.test(v) || Number(v) < 2) return usage(`--floor takes a whole number of files, 2 or more (the default is ${SHAPES_FLOOR}); '${v}' is not one.`);
+      // a whole number a double holds exactly: past 2^53 - 1, Number() would round it, and the floor applied and printed
+      // would not be the one given (S374's closure read, U7)
+      if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v)) || Number(v) < SHAPES_MIN_FLOOR) return usage(`--floor takes a whole number of files from ${SHAPES_MIN_FLOOR} to ${Number.MAX_SAFE_INTEGER} (the default is ${SHAPES_FLOOR}); '${v}' is not one.`);
       a.floor = Number(v);
     } else if (name === '--max-line') {
       if (!/^\d+$/.test(v) || Number(v) < 1024 || Number(v) > bufferConstants.MAX_STRING_LENGTH) return usage(`--max-line takes a number of bytes from 1024 to ${bufferConstants.MAX_STRING_LENGTH} (the longest string this Node can hold); '${v}' is not one.`);
