@@ -9,6 +9,8 @@ export declare const SHAPES_FLOOR = 3;
 /** The least floor --floor takes, and a report's first line may state; the largest is Number.MAX_SAFE_INTEGER (a floor is
  *  a whole number a double holds exactly, never one it rounds: S374's closure read, U7). */
 export declare const SHAPES_MIN_FLOOR = 2;
+/** The names (or values) kept per path for the local review list (--unlisted); the occurrences past them are counted. */
+export declare const SHAPES_NAMES_PER_PATH = 2048;
 /** A usage error: the run cannot start as given (exit 2). Its message is ltms's own, and quotes only what was given. */
 export declare class ShapesUsageError extends Error {
     constructor(message: string);
@@ -280,3 +282,21 @@ export declare function checkReport(text: string, V: ShapesVocabulary): ShapesCh
  *  name that cannot be a path step (a file path, say), or a value --allow refuses (not a label; ':' at a kind path),
  *  gets "allow":null: it can never be allowed. */
 export declare function reviewLines(S: ShapesRun, V: ShapesVocabulary): ShapesLine[];
+/** What an --unlisted list holds, counted from its lines (for the command's closing line): the names and the values
+ *  listed, each with the number of paths they are at, and the occurrences counted past the 2048 kept at a path (its
+ *  unlisted-more line), for names (at a .* path) and for values (at a value path, which never ends in .*). */
+export interface ShapesReviewTotals {
+    /** unlisted lines, and the .* paths they are at. */
+    names: number;
+    namePaths: number;
+    /** unlisted-value lines, and the paths they are at. */
+    values: number;
+    valuePaths: number;
+    /** The occurrences of names past the cap, and the .* paths with an unlisted-more line. */
+    moreNames: number;
+    moreNamePaths: number;
+    /** The occurrences of values past the cap, and the value paths with an unlisted-more line. */
+    moreValues: number;
+    moreValuePaths: number;
+}
+export declare function reviewTotals(lines: readonly ShapesLine[]): ShapesReviewTotals;

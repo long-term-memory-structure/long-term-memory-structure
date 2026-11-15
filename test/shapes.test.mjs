@@ -1511,3 +1511,49 @@ test('shapes --unlisted: past the 2048 values kept at a path, the occurrences of
   assert.match(help, /unlisted-more \(the occurrences past the first 2048 names or values at a path\)/);
   assert.match(readFileSync(join(root, 'README.md'), 'utf8').replace(/\s+/g, ' '), /`unlisted-more` \(the occurrences past the first 2048 names or values at a path/);
 });
+
+/** The totals --unlisted's closing line states: [names, their .* paths, values, their paths], then, past the cap, [the
+ *  occurrences of names, their paths, of values, their paths] (null when it says every one met was listed); null when
+ *  the line does not state them so. */
+function closingTotals(err) {
+  const m = /^ltms shapes --unlisted: \d+ files read \(\d+ failed\), \d+ records; listed: (\d+) names? \(at (\d+) \.\* paths?\) and (\d+) values? \(at (\d+) paths?\) the vocabulary does not hold, as the transcripts write them(?:, every one met|; past the first 2048 at a path, (\d+) occurrences? of names \(at (\d+) paths?\) and (\d+) of values \(at (\d+) paths?\) are counted on unlisted-more lines, not listed); /m.exec(err);
+  if (!m) return null;
+  return [m.slice(1, 5).map(Number), m[5] === undefined ? null : m.slice(5, 9).map(Number)];
+}
+/** The same totals, counted from the list itself. */
+function listTotals(lines) {
+  const paths = (ls) => new Set(ls.map((o) => o.at)).size, sum = (ls) => ls.reduce((a, o) => a + o.n, 0);
+  const names = lines.filter((o) => o.k === 'unlisted'), values = lines.filter((o) => o.k === 'unlisted-value');
+  const more = lines.filter((o) => o.k === 'unlisted-more'), moreNames = more.filter((o) => o.at.endsWith('.*')), moreValues = more.filter((o) => !o.at.endsWith('.*'));
+  return [[names.length, paths(names), values.length, paths(values)], more.length ? [sum(moreNames), moreNames.length, sum(moreValues), moreValues.length] : null];
+}
+
+// U8 (S374's closure read), and S5's closing line: --unlisted's closing line said "N names and values the vocabulary
+// does not hold", N the list's lines after the first: names, values and the unlisted-more lines added up, right only
+// under the cap (3,100 names at a path gave 2049). It now gives names and values apart, each with its paths, and the
+// occurrences past the 2048 kept at a path apart, for names and for values: what the run holds (it keeps no name past
+// the cap, so it cannot say how many names those occurrences are).
+test("shapes --unlisted: the closing line states the names and the values listed, apart, and the occurrences past the 2048 kept at a path, for names and for values, as the list's own lines count them", () => {
+  const dir = tmp();
+  try {
+    const k = (i) => `zk${String(i).padStart(4, '0')}`, v = (i) => `zv${String(i).padStart(4, '0')}`;
+    // 3,100 names once each at .*; 2,100 values once each at .type; one name twice at .message.*
+    const d = putLines(dir, 'over', {
+      'a.jsonl': range(0, 3100).map((i) => JSON.stringify({ type: 'user', [k(i)]: 1 })),
+      'b.jsonl': range(0, 2100).map((i) => JSON.stringify({ type: v(i) })),
+      'c.jsonl': [1, 2].map(() => JSON.stringify({ type: 'user', message: { role: 'user', content: 'x', zq_extra: 1 } })),
+    });
+    const u = shapes(['--unlisted', d]);
+    assert.equal(u.code, 0, u.err);
+    const truth = [[2048 + 1, 2, 2048, 1], [3100 - 2048, 1, 2100 - 2048, 1]];
+    assert.deepEqual(listTotals(u.lines), truth, 'the list, against the files');
+    assert.deepEqual(closingTotals(u.err), truth, `the closing line states them: ${u.err}`);
+    // under the cap: every one met is listed, and the line says so
+    const c = shapes(['--unlisted', ...CC]);
+    assert.equal(c.code, 0, c.err);
+    const [listed, more] = listTotals(c.lines);
+    assert.equal(more, null);
+    assert.ok(listed[0] > 0 && listed[2] > 0, `${listed}`);
+    assert.deepEqual(closingTotals(c.err), [listed, null], `the closing line states them: ${c.err}`);
+  } finally { rm(dir); }
+});

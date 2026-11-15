@@ -27,7 +27,7 @@ import { checkSearchSupport, parseSearchQuery, searchTranscript, sieveMayHold, s
 import { openSieveCache, sieveKey } from './sieve-cache.js';
 import { indexTranscript } from './session.js';
 import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
-import { applyAllow, buildReport, checkReport, collectFiles, loadVocabulary, readShapes, reviewLines, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE, SHAPES_MIN_FLOOR } from './shapes.js';
+import { applyAllow, buildReport, checkReport, collectFiles, loadVocabulary, readShapes, reviewLines, reviewTotals, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE, SHAPES_MIN_FLOOR, SHAPES_NAMES_PER_PATH } from './shapes.js';
 import { recordsOf, RECORD_KINDS } from './records.js';
 const USAGE = `Usage:
   ltms index <path>...            one JSON line per session, newest first
@@ -2846,9 +2846,12 @@ The --unlisted list, never a report:
                 label or holds ':' at the kind path or a sub-kind's path)
 
 stderr holds the files and directories that could not be read, by their
-paths, and one closing line with the exact totals and the time; the report
-holds no path and no exact count, and no time but a version written as a
-date (above).
+paths, and one closing line with the totals and the time; the report holds
+no path and no exact count, and no time but a version written as a date
+(above). --unlisted's closing line gives the names and the values it lists,
+apart, and the occurrences past the first 2048 names or values at a path,
+which it counts and does not list (it keeps no name past them, so it cannot
+say how many names they are).
 
 Exit status: 0 when every file was read and every line written; 1 when a
 file could not be read, or the report failed its language at the write (a
@@ -3009,7 +3012,13 @@ function shapesRun(args) {
         const review = reviewLines(S, V);
         for (let i = 0; i < review.length; i += 1000)
             out(review.slice(i, i + 1000).map((o) => JSON.stringify(o) + '\n').join(''));
-        err(`ltms shapes --unlisted: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; ${review.length - 1} names and values the vocabulary does not hold, as the transcripts write them; ${secs()} s. This list is for your own review, not a report: do not send it. To print a name in a report, rerun without --unlisted, with the --allow its line gives.`);
+        // what the list holds, names and values apart, and what it counted past the cap without listing it: the occurrences,
+        // since no name or value past the cap is kept (S374's closure read, U8 and S5)
+        const t = reviewTotals(review);
+        const more = t.moreNamePaths + t.moreValuePaths
+            ? `; past the first ${SHAPES_NAMES_PER_PATH} at a path, ${plural(t.moreNames, 'occurrence', 'occurrences')} of names (at ${plural(t.moreNamePaths, 'path', 'paths')}) and ${t.moreValues} of values (at ${plural(t.moreValuePaths, 'path', 'paths')}) are counted on unlisted-more lines, not listed`
+            : ', every one met';
+        err(`ltms shapes --unlisted: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; listed: ${plural(t.names, 'name', 'names')} (at ${plural(t.namePaths, '.* path', '.* paths')}) and ${plural(t.values, 'value', 'values')} (at ${plural(t.valuePaths, 'path', 'paths')}) the vocabulary does not hold, as the transcripts write them${more}; ${secs()} s. This list is for your own review, not a report: do not send it. To print a name in a report, rerun without --unlisted, with the --allow its line gives.`);
         return S.filesFailed ? 1 : 0;
     }
     const floor = a.floor ?? SHAPES_FLOOR;

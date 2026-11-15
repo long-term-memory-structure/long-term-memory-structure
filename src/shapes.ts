@@ -59,7 +59,7 @@ const RARE = '(rare)', UNLISTED = '(unlisted)', NONE = '(none)', WITHHELD = '(wi
 const CAP = 64;
 const CAP_LABELS = ['0', '1', '2-3', '4-7', '8-15', '16-31', '32-63', '64+'];
 /** The names (or values) kept per path for the local review list (--unlisted); the occurrences past them are counted. */
-const NAMES_PER_PATH = 2048;
+export const SHAPES_NAMES_PER_PATH = 2048;
 /** Separators inside the accumulators' keys, built: no name, path or label printed can hold them. */
 const SEP = String.fromCharCode(0), KSEP = String.fromCharCode(1);
 
@@ -463,7 +463,7 @@ export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: 
     let u = unlVals.get(path);
     if (!u) unlVals.set(path, (u = { names: new Map(), overflow: 0 }));
     let e = u.names.get(v);
-    if (!e) { if (u.names.size >= NAMES_PER_PATH) { u.overflow++; return; } u.names.set(v, (e = [0, 0, -1])); }
+    if (!e) { if (u.names.size >= SHAPES_NAMES_PER_PATH) { u.overflow++; return; } u.names.set(v, (e = [0, 0, -1])); }
     tally(e, fi);
   };
   // --unlisted: the paths a kind is read at (the kind path, each sub-kind's) where the walk keeps no value, so that the
@@ -516,7 +516,7 @@ export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: 
       let u = unl.get(star);
       if (!u) unl.set(star, (u = { names: new Map(), overflow: 0 }));
       let e = u.names.get(name);
-      if (!e) { if (u.names.size >= NAMES_PER_PATH) { u.overflow++; return; } u.names.set(name, (e = [0, 0, -1])); }
+      if (!e) { if (u.names.size >= SHAPES_NAMES_PER_PATH) { u.overflow++; return; } u.names.set(name, (e = [0, 0, -1])); }
       tally(e, fi);
     }
   };
@@ -986,4 +986,31 @@ export function reviewLines(S: ShapesRun, V: ShapesVocabulary): ShapesLine[] {
     if (u.overflow) out.push({ k: 'unlisted-more', send: false, at: vp, n: u.overflow });
   }
   return out;
+}
+
+/** What an --unlisted list holds, counted from its lines (for the command's closing line): the names and the values
+ *  listed, each with the number of paths they are at, and the occurrences counted past the 2048 kept at a path (its
+ *  unlisted-more line), for names (at a .* path) and for values (at a value path, which never ends in .*). */
+export interface ShapesReviewTotals {
+  /** unlisted lines, and the .* paths they are at. */
+  names: number; namePaths: number;
+  /** unlisted-value lines, and the paths they are at. */
+  values: number; valuePaths: number;
+  /** The occurrences of names past the cap, and the .* paths with an unlisted-more line. */
+  moreNames: number; moreNamePaths: number;
+  /** The occurrences of values past the cap, and the value paths with an unlisted-more line. */
+  moreValues: number; moreValuePaths: number;
+}
+export function reviewTotals(lines: readonly ShapesLine[]): ShapesReviewTotals {
+  const t: ShapesReviewTotals = { names: 0, namePaths: 0, values: 0, valuePaths: 0, moreNames: 0, moreNamePaths: 0, moreValues: 0, moreValuePaths: 0 };
+  const np = new Set<unknown>(), vp = new Set<unknown>();
+  for (const o of lines) {
+    if (o.k === 'unlisted') { t.names++; np.add(o.at); }
+    else if (o.k === 'unlisted-value') { t.values++; vp.add(o.at); }
+    else if (o.k === 'unlisted-more' && typeof o.n === 'number') {
+      if (String(o.at).endsWith('.*')) { t.moreNames += o.n; t.moreNamePaths++; } else { t.moreValues += o.n; t.moreValuePaths++; }
+    }
+  }
+  t.namePaths = np.size; t.valuePaths = vp.size;
+  return t;
 }

@@ -55,7 +55,7 @@ const RARE = '(rare)', UNLISTED = '(unlisted)', NONE = '(none)', WITHHELD = '(wi
 const CAP = 64;
 const CAP_LABELS = ['0', '1', '2-3', '4-7', '8-15', '16-31', '32-63', '64+'];
 /** The names (or values) kept per path for the local review list (--unlisted); the occurrences past them are counted. */
-const NAMES_PER_PATH = 2048;
+export const SHAPES_NAMES_PER_PATH = 2048;
 /** Separators inside the accumulators' keys, built: no name, path or label printed can hold them. */
 const SEP = String.fromCharCode(0), KSEP = String.fromCharCode(1);
 // ---- buckets --------------------------------------------------------------------------------------------------------
@@ -448,7 +448,7 @@ export function readShapes(V, files, opts) {
             unlVals.set(path, (u = { names: new Map(), overflow: 0 }));
         let e = u.names.get(v);
         if (!e) {
-            if (u.names.size >= NAMES_PER_PATH) {
+            if (u.names.size >= SHAPES_NAMES_PER_PATH) {
                 u.overflow++;
                 return;
             }
@@ -537,7 +537,7 @@ export function readShapes(V, files, opts) {
                 unl.set(star, (u = { names: new Map(), overflow: 0 }));
             let e = u.names.get(name);
             if (!e) {
-                if (u.names.size >= NAMES_PER_PATH) {
+                if (u.names.size >= SHAPES_NAMES_PER_PATH) {
                     u.overflow++;
                     return;
                 }
@@ -1101,4 +1101,31 @@ export function reviewLines(S, V) {
             out.push({ k: 'unlisted-more', send: false, at: vp, n: u.overflow });
     }
     return out;
+}
+export function reviewTotals(lines) {
+    const t = { names: 0, namePaths: 0, values: 0, valuePaths: 0, moreNames: 0, moreNamePaths: 0, moreValues: 0, moreValuePaths: 0 };
+    const np = new Set(), vp = new Set();
+    for (const o of lines) {
+        if (o.k === 'unlisted') {
+            t.names++;
+            np.add(o.at);
+        }
+        else if (o.k === 'unlisted-value') {
+            t.values++;
+            vp.add(o.at);
+        }
+        else if (o.k === 'unlisted-more' && typeof o.n === 'number') {
+            if (String(o.at).endsWith('.*')) {
+                t.moreNames += o.n;
+                t.moreNamePaths++;
+            }
+            else {
+                t.moreValues += o.n;
+                t.moreValuePaths++;
+            }
+        }
+    }
+    t.namePaths = np.size;
+    t.valuePaths = vp.size;
+    return t;
 }
