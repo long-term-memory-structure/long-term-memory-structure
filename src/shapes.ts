@@ -418,7 +418,9 @@ export interface ShapesRun {
   lines: Map<string, ShapesPathCount>;
   /** --unlisted only: per .* path, the names merged there. */
   unlisted: Map<string, ShapesUnlisted> | null;
-  /** --unlisted only: per value path, the values the vocabulary lacks. */
+  /** --unlisted only: per value path, the values the vocabulary lacks: at a path that lists values, as the walk meets
+   *  them; at the kind path and a sub-kind's path, as the reading of the kind meets them where the walk keeps none (no
+   *  list there, or a path it does not reach). */
   unlistedValues: Map<string, Map<string, ShapesCount>> | null;
 }
 /** How to read. */
@@ -453,12 +455,27 @@ export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: 
     if (!s) L.sub.set(key, (s = [0, 0, -1]));
     tally(s, fi);
   };
-  const kindOf = (rec: Record<string, unknown>): string => {
+  /** --unlisted only: a value the vocabulary lacks at a path, for the person's own review. */
+  const keepValue = (path: string, v: string, fi: number): void => {
+    if (!unlVals) return;
+    let m = unlVals.get(path);
+    if (!m) unlVals.set(path, (m = new Map()));
+    let e = m.get(v);
+    if (!e) { if (m.size >= NAMES_PER_PATH) return; m.set(v, (e = [0, 0, -1])); }
+    tally(e, fi);
+  };
+  // --unlisted: the paths a kind is read at (the kind path, each sub-kind's) where the walk keeps no value, so that the
+  // reading of the kind keeps it there: a path with no value list (the walk keeps a value only at a path that lists
+  // values), or one the walk does not reach (a step of it that paths does not list). Where the walk keeps a value, the
+  // reading of the kind does not, so each is counted once (S374's closure read, U1).
+  const walkReaches = (p: string): boolean => { let acc = ''; for (const step of p.slice(1).split('.')) { acc += '.' + step; if (!V.paths.has(acc)) return false; } return true; };
+  const kindKeeps = new Set(unlVals ? kindPaths(V).filter((p) => !(V.values.has(p) && walkReaches(p))) : []);
+  const kindOf = (rec: Record<string, unknown>, fi: number): string => {
     if (!V.kindPath) return ALL;
     const t = getPlain(rec, V.kindPath);
     if (t === undefined) return NONE;
     if (typeof t !== 'string') return NOT_STRING;
-    if (!V.values.get(V.kindPath)?.has(t)) return UNLISTED;
+    if (!V.values.get(V.kindPath)?.has(t)) { if (kindKeeps.has(V.kindPath)) keepValue(V.kindPath, t, fi); return UNLISTED; }
     const sp = V.sub.get(t);
     if (!sp) return t;
     // the sub-kind as the kind path gives its own: (none), (not a string), a listed value, or (unlisted) (S374's
@@ -466,7 +483,9 @@ export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: 
     const s = getPlain(rec, sp);
     if (s === undefined) return `${t}:${NONE}`;
     if (typeof s !== 'string') return `${t}:${NOT_STRING}`;
-    return V.values.get(sp)?.has(s) ? `${t}:${s}` : `${t}:${UNLISTED}`;
+    if (V.values.get(sp)?.has(s)) return `${t}:${s}`;
+    if (kindKeeps.has(sp)) keepValue(sp, s, fi);
+    return `${t}:${UNLISTED}`;
   };
   const note = (L: ShapesPathCount, v: unknown, fi: number, ver: string, path: string | null): void => {
     L.n++;
@@ -480,13 +499,7 @@ export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: 
       if (vs) {
         const ok = vs.has(v);
         bump(L, 'values', ok ? v : UNLISTED, fi);
-        if (!ok && unlVals && path !== null) {   // --unlisted only: the value itself, for the person's own review
-          let m = unlVals.get(path);
-          if (!m) unlVals.set(path, (m = new Map()));
-          let e = m.get(v);
-          if (!e) { if (m.size >= NAMES_PER_PATH) return; m.set(v, (e = [0, 0, -1])); }
-          tally(e, fi);
-        }
+        if (!ok && path !== null) keepValue(path, v, fi);   // --unlisted only: the value itself, for the person's own review
       }
     } else if (typeof v === 'number') bump(L, 'numbers', numberClass(v), fi);
     else if (typeof v === 'boolean') bump(L, 'booleans', String(v), fi);
@@ -546,7 +559,7 @@ export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: 
           const x = getPlain(rec, vp);
           if (x !== undefined) { ver = typeof x === 'string' && VERSION.test(x) ? x : WITHHELD; break; }
         }
-        const kind = kindOf(rec);
+        const kind = kindOf(rec, fi);
         let K = S.kinds.get(kind);
         if (!K) S.kinds.set(kind, (K = { n: 0, f: 0, last: -1, vers: new Map() }));
         K.n++;

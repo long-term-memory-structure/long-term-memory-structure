@@ -438,7 +438,32 @@ export function readShapes(V, files, opts) {
             L.sub.set(key, (s = [0, 0, -1]));
         tally(s, fi);
     };
-    const kindOf = (rec) => {
+    /** --unlisted only: a value the vocabulary lacks at a path, for the person's own review. */
+    const keepValue = (path, v, fi) => {
+        if (!unlVals)
+            return;
+        let m = unlVals.get(path);
+        if (!m)
+            unlVals.set(path, (m = new Map()));
+        let e = m.get(v);
+        if (!e) {
+            if (m.size >= NAMES_PER_PATH)
+                return;
+            m.set(v, (e = [0, 0, -1]));
+        }
+        tally(e, fi);
+    };
+    // --unlisted: the paths a kind is read at (the kind path, each sub-kind's) where the walk keeps no value, so that the
+    // reading of the kind keeps it there: a path with no value list (the walk keeps a value only at a path that lists
+    // values), or one the walk does not reach (a step of it that paths does not list). Where the walk keeps a value, the
+    // reading of the kind does not, so each is counted once (S374's closure read, U1).
+    const walkReaches = (p) => { let acc = ''; for (const step of p.slice(1).split('.')) {
+        acc += '.' + step;
+        if (!V.paths.has(acc))
+            return false;
+    } return true; };
+    const kindKeeps = new Set(unlVals ? kindPaths(V).filter((p) => !(V.values.has(p) && walkReaches(p))) : []);
+    const kindOf = (rec, fi) => {
         if (!V.kindPath)
             return ALL;
         const t = getPlain(rec, V.kindPath);
@@ -446,8 +471,11 @@ export function readShapes(V, files, opts) {
             return NONE;
         if (typeof t !== 'string')
             return NOT_STRING;
-        if (!V.values.get(V.kindPath)?.has(t))
+        if (!V.values.get(V.kindPath)?.has(t)) {
+            if (kindKeeps.has(V.kindPath))
+                keepValue(V.kindPath, t, fi);
             return UNLISTED;
+        }
         const sp = V.sub.get(t);
         if (!sp)
             return t;
@@ -458,7 +486,11 @@ export function readShapes(V, files, opts) {
             return `${t}:${NONE}`;
         if (typeof s !== 'string')
             return `${t}:${NOT_STRING}`;
-        return V.values.get(sp)?.has(s) ? `${t}:${s}` : `${t}:${UNLISTED}`;
+        if (V.values.get(sp)?.has(s))
+            return `${t}:${s}`;
+        if (kindKeeps.has(sp))
+            keepValue(sp, s, fi);
+        return `${t}:${UNLISTED}`;
     };
     const note = (L, v, fi, ver, path) => {
         L.n++;
@@ -478,18 +510,8 @@ export function readShapes(V, files, opts) {
             if (vs) {
                 const ok = vs.has(v);
                 bump(L, 'values', ok ? v : UNLISTED, fi);
-                if (!ok && unlVals && path !== null) { // --unlisted only: the value itself, for the person's own review
-                    let m = unlVals.get(path);
-                    if (!m)
-                        unlVals.set(path, (m = new Map()));
-                    let e = m.get(v);
-                    if (!e) {
-                        if (m.size >= NAMES_PER_PATH)
-                            return;
-                        m.set(v, (e = [0, 0, -1]));
-                    }
-                    tally(e, fi);
-                }
+                if (!ok && path !== null)
+                    keepValue(path, v, fi); // --unlisted only: the value itself, for the person's own review
             }
         }
         else if (typeof v === 'number')
@@ -589,7 +611,7 @@ export function readShapes(V, files, opts) {
                         break;
                     }
                 }
-                const kind = kindOf(rec);
+                const kind = kindOf(rec, fi);
                 let K = S.kinds.get(kind);
                 if (!K)
                     S.kinds.set(kind, (K = { n: 0, f: 0, last: -1, vers: new Map() }));

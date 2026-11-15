@@ -1388,3 +1388,88 @@ test("shapes: each line kind's fields, as src/shapes.ts and the build list them,
     }
   }
 });
+
+/** Writes each file of `files` ({name: [records]}) as name.jsonl, one JSON line a record, under a new folder `d` of
+ *  `dir`; returns that folder. */
+function putFiles(dir, d, files) {
+  mkdirSync(join(dir, d));
+  for (const [f, recs] of Object.entries(files)) writeFileSync(join(dir, d, `${f}.jsonl`), recs.map((o) => JSON.stringify(o)).join('\n') + '\n');
+  return join(dir, d);
+}
+/** A vocabulary file of `fields` under `dir`, named `name`; returns its path. */
+function putVocabulary(dir, name, fields) {
+  const f = join(dir, `${name}.json`);
+  writeFileSync(f, JSON.stringify({ format: 'ltms-shapes-vocabulary/0', name, ...fields }));
+  return f;
+}
+
+// U1 (S374's closure read): --unlisted kept a value only where the walk notes it at a path that lists values, and the
+// vocabulary that ships gave .attachment.type, attachment's sub-kind path, no list: every attachment record printed as
+// attachment:(unlisted), as many records as user's on a real corpus, and --unlisted named none of their types, so the
+// documented way out (--unlisted, then --allow) gave nothing. The values a kind is read from are now kept at the kind path
+// and at each sub-kind's path where the walk does not keep them (a path with no list, or one the walk does not reach),
+// each value once; the vocabulary that ships lists queued_command there, the one attachment type ltms's own docs name
+// (docs/library.md, SearchKind) that Claude Code's program holds; and the README and --help say what an attachment
+// record prints, and how to name its types. Every count below is the files' own, counted here.
+test("shapes --unlisted: the values met at the kind path and at a sub-kind's path are listed where the walk does not list them (no value list there, or a path it does not reach), each once, with its --allow; the vocabulary that ships lists the attachment type queued_command; the README and --help say what an attachment record prints and how to name its types", () => {
+  const dir = tmp();
+  try {
+    const valuesAt = (r, at) => r.lines.filter((o) => o.k === 'unlisted-value' && o.at === at).map((o) => [o.value, o.n, o.files, o.allow]);
+    const kindsOf = (r) => Object.fromEntries(r.lines.filter((o) => o.k === 'kind').map((o) => [o.kind, o.records]));
+    const att = (type) => ({ type: 'attachment', attachment: { type } });
+    // the finding's case, with the vocabulary that ships: qq_att in 4 records of 3 files, hook_success in 2 of 2, a value
+    // with ':' and one that is not a label (allow null), queued_command (listed), none, and a number
+    const s = putFiles(dir, 'shipped', {
+      a: [att('qq_att'), att('qq_att'), att('hook_success'), { type: 'attachment', attachment: { type: 'queued_command', commandMode: 'prompt' } }, { type: 'attachment' }, att(7)],
+      b: [att('qq_att'), att('hook_success')],
+      c: [att('qq_att'), att('zz:colon'), att('has space')],
+    });
+    const u = shapes(['--unlisted', s]);
+    assert.equal(u.code, 0, u.err);
+    assert.ok(u.lines.every((o) => o.send === false));
+    assert.deepEqual(valuesAt(u, '.attachment.type'), [['has space', 1, 1, null], ['hook_success', 2, 2, '.attachment.type=hook_success'], ['qq_att', 4, 3, '.attachment.type=qq_att'], ['zz:colon', 1, 1, null]], 'the attachment types the vocabulary that ships lacks, each with its counts and its --allow');
+    const rep = shapes([s]);
+    assert.equal(rep.code, 0, rep.err);
+    assert.deepEqual(kindsOf(rep), { 'attachment:(none)': '1', 'attachment:(not a string)': '1', 'attachment:(unlisted)': '8-15', 'attachment:queued_command': '1' }, 'the kinds, with the vocabulary that ships');
+    assert.deepEqual(kindsOf(shapes(['--allow', '.attachment.type=qq_att', s])), { 'attachment:(none)': '1', 'attachment:(not a string)': '1', 'attachment:(unlisted)': '4-7', 'attachment:qq_att': '4-7', 'attachment:queued_command': '1' }, 'the --allow the list gives prints the kind');
+    // other vocabularies, each value counted once: the walk keeps the values at a path that lists values and that it
+    // reaches; the reading of the kind keeps them where it does not
+    const nolist = putVocabulary(dir, 't-nolist', { paths: ['.type'], kinds: { path: '.type' } });
+    const d1 = putFiles(dir, 'nolist', { a: [{ type: 'rq_x' }, { type: 'rq_x' }, { type: 'user' }], b: [{ type: 'rq_x' }], c: [{ type: 'user' }, { type: 5 }, {}] });
+    const u1 = shapes(['--unlisted', '--vocabulary', nolist, d1]);
+    assert.equal(u1.code, 0, u1.err);
+    assert.deepEqual(valuesAt(u1, '.type'), [['rq_x', 3, 2, '.type=rq_x'], ['user', 2, 2, '.type=user']], 'a kind path with no value list');
+    const sub = putVocabulary(dir, 't-sub', { paths: ['.type', '.subtype', '.att', '.att.type'], values: { '.type': ['system', 'att'], '.subtype': ['known_sub'] }, kinds: { path: '.type', sub: { system: '.subtype', att: '.att.type' } } });
+    const d2 = putFiles(dir, 'sub', {
+      a: [{ type: 'system', subtype: 'rq_sub' }, { type: 'att', att: { type: 'rq_att' } }],
+      b: [{ type: 'system', subtype: 'rq_sub' }, { type: 'att', att: { type: 'rq_att' } }, { type: 'system', subtype: 'known_sub' }],
+      c: [{ type: 'system', subtype: 'rq_sub' }, { type: 'rq_kind' }],
+    });
+    const u2 = shapes(['--unlisted', '--vocabulary', sub, d2]);
+    assert.equal(u2.code, 0, u2.err);
+    assert.deepEqual([valuesAt(u2, '.type'), valuesAt(u2, '.subtype'), valuesAt(u2, '.att.type')], [[['rq_kind', 1, 1, '.type=rq_kind']], [['rq_sub', 3, 3, '.subtype=rq_sub']], [['rq_att', 2, 2, '.att.type=rq_att']]], 'a kind path and a sub-kind path with value lists (once each), and a sub-kind path with none');
+    assert.ok(shapes(['--vocabulary', sub, '--allow', '.att.type=rq_att', d2]).lines.some((o) => o.k === 'kind' && o.kind === 'att:rq_att'), 'the --allow the list gives prints the kind');
+    const unreached = putVocabulary(dir, 't-unreached', { paths: ['.type', '.ev.kind'], values: { '.type': ['ev'], '.ev.kind': ['known'] }, kinds: { path: '.type', sub: { ev: '.ev.kind' } } });
+    const d3 = putFiles(dir, 'unreached', { a: [{ type: 'ev', ev: { kind: 'rq_ev' } }, { type: 'ev', ev: { kind: 'known' } }], b: [{ type: 'ev', ev: { kind: 'rq_ev' } }], c: [{ type: 'ev', ev: { kind: 'rq_ev' } }] });
+    const u3 = shapes(['--unlisted', '--vocabulary', unreached, d3]);
+    assert.equal(u3.code, 0, u3.err);
+    assert.deepEqual(valuesAt(u3, '.ev.kind'), [['rq_ev', 3, 3, '.ev.kind=rq_ev']], "a sub-kind's path with a value list that the walk does not reach (.ev is not in paths)");
+    // the reports themselves are the recompute's, field for field
+    for (const [v, d] of [[nolist, d1], [sub, d2], [unreached, d3]]) assert.deepEqual(shapes(['--vocabulary', v, d]).lines.map(canon), recompute(['--vocabulary', v, ...['a', 'b', 'c'].map((f) => join(d, `${f}.jsonl`))]), `every field equals the recompute (${v})`);
+  } finally { rm(dir); }
+  // the vocabulary that ships: queued_command, at attachment's sub-kind path; the README's kind row and its paragraph on
+  // printing a new name, and --help's kind row, say what an attachment record prints with it and how to name its types
+  const v = JSON.parse(readFileSync(DOCS, 'utf8'));
+  assert.deepEqual(v.values['.attachment.type'], ['queued_command']);
+  const whole = readFileSync(join(root, 'README.md'), 'utf8');
+  const readme = whole.slice(whole.indexOf('### `ltms shapes'), whole.indexOf('\n## ', whole.indexOf('### `ltms shapes')));
+  const kindRow = readme.split('\n').find((l) => l.startsWith('| `kind` |'));
+  assert.ok(kindRow, "the kind row of the README's section on ltms shapes");
+  for (const t of ['attachment:(unlisted)', ...v.values['.attachment.type'].map((x) => `attachment:${x}`)]) assert.ok(kindRow.includes('`' + t + '`'), `the README's kind row names ${t}`);
+  const at = readme.indexOf('**To print a new name.**');
+  const para = readme.slice(at, readme.indexOf('\n\n', at)).replace(/\s+/g, ' ');
+  assert.match(para, /`unlisted-value`[^.]*`\.attachment\.type`/, 'To print a new name: --unlisted lists the attachment types');
+  assert.match(para, /`--allow \.attachment\.type=/, 'To print a new name: the --allow that prints one');
+  const help = spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout.replace(/\s+/g, ' ');
+  assert.match(help, /attachment:\(unlisted\)/, "--help's kind row");
+});

@@ -142,7 +142,9 @@ export interface ShapesRun {
     lines: Map<string, ShapesPathCount>;
     /** --unlisted only: per .* path, the names merged there. */
     unlisted: Map<string, ShapesUnlisted> | null;
-    /** --unlisted only: per value path, the values the vocabulary lacks. */
+    /** --unlisted only: per value path, the values the vocabulary lacks: at a path that lists values, as the walk meets
+     *  them; at the kind path and a sub-kind's path, as the reading of the kind meets them where the walk keeps none (no
+     *  list there, or a path it does not reach). */
     unlistedValues: Map<string, Map<string, ShapesCount>> | null;
 }
 /** How to read. */

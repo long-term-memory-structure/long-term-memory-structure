@@ -2342,7 +2342,9 @@ A kind line, k "kind", one per record kind:
                 lacks, (none) when the record has none, (not a string) for
                 another type: (none), system:(none), system:(unlisted);
                 and (all) for every record when the vocabulary names no
-                kind path
+                kind path. The vocabulary that ships lists one attachment
+                type, queued_command: an attachment record of any other
+                type is attachment:(unlisted) (--unlisted names its type)
   records       the records of that kind
   files         the files they are in
   versions      the records per version
@@ -2384,7 +2386,9 @@ The --unlisted list, never a report:
                 names at a path), unlisted-value (a value)
   send          false
   note          on the first line: what the list is, and not to send it
-  at            the .* path the name was merged into, or the value path
+  at            the .* path the name was merged into, or the path of the
+                value: a path that lists values, the kind path or a
+                sub-kind's path (listed there or not)
   name, value   as the transcripts write it
   n, files      exact counts
   allow         the --allow argument that would print it; null when none
