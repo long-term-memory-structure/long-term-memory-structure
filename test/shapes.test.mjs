@@ -1364,3 +1364,27 @@ test("README: what tells apart two reports of the same transcripts on different 
     assert.match(para, /holds no time: the same files give the same bytes on any day/);
   } finally { rm(dir); }
 });
+
+// S2 (S374's closure read), its refuter's last part: the planted lines catch a field added to a line kind's list only
+// under a name one of them holds ('ms'); a field of any other name, added to the list the guard and the canonical form
+// both read (LINE_FIELDS), would pass both (a mutant adding 'zz' to a path line's fields lived). Each line kind's fields,
+// as src/shapes.ts and the build under test list them, are the rows --help gives that line kind: no more, no fewer.
+test("shapes: each line kind's fields, as src/shapes.ts and the build list them, are the rows --help gives that line kind, no more and no fewer", () => {
+  const help = spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout;
+  const part = (k) => { const at = help.indexOf(`k "${k}"`); assert.ok(at > 0, `--help has a part on k "${k}"`); return help.slice(at, help.indexOf('\n\n', at)); };
+  const rows = (k) => [...part(k).matchAll(/^ {2}(\w+)(?:, (\w+))?(?= {2,}|$)/gm)].flatMap((m) => [m[1], m[2]].filter(Boolean)).sort();
+  const words = (t) => [...t.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  for (const file of [join(root, 'src', 'shapes.ts'), join(DIST, 'shapes.js')]) {
+    const text = readFileSync(file, 'utf8');
+    const block = /\nconst LINE_FIELDS(?::[^=]*)? = \{\n([\s\S]*?)\n\};/.exec(text)?.[1];
+    const groups = /\nconst GROUPS = \[([^\]]*)\];/.exec(text)?.[1];
+    assert.ok(block && groups, `${file} lists each line kind's fields (LINE_FIELDS) and the maps of a path line (GROUPS)`);
+    const kinds = block.split('\n').map((l) => /^\s*(\w+): \[(.*)\],$/.exec(l));
+    assert.ok(kinds.every(Boolean), `${file}: one line kind a line in LINE_FIELDS`);
+    assert.deepEqual(kinds.map((m) => m[1]), ['shapes', 'version', 'kind', 'path', 'rare', 'end'], `${file}: the line kinds, in the format's order`);
+    for (const [, k, list] of kinds) {
+      const fields = words(list.replace('...GROUPS', groups)).filter((f) => f !== 'k').sort();
+      assert.deepEqual(fields, rows(k), `${file}: the fields of k "${k}" are the rows of --help's part on it`);
+    }
+  }
+});
