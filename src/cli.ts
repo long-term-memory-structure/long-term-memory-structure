@@ -62,7 +62,7 @@ const USAGE = `Usage:
   ltms pin <path>... --to <dir>   copies the cleanup does not delete, and a log
   ltms skill                      the skill that teaches an agent to use ltms
   ltms shapes <path>...           the shape of transcripts, not their content
-  ltms records <file.jsonl>       the transcript as records: one per line, no text
+  ltms records <file.jsonl>       a transcript as records, one per line, no text
   ltms --help                     show the help, with every output field
   ltms --version                  show the version
 `;
@@ -1729,8 +1729,8 @@ Prints the skill that teaches an agent to use ltms: SKILL.md, in the Agent
 Skills format. To install it for Claude Code (and again after upgrading
 ltms, so that it names the fields this version prints):
   ${installOrWhy()}
-It reads only its own SKILL.md, and package.json for the version; it writes only to
-stdout and stderr.
+It reads only its own SKILL.md, and package.json for the version; it writes
+only to stdout and stderr.
 
 Exit status: 0 when it printed the skill, 1 when it could not read it, 2 on a
 usage error.
@@ -2520,12 +2520,12 @@ function shapesCheck(file: string, V: ShapesVocabulary): number {
 
 const RECORDS_HELP = `ltms records <file.jsonl>
 
-Prints the transcript as ltms-records/0, the record protocol's format (version 0,
-a draft): a header line, then one JSON line per line of the file, the lines it
-does not understand included, so the count always balances: lines read =
-records written. Anyone can check it: wc -l on the file, and the output's lines
-after the first. A record holds no text: it gives the address of its bytes,
-and the text is read there.
+Prints the transcript as ltms-records/0, the record protocol's format
+(version 0, a draft): a header line, then one JSON line per line of the file,
+the lines it does not understand included, so the count always balances: lines
+read = records written. Anyone can check it: wc -l on the file, and the
+output's lines after the first. A record holds no text: it gives the address
+of its bytes, and the text is read there.
   ltms records ~/.claude/projects/-home-me-my-app/<session>.jsonl > session.records.jsonl
 One transcript at a time; for a folder, write the records outside ~/.claude:
   mkdir -p records; for f in <folder>/*.jsonl; do ltms records "$f" > "records/$(basename "$f" .jsonl).records.jsonl"; done

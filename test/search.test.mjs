@@ -1322,7 +1322,7 @@ test("help: ltms --help is 0.0.5's, with search's, index's, pin's, skill's, shap
   const shapesParagraph = h.slice(shapesStart, shapesStop);
   assert.match(shapesParagraph.replace(/\s+/g, ' '), /ltms shapes --help gives its whole part/);
   // 0.3.0: records' usage line and paragraph, right after shapes'
-  const recordsUsageLine = '  ltms records <file.jsonl>       the transcript as records: one per line, no text\n';
+  const recordsUsageLine = '  ltms records <file.jsonl>       a transcript as records, one per line, no text\n';
   const recordsStart = h.indexOf('records prints a transcript as ltms-records/0'), recordsStop = h.indexOf('\n\n', recordsStart) + 2;
   assert.ok(recordsStart > 0 && h.includes(recordsUsageLine));
   const recordsParagraph = h.slice(recordsStart, recordsStop);

@@ -1615,3 +1615,14 @@ test("search, a file whose name is not UTF-8 in a directory named by a relative 
     assert.match(sh.stdout, /x\\377\.jsonl/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('--help (S375): every line of prose in ltms --help and in each command\'s --help is at most 80 columns; a command to copy is kept whole', () => {
+  const COMMAND = /^ {2}(?:ltms|npx|mkdir|node|for|sed|cat|tail) /;
+  const long = [];
+  for (const args of [['--help'], ...['index', 'skeleton', 'stats', 'search', 'shapes', 'records', 'pin', 'skill'].map((c) => [c, '--help'])]) {
+    const r = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+    assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}`);
+    for (const l of r.stdout.split('\n')) if (l.length > 80 && !COMMAND.test(l)) long.push(`${args.join(' ')}: ${l.length}: ${l}`);
+  }
+  assert.deepEqual(long, []);
+});
