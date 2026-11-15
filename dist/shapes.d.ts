@@ -168,8 +168,9 @@ export interface ShapesReport {
 }
 /** The report of a run. Every count becomes a bucket; a path line seen in fewer than floor files is not printed and is
  *  counted in its kind's rare line; a sub-count over fewer than floor files folds into (rare). The lines are sorted
- *  (versions in numeric order, then kinds, then paths by kind and path, then the rare lines), and their fields come in a
- *  fixed order, so the same files give the same bytes whatever the order of the files and of the keys in each record. */
+ *  (versions in numeric order, equal numbers by their text, then kinds, then paths by kind and path, then the rare
+ *  lines), and their fields come in a fixed order, so the same files give the same bytes whatever the order of the files
+ *  and of the keys in each record. */
 export declare function buildReport(V: ShapesVocabulary, S: ShapesRun, floor: number, allowed: readonly string[]): ShapesReport;
 /** The language of one report: the vocabulary (with --allow's names), the allowed list its first line must print, and,
  *  at the write, the floor and the number of lines it must state. */

@@ -548,18 +548,21 @@ export function readShapes(V, files, opts) {
 }
 // ---- the report -----------------------------------------------------------------------------------------------------
 const vkey = (v) => v.split('.').map(Number);
+/** Numeric order; two spellings of one number (1.2.3, 01.2.3) by their text, so that no order of the files or of the
+ *  records, which decides where each was met first, reaches a report (S374's closure read, S4). */
 const vcmp = (a, b) => { const x = vkey(a), y = vkey(b); for (let i = 0; i < 3; i++)
     if (x[i] !== y[i])
-        return x[i] - y[i]; return 0; };
-/** Versions in numeric order, then the other tokens ((none), (withheld)) by their text. */
+        return x[i] - y[i]; return cmp(a, b); };
+/** Versions in numeric order (equal numbers by their text), then the other tokens ((none), (withheld)) by their text. */
 const sortVersions = (vs) => [...vs].sort((a, b) => {
     const sa = VERSION.test(a), sb = VERSION.test(b);
     return sa && sb ? vcmp(a, b) : sa ? -1 : sb ? 1 : cmp(a, b);
 });
 /** The report of a run. Every count becomes a bucket; a path line seen in fewer than floor files is not printed and is
  *  counted in its kind's rare line; a sub-count over fewer than floor files folds into (rare). The lines are sorted
- *  (versions in numeric order, then kinds, then paths by kind and path, then the rare lines), and their fields come in a
- *  fixed order, so the same files give the same bytes whatever the order of the files and of the keys in each record. */
+ *  (versions in numeric order, equal numbers by their text, then kinds, then paths by kind and path, then the rare
+ *  lines), and their fields come in a fixed order, so the same files give the same bytes whatever the order of the files
+ *  and of the keys in each record. */
 export function buildReport(V, S, floor, allowed) {
     const F = floor, out = [];
     out.push({

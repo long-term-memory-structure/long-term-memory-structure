@@ -2,8 +2,11 @@
 // test/shapes-recompute.mjs: a SECOND implementation of the ltms-shapes/0 report, written from the design's rules and
 // not from the code of src/shapes.ts (it shares none): whole-file reads, a recursive walk, Sets of file numbers for the
 // file counts, its own bucket arithmetic and class tests. It is the S373 prototype's recompute.mjs, its code unchanged
-// below this header. It exists to check every field ltms shapes prints: both outputs, each line with its keys sorted,
-// must be equal (test/shapes.test.mjs).
+// below this header but for the changes listed here. It exists to check every field ltms shapes prints: both outputs,
+// each line with its keys sorted, must be equal (test/shapes.test.mjs).
+//
+// Changed since the prototype, each with the rule it follows (S375, after S374's closure read):
+//   - vOrder: versions equal as numbers (1.2.3, 01.2.3) are ordered by their text, not by where they were met (S4).
 //
 //   node test/shapes-recompute.mjs --vocabulary <v.json>... [--floor <n>] [--allow <spec>]... [--max-line <bytes>] <file>...
 //   node test/shapes-recompute.mjs --canon <report.jsonl>      the same report, each line's keys sorted (to compare with)
@@ -156,7 +159,7 @@ files.forEach((file, fi) => {
 const F = opt.floor, out = [];
 const vOrder = (a, b) => {
   const va = isVersion(a), vb = isVersion(b);
-  if (va && vb) { const x = a.split('.').map(Number), y = b.split('.').map(Number); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; }
+  if (va && vb) { const x = a.split('.').map(Number), y = b.split('.').map(Number); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || (a < b ? -1 : a > b ? 1 : 0); }
   if (va !== vb) return va ? -1 : 1;
   return a < b ? -1 : a > b ? 1 : 0;
 };

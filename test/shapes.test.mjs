@@ -16,7 +16,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -533,4 +533,28 @@ test('shapes: the write guard checks the very text it writes (an inherited toJSO
   const w = SH.writeReport([evil], Lg, (t) => { out += t; });
   assert.deepEqual([w.written, w.refused], [0, 1]);
   assert.doesNotMatch(out, /zqCANARY/);
+});
+
+// S4 (S374's closure read): versions equal as numbers but spelled apart (1.2.3, 01.2.3, 1.02.3) were ordered by where
+// they were first met, so the order of the files reached the report (the version lines, each kind's versions, a path
+// line's first and last). Three files, one spelling each; B holds A's contents under other names; a hard link reaches
+// A/x.jsonl a second time, so the two orders of the same two paths read the same files in another order.
+test('shapes: versions equal as numbers but spelled apart: the same contents under other names, and the same two paths in either order, give the same bytes, every field equal to the recompute', () => {
+  const dir = tmp();
+  try {
+    const SPELL = ['1.2.3', '01.2.3', '1.02.3'];
+    let n = 0;
+    const rec = (type, v) => JSON.stringify({ type, version: v, uuid: `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`, message: { role: type, content: 'hi' } });
+    const text = (v) => `${rec('user', v)}\n${rec('assistant', v)}\n`;
+    const A = join(dir, 'A'), B = join(dir, 'B'), names = ['x', 'y', 'z'];
+    mkdirSync(A); mkdirSync(B);
+    names.forEach((f, i) => { writeFileSync(join(A, `${f}.jsonl`), text(SPELL[i])); writeFileSync(join(B, `${f}.jsonl`), text(SPELL[(i + 1) % 3])); });
+    const link = join(dir, 'zz-hardlink.jsonl');
+    linkSync(join(A, 'x.jsonl'), link);
+    const a = shapes([A]);
+    assert.equal(a.code, 0, a.err);
+    assert.equal(shapes([B]).out, a.out, 'the same contents under other names give the same bytes');
+    assert.equal(shapes([link, A]).out, shapes([A, link]).out, 'the same two paths in either order give the same bytes');
+    for (const d of [A, B]) assert.deepEqual(shapes([d]).lines.map(canon), recompute(['--vocabulary', DOCS, ...names.map((f) => join(d, `${f}.jsonl`))]), `every field equals the recompute (${d === A ? 'A' : 'B'})`);
+  } finally { rm(dir); }
 });
