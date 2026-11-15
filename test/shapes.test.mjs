@@ -16,12 +16,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { validate } from './shapes-validate.mjs';
+import { validate, validateText } from './shapes-validate.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -42,15 +42,16 @@ const tmp = () => mkdtempSync(join(tmpdir(), 'ltms-shapes-'));
 const rm = (d) => rmSync(d, { recursive: true, force: true });
 
 let validated = 0;
-/** ltms shapes, spawned (from the repository's root). Every report it prints is read by the independent validator, with
- *  the vocabulary it was made with: a report outside the language fails the test that made it. */
+/** ltms shapes, spawned (from the repository's root). Every report it prints is read by the independent validator, its
+ *  bytes and then its lines, with the vocabulary it was made with: a report outside the language fails the test that made
+ *  it. */
 function shapes(args, opts = {}) {
   const r = spawnSync(process.execPath, [...(opts.node ?? []), CLI, 'shapes', ...args], { encoding: 'utf8', maxBuffer: 256 << 20, timeout: 120000, cwd: opts.cwd ?? root });
   if (r.error) throw r.error;
   const lines = r.stdout.split('\n').filter(Boolean).map((l) => JSON.parse(l));
   if (lines[0]?.k === 'shapes') {
     const i = args.indexOf('--vocabulary');
-    assert.deepEqual(validate(lines, [i >= 0 ? args[i + 1] : DOCS]), [], `the independent validator, on the report of ltms shapes ${args.join(' ')}`);
+    assert.deepEqual(validateText(r.stdout, [i >= 0 ? args[i + 1] : DOCS]), [], `the independent validator, on the report of ltms shapes ${args.join(' ')}`);
     validated++;
   }
   return { code: r.status, out: r.stdout, err: r.stderr, lines };
@@ -62,6 +63,64 @@ function recompute(args) {
   return r.stdout.split('\n').filter(Boolean);
 }
 const canon = (o) => (Array.isArray(o) ? '[' + o.map(canon).join(',') + ']' : o && typeof o === 'object' ? '{' + Object.keys(o).sort().map((k) => JSON.stringify(k) + ':' + canon(o[k])).join(',') + '}' : JSON.stringify(o));
+
+/** The report `lines` with `line` put where the format puts a line of its kind and key: in place of the line with the
+ *  same key, or else between its neighbours in order (versions in numeric order, then (none) and (withheld); kind and
+ *  rare lines by kind; path lines by kind, then path); a first line in place of the first, an end line in place of the
+ *  last, a line of no kind of the format just after the first. The end line then counts the lines (but a planted one).
+ *  Returns [the lines, the planted line's number]. The order is the format's, written here from its rules, not the
+ *  module's code. */
+function plant(lines, line) {
+  const ORDER = ['shapes', 'version', 'kind', 'path', 'rare', 'end'];
+  const isV = (v) => typeof v === 'string' && /^(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,5})$/.test(v);
+  const str = (a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0);
+  const vord = (a, b) => (isV(a) && isV(b) ? a.split('.').map(Number).reduce((c, x, i) => c || x - Number(b.split('.')[i]), 0) || str(a, b) : isV(a) ? -1 : isV(b) ? 1 : str(a, b));
+  const order = (a, b) => (a.k === 'version' ? vord(a.v, b.v) : a.k === 'path' ? str(a.kind, b.kind) || str(a.path, b.path) : str(a.kind, b.kind));
+  const body = lines.slice(0, -1);
+  const k = line !== null && typeof line === 'object' && !Array.isArray(line) ? line.k : undefined;
+  const rank = ORDER.indexOf(k);
+  if (k === 'end') return [[...body, line], body.length + 1];
+  let at;
+  if (k === 'shapes') { body[0] = line; at = 0; }
+  else if (rank < 0) { body.splice(1, 0, line); at = 1; }
+  else {
+    at = body.findIndex((o, i) => i > 0 && (ORDER.indexOf(o.k) > rank || (o.k === k && order(o, line) >= 0)));
+    if (at < 0) at = body.length;
+    if (at < body.length && body[at].k === k && order(body[at], line) === 0) body[at] = line; else body.splice(at, 0, line);
+  }
+  return [[...body, { k: 'end', lines: body.length + 1 }], at + 1];
+}
+
+/** A copy of the build (DIST) in a temporary folder whose buildReport returns, in place of the lines it builds, the
+ *  lines of the JSON file that LTMS_TEST_LINES names: a defect of the builder, made to order, for the write guard to meet
+ *  through the command as a user runs it. Nothing of it is in src/: a wrapper module, and dist/cli.js's one import of
+ *  ./shapes.js turned to it. Returns the folder (its dist/cli.js is the command); the caller removes it. */
+function plantedBuild() {
+  const dir = tmp();
+  mkdirSync(join(dir, 'dist'));
+  mkdirSync(join(dir, 'vocab'));
+  for (const f of readdirSync(DIST)) if (f.endsWith('.js')) copyFileSync(join(DIST, f), join(dir, 'dist', f));
+  copyFileSync(DOCS, join(dir, 'vocab', 'claude-code.docs.json'));
+  copyFileSync(join(root, 'package.json'), join(dir, 'package.json'));
+  const cli = readFileSync(join(dir, 'dist', 'cli.js'), 'utf8');
+  assert.equal(cli.split("from './shapes.js'").length, 2, "dist/cli.js imports ./shapes.js once");
+  writeFileSync(join(dir, 'dist', 'cli.js'), cli.replace("from './shapes.js'", "from './shapes-planted.js'"));
+  writeFileSync(join(dir, 'dist', 'shapes-planted.js'), [
+    "import { readFileSync } from 'node:fs';",
+    "import { buildReport as built } from './shapes.js';",
+    "export * from './shapes.js';",
+    "export function buildReport(...args) { const r = built(...args); return { ...r, lines: JSON.parse(readFileSync(process.env.LTMS_TEST_LINES, 'utf8')) }; }",
+  ].join('\n') + '\n');
+  return dir;
+}
+/** The planted build run as `ltms shapes <args>`, its builder giving `lines`. */
+function plantedRun(build, lines, args) {
+  const f = join(build, 'lines.json');
+  writeFileSync(f, JSON.stringify(lines));
+  const r = spawnSync(process.execPath, [join(build, 'dist', 'cli.js'), 'shapes', ...args], { encoding: 'utf8', maxBuffer: 256 << 20, timeout: 120000, cwd: root, env: { ...process.env, LTMS_TEST_LINES: f } });
+  if (r.error) throw r.error;
+  return { code: r.status, out: r.stdout, err: r.stderr };
+}
 
 /** Every token planted in the fixtures. None may appear in a report, in any case. ('call_' is not one: it is a prefix of
  *  the Codex sketch's name call_id; the planted call_zq7canary is caught by 'zq'.) */
@@ -266,7 +325,7 @@ test('shapes: the vocabulary files: every path a path of field names, every valu
 
 // ---- the port's own: what the core needs beyond the prototype's tests ------------------------------------------------
 
-test('shapes: the write guard refuses each line that holds a token outside the language, whatever built it, and writes nothing of it; the command prints what writeReport writes', () => {
+test('shapes: the write guard refuses each line that holds a token outside the language, whatever built it, and writes nothing of the report; the command prints what writeReport writes', () => {
   const V = SH.loadVocabulary(DOCS), allowed = SH.applyAllow(V, []);
   const R = SH.buildReport(V, SH.readShapes(V, [...CC].sort(), { maxLine: SH.SHAPES_MAX_LINE, unlisted: false }), 3, allowed);
   const Lg = SH.shapesLanguage(V, allowed, { floor: 3, lines: R.lines.length });
@@ -305,9 +364,13 @@ test('shapes: the write guard refuses each line that holds a token outside the l
     ['a rare line of a raw kind', { k: 'rare', kind: 'zqcanarytype', paths: '1', n: '1' }],
   ];
   for (const [what, line] of planted) {
+    // each in a report the builder made, where the format puts a line of its kind and key, so that its token alone can
+    // fail it: since S3 and U6 the guard checks the report whole, and a line given alone fails as no report
+    const [lines, at] = plant(R.lines, line);
     let wrote = '';
-    const w = SH.writeReport([line], Lg, (s) => { wrote += s; });
+    const w = SH.writeReport(lines, SH.shapesLanguage(V, allowed, { floor: 3, lines: lines.length }), (s) => { wrote += s; });
     assert.deepEqual([w.refused, w.written, wrote], [1, 0, ''], what);
+    assert.deepEqual(w.reasons.map((p) => p.line), [at], `${what}: the planted line, line ${at}, and no other, fails: ${JSON.stringify(w.reasons)}`);
     assert.match(w.reasons[0].why, /^[a-z .]+$/, `${what}: the reason is one of the guard's own words: ${w.reasons[0].why}`);
   }
 });
@@ -474,7 +537,7 @@ test("shapes: --check also refuses a report made with another vocabulary, a firs
     const f = (name, lines, more = []) => { writeFileSync(join(dir, name), lines.join('\n') + '\n'); return shapes(['--check', join(dir, name), ...more]); };
     const ok = f('good.jsonl', ls);
     assert.equal(ok.code, 0, ok.err);
-    assert.match(ok.err, /: \d+ lines, every token in the report's language \(vocabulary claude-code-docs@[0-9a-f]{12}; allowed: \.zqa \.zqb\)\.\n$/);
+    assert.match(ok.err, /: \d+ lines, every token in the report's language and every line in its place \(vocabulary claude-code-docs@[0-9a-f]{12}; allowed: \.zqa \.zqb\)\.\n$/);
     const other = f('good2.jsonl', ls, ['--vocabulary', CODEX_V]);
     assert.equal(other.code, 1);
     assert.match(other.err, /line 1: the first line names another vocabulary than the one given, codex-sketch@[0-9a-f]{12}/);
@@ -660,7 +723,8 @@ test('shapes: a sub-kind prints (none) when the record has none there and (not a
   for (const kind of ['system', 'attachment', 'user:(none)', 'user:(not a string)', 'system:(all)', 'system:(rare)', 'system:(withheld)', 'system:zq_sub', 'system:(none):(none)'])
     assert.equal(SH.checkLine(kindLine(kind), Lg), 'kind', `the language refuses the kind ${kind}`);
   const head = (lines) => [{ k: 'shapes', format: 'ltms-shapes/0', vocabulary: V.list, floor: 3, allowed: [], files: { read: '1', failed: '0' }, lines: { records: '1', blank: '0', notJson: '0', notObject: '0', tooLong: '0' } }, ...lines, { k: 'end', lines: lines.length + 2 }];
-  assert.deepEqual(validate(head([kindLine('system:(none)'), kindLine('attachment:(not a string)')]), [DOCS]), [], 'the independent validator admits the new kinds');
+  // (in the format's order: since S3 and U6, the validator holds a report to it)
+  assert.deepEqual(validate(head([kindLine('attachment:(not a string)'), kindLine('system:(none)')]), [DOCS]), [], 'the independent validator admits the new kinds');
   assert.notDeepEqual(validate(head([kindLine('system')]), [DOCS]), [], 'the independent validator refuses a kind alone where the vocabulary names its sub-kind');
 });
 
@@ -793,4 +857,149 @@ test('shapes: --floor takes a whole number of files from 2 to 9007199254740991, 
   assert.ok(top.out.startsWith('{"k":"shapes",') && top.out.includes(`,"floor":${hi},`), 'the first line states the floor given, digit for digit');
   assert.match(top.err, new RegExp(`under the floor of ${hi} files`));
   assert.equal(shapes(['--floor', (BigInt(hi) + 1n).toString(), ...CC]).code, 2, 'past the range');
+});
+
+// S3 (S374's closure read), the writer's side: the write guard checked one line at a time, so a defect in the builder
+// that repeated a valid line (N copies of it, N taken from the transcripts: an exact count under a bucket), gave a second
+// first line or a second end line, or put the lines, or a map's keys, in another order (the order the reading met them
+// in) was written whole, exit 0. The guard now checks the report whole before it writes any of it: one first line; the
+// line kinds in the format's order; each kind's lines strictly in the builder's order, so none repeats; each line
+// written as the builder writes it, its fields and keys in order; a path line in at least the floor's files; one end
+// line, the last, counting the lines. A report that fails is not written at all.
+test('shapes: the write guard checks the report whole before writing any of it: a build that repeats a line, gives a second first or end line, puts lines or map keys out of order, or prints a path line under the floor writes nothing, exit 1, and names the first line that fails', () => {
+  const build = plantedBuild();
+  try {
+    const base = shapes([...CC]);
+    assert.equal(base.code, 0, base.err);
+    const own = plantedRun(build, base.lines, [...CC]);
+    assert.deepEqual([own.code, own.out], [0, base.out], 'the planted build, given the lines the builder made, writes the same report');
+    const body = base.lines.slice(0, -1);
+    const withEnd = (b) => [...b, { k: 'end', lines: b.length + 1 }];
+    const first = (k) => body.findIndex((o) => o.k === k);
+    const lastOf = (k) => body.reduce((j, o, i) => (o.k === k ? i : j), -1);
+    const fp = first('path'), fk = first('kind'), fr = first('rare'), lp = lastOf('path');
+    const MAPS = ['types', 'strings', 'numbers', 'booleans', 'lengths', 'values'];
+    const reversedMaps = (o) => { const x = { ...o }; for (const g of MAPS) if (x[g]) x[g] = Object.fromEntries(Object.entries(x[g]).reverse()); return x; };
+    const mapsMoved = body.findIndex((o) => o.k === 'path' && JSON.stringify(reversedMaps(o)) !== JSON.stringify(o));
+    const kindMoved = [...body.slice(0, fk), ...body.slice(fk + 1, lp + 1), body[fk], ...body.slice(lp + 1)];
+    const endInside = [...body.slice(0, fp), null, ...body.slice(fp)];
+    endInside[fp] = { k: 'end', lines: endInside.length + 1 };
+    // [what, the lines the builder gives, the number of the first line that fails]
+    const cases = [
+      ['a rare line 29 times (an exact count, under a bucket)', withEnd([...body.slice(0, fr), ...Array(29).fill(body[fr]), ...body.slice(fr + 1)]), fr + 2],
+      ['a path line 29 times', withEnd([...body.slice(0, fp), ...Array(29).fill(body[fp]), ...body.slice(fp + 1)]), fp + 2],
+      ["a second end line, holding the report's own count", withEnd(endInside), fp + 1],
+      ['a second first line, the same as the first', withEnd([...body.slice(0, fp), body[0], ...body.slice(fp)]), fp + 1],
+      ['the path lines in reverse order', withEnd([...body.slice(0, fp), ...body.slice(fp, lp + 1).reverse(), ...body.slice(lp + 1)]), fp + 2],
+      ["every path line's maps in reverse key order (the order the reading met the classes in)", withEnd(body.map((o) => (o.k === 'path' ? reversedMaps(o) : o))), mapsMoved + 1],
+      ['a kind line after the path lines', withEnd(kindMoved), lp + 1],
+      ['a path line in 1 file, under the floor of 3', withEnd(body.map((o, i) => (i === fp ? { ...o, files: '1' } : o))), fp + 1],
+      ["a path line's fields in reverse order", withEnd(body.map((o, i) => (i === fp ? Object.fromEntries(Object.entries(o).reverse()) : o))), fp + 1],
+    ];
+    assert.ok(mapsMoved > fp && fr > lp && lp > fp && fp > fk && fk > 0, 'the fixtures give the lines these cases move');
+    for (const [what, lines, line] of cases) {
+      const r = plantedRun(build, lines, [...CC]);
+      assert.deepEqual([r.code, r.out], [1, ''], `${what}: ${r.err}`);
+      assert.match(r.err, new RegExp(`failed the report's own language at the write.*\\(the first, line ${line}: [a-z .]+\\)`), `${what}: ${r.err}`);
+      assert.match(r.err, /so none of the report was written/, what);
+    }
+  } finally { rm(build); }
+});
+
+// S3 and U6 (S374's closure read), --check's side: it checked each line alone (and floor 1 passed it, which --floor
+// refuses), so a report the writer cannot make passed it: a line repeated, lines out of order, a second end line or first
+// line holding any whole number, a path line under the floor; and test/shapes-validate.mjs, the second check the README
+// names, passed those and more (a sha256 that is not the vocabulary's, a blank line), so the two checks gave two answers
+// on one file. Each now checks the report whole, by the same rules, and these hand-edits of a report get one verdict
+// from both: refused. A line's bytes are held too (a key given twice to hide a word, a space, an escape, the fields or a
+// map's keys in another order), as the S3 refuter found them. The reports the writer makes, both accept.
+test("shapes: --check and the receiver's validator give one verdict on each hand-edit of a report that the writer cannot make: refused by both; and both accept the reports the writer makes", () => {
+  const dir = tmp();
+  try {
+    const good = shapes([...CC]).out, allowGood = shapes(['--allow', '.zqa', '--allow', '.zqb', ...CC]).out;
+    const rowsOf = (t) => t.slice(0, -1).split('\n');
+    const R = rowsOf(good), A = rowsOf(allowGood);
+    const text = (rows) => rows.join('\n') + '\n';
+    const P = (r) => JSON.parse(r), S = (o) => JSON.stringify(o);
+    const first = (rows, k) => rows.findIndex((r) => P(r).k === k);
+    const lastOf = (rows, k) => rows.reduce((j, r, i) => (P(r).k === k ? i : j), -1);
+    const fixEnd = (rows) => [...rows.slice(0, -1), S({ k: 'end', lines: rows.length })];
+    const head = (rows, fn) => [S(fn(P(rows[0]))), ...rows.slice(1)];
+    const at = (rows, i, fn) => rows.map((r, j) => (j === i ? fn(r) : r));
+    const ins = (rows, i, ...more) => [...rows.slice(0, i), ...more, ...rows.slice(i)];
+    const fp = first(R, 'path'), fk = first(R, 'kind'), lp = lastOf(R, 'path'), fv = first(R, 'version'), fr = first(R, 'rare');
+    const multi = R.findIndex((r) => { const o = P(r); return o.k === 'path' && o.types && Object.keys(o.types).length >= 2; });
+    const word = [...Buffer.from('zqcanary-payload')].reduce((a, b, i) => { if (i % 3 === 0) a.push(b); else a[a.length - 1] = a[a.length - 1] * 256 + b; return a; }, []);
+    const edits = [
+      ['floor 1, which --floor refuses', text(head(R, (o) => ({ ...o, floor: 1 })))],
+      ['floor 0', text(head(R, (o) => ({ ...o, floor: 0 })))],
+      ['floor -7', text(head(R, (o) => ({ ...o, floor: -7 })))],
+      ['floor 2.5', text(head(R, (o) => ({ ...o, floor: 2.5 })))],
+      ['floor a string', text(head(R, (o) => ({ ...o, floor: 'zqEdit' })))],
+      ['floor an object', text(head(R, (o) => ({ ...o, floor: { zq: 1 } })))],
+      ['floor written 1e300', text(R).replace('"floor":3,', '"floor":1e300,')],
+      ['floor 9007199254740993, which a double rounds', text(R).replace('"floor":3,', '"floor":9007199254740993,')],
+      ['floor 31337, every path line kept (each under it)', text(head(R, (o) => ({ ...o, floor: 31337 })))],
+      ["a path line's files 1, under the floor of 3", text(at(R, fp, (r) => S({ ...P(r), files: '1' })))],
+      ["the vocabulary's sha256 000000000000", text(head(R, (o) => ({ ...o, vocabulary: [{ ...o.vocabulary[0], sha256: '000000000000' }] })))],
+      ["the vocabulary's paths 31337", text(head(R, (o) => ({ ...o, vocabulary: [{ ...o.vocabulary[0], paths: 31337 }] })))],
+      ["the first line's lines the number 42", text(head(R, (o) => ({ ...o, lines: 42 })))],
+      ['a kind line moved after the path lines', text([...R.slice(0, fk), ...R.slice(fk + 1, lp + 1), R[fk], ...R.slice(lp + 1)])],
+      ['a path line moved before the kind lines', text([...R.slice(0, fk), R[fp], ...R.slice(fk, fp), ...R.slice(fp + 1)])],
+      ['a version line moved last, before the end line', text([...R.slice(0, fv), ...R.slice(fv + 1, -1), R[fv], R[R.length - 1]])],
+      ['the path lines reversed', text([...R.slice(0, fp), ...R.slice(fp, lp + 1).reverse(), ...R.slice(lp + 1)])],
+      ['a path line twice, the end line counting it', text(fixEnd(ins(R, fp, R[fp])))],
+      ['a path line 31 times', text(fixEnd(ins(R, fp, ...Array(30).fill(R[fp]))))],
+      ['a kind line twice', text(fixEnd(ins(R, fk, R[fk])))],
+      ['a version line twice', text(fixEnd(ins(R, fv, R[fv])))],
+      ['a rare line twice', text(fixEnd(ins(R, fr, R[fr])))],
+      ['a path line twice, the copy with n a 16-digit bucket', text(fixEnd(ins(R, fp + 1, S({ ...P(R[fp]), n: '4503599627370496-9007199254740991' }))))],
+      ['an end line inside the report, holding 987654321', text(fixEnd(ins(R, fp, S({ k: 'end', lines: 987654321 }))))],
+      ["an end line inside the report, holding the report's count", text(fixEnd(ins(R, fp, S({ k: 'end', lines: R.length + 1 }))))],
+      ['an end line inside the report, holding 2.5', text(fixEnd(ins(R, fp, S({ k: 'end', lines: 2.5 }))))],
+      ['an end line inside the report, holding a string', text(fixEnd(ins(R, fp, S({ k: 'end', lines: 'zq7canary' }))))],
+      ['six end lines before the last, a word in them as whole numbers', text(fixEnd(ins(R, R.length - 1, ...word.map((n) => S({ k: 'end', lines: n })))))],
+      ['a second first line, floor 987654321', text(fixEnd(ins(R, 1, S({ ...P(R[0]), floor: 987654321 }))))],
+      ['a second first line, the same', text(fixEnd(ins(R, fp, R[0])))],
+      ['a path line given "paths":123456789', text(at(R, fp, (r) => S({ ...P(r), paths: 123456789 })))],
+      ['a path line given "lines":4294967296', text(at(R, fp, (r) => S({ ...P(r), lines: 4294967296 })))],
+      ["a path line's types keys reversed", text(at(R, multi, (r) => { const o = P(r); o.types = Object.fromEntries(Object.entries(o.types).reverse()); return S(o); }))],
+      ["a path line's fields reversed", text(at(R, fp, (r) => S(Object.fromEntries(Object.entries(P(r)).reverse()))))],
+      ['an end line whose lines is given twice, a word first', text(at(R, R.length - 1, () => `{"k":"end","lines":"zqcanary words in the report","lines":${R.length}}`))],
+      ['a path line whose kind is given twice, a word first', text(at(R, fp, (r) => r.replace('{"k":"path",', '{"k":"path","kind":"zqcanarykind private",')))],
+      ["the first line's format given twice, a word first", text(at(R, 0, (r) => r.replace('{"k":"shapes",', '{"k":"shapes","format":"zqcanary header text",')))],
+      ['spaces inside a line', text(at(R, fp, (r) => r.replace(/,/g, ' ,  ')))],
+      ['a key written as an escape', text(at(R, fp, (r) => r.replace('{"k":"path"', '{"\\u006b":"path"')))],
+      ['a blank line after the end line', text(R) + '\n'],
+      ['a blank line inside the report', text(ins(R, fp, ''))],
+      ['a byte-order mark', String.fromCharCode(0xfeff) + text(R)],
+      ['every line ended by CR LF', R.map((r) => r + '\r\n').join('')],
+      ['the last line cut away', text(R.slice(0, -1))],
+      ['a version with a suffix', text(at(R, fv, (r) => r.replace(/"v":"[^"]*"/, '"v":"9.9.9-zq"')))],
+      ['a line that is not JSON', text(at(R, fp, () => 'not json zq7canary'))],
+      ['a line that is a JSON array', text(at(R, fp, () => '["zq7canary"]'))],
+      ["allowed: an entry that is no --allow argument, with a dot", text(head(A, (o) => ({ ...o, allowed: ['zz secret words.and/a path'] })))],
+      ['allowed: an entry that is no --allow argument, without a dot', text(head(A, (o) => ({ ...o, allowed: ['zzsecret'] })))],
+      ['allowed out of order', text(head(A, (o) => ({ ...o, allowed: ['.zqb', '.zqa'] })))],
+      ['allowed with an entry twice', text(head(A, (o) => ({ ...o, allowed: ['.zqa', '.zqa', '.zqb'] })))],
+    ];
+    const verdict = (name, t) => {
+      const f = join(dir, `${name}.jsonl`);
+      writeFileSync(f, t);
+      const c = spawnSync(process.execPath, [CLI, 'shapes', '--check', f], { encoding: 'utf8' });
+      const v = spawnSync(process.execPath, [join(here, 'shapes-validate.mjs'), f, DOCS], { encoding: 'utf8' });
+      assert.equal(c.stdout, '', `${name}: --check writes nothing on stdout`);
+      return [c.status, v.status];
+    };
+    const wrong = [];
+    edits.forEach(([what, t], i) => {
+      assert.notEqual(t, good, `${what}: the edit changes the report`);
+      const got = verdict(`e${i}`, t);
+      if (got[0] !== 1 || got[1] !== 1) wrong.push(`${what}: --check ${got[0]}, the validator ${got[1]}`);
+    });
+    assert.deepEqual(wrong, [], 'each hand-edit refused (exit 1) by --check and by the validator');
+    // the reports the writer makes: both accept
+    const made = [good, allowGood, shapes(['--floor', '2', ...CC]).out, shapes(['--floor', '9007199254740991', ...CC]).out, shapes(['--vocabulary', DOCS, '--floor', '4', ...CC]).out];
+    made.forEach((t, i) => assert.deepEqual(verdict(`w${i}`, t), [0, 0], `a report the writer made (${i}): accepted by both`));
+  } finally { rm(dir); }
 });

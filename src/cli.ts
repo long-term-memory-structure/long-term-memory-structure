@@ -2249,9 +2249,10 @@ ltms shapes --unlisted <path>... [--supplier <name> | --vocabulary <file>]
 Prints a report of the shape of transcripts: their record kinds, key paths,
 JSON types, classes of strings and numbers, counts, and the versions of the
 program that wrote them, never their content. It is made to be sent (to the
-maintainers of ltms, say): every line of it is checked against the report's
-closed language just before it is written, so a defect in the reading can
-make a count wrong but cannot put a word of a transcript in it.
+maintainers of ltms, say): the report is checked against its closed language
+whole, every line and the place of each, before any of it is written, so a
+defect in the reading can make a count wrong but cannot put a word of a
+transcript in it.
   ltms shapes ~/.claude/projects/-home-me-my-app > shapes.jsonl
   ltms shapes --check shapes.jsonl
 A path is a transcript, or a directory: every .jsonl under it, at any depth.
@@ -2300,15 +2301,19 @@ too), and run ltms shapes --check on it.
                       1024 to the longest string this Node can hold): a
                       longer one is counted, as its bytes pass, and never
                       read
---check <report>      is every token of this report in its language? Give
-                      the vocabulary the report was made with
+--check <report>      is this report in its language: every token of it,
+                      and every line in its place? Give the vocabulary the
+                      report was made with. It cannot tell whether ltms
+                      wrote the report
 --unlisted            NOT a report: the names and values the vocabulary does
                       not hold, as the transcripts write them, with exact
                       counts and the --allow that would print each, for
                       your own review. Every line says "send":false, and
                       --check refuses it: do not send it
 
-The report's lines, in this order, each a JSON object:
+The report's lines, in this order, each a JSON object, its fields in the
+order given below; each kind's lines in ltms's order, none twice (versions
+in numeric order, kinds and rare lines by kind, paths by kind and path):
 
 The first line, k "shapes":
   format        "ltms-shapes/0"
@@ -2389,10 +2394,10 @@ holds no path and no exact count, and no time but a version written as a
 date (above).
 
 Exit status: 0 when every file was read and every line written; 1 when a
-file could not be read, or a line failed the language at the write (a bug in
-ltms: the report is then incomplete, and stderr says so); --check: 0 when
-every token is in the language, 1 when not or when the report cannot be
-read; 2 on a usage error.
+file could not be read, or the report failed its language at the write (a
+bug in ltms: none of it is then written, and stderr says why); --check: 0
+when the report is in its language, every token and every line in its
+place, 1 when not or when it cannot be read; 2 on a usage error.
 `;
 
 interface ShapesArgs {
@@ -2500,8 +2505,11 @@ function shapesRun(args: string[]): number {
   const report = buildReport(V, S, floor, allowed);
   const w = writeReport(report.lines, shapesLanguage(V, allowed, { floor, lines: report.lines.length }), out);
   if (w.refused) {
+    // the report is checked whole before any of it is written: none of a report that fails is
     const first = w.reasons[0];
-    err(`ltms shapes: ${plural(w.refused, 'line', 'lines')} failed the report's own language at the write and ${w.refused === 1 ? 'was' : 'were'} not written (the first, line ${first.line}: ${first.why}). This is a bug in ltms; the report is incomplete: do not send it.`);
+    err(`ltms shapes: ${plural(w.refused, 'line', 'lines')} failed the report's own language at the write, so none of the report was written (the first, line ${first.line}: ${first.why}). This is a bug in ltms.`);
+    err(`ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; no report was written; ${secs()} s.`);
+    return 1;
   }
   err(`ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. Before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>${vocabularyArg}`);
   return S.filesFailed || w.refused ? 1 : 0;
@@ -2516,16 +2524,27 @@ function shapesCheck(file: string, V: ShapesVocabulary): number {
   if (r.k === 'not-a-report') { err(`ltms shapes --check: '${file}': its first line is not a report's (k "shapes", with an allowed list), so it is not a report. An --unlisted list is not one either: it is never sent.`); return 1; }
   if (r.k === 'bad-allowed') { err(`ltms shapes --check: '${file}': its first line's allowed list holds an entry that is not an --allow argument (a path, or a path and a value, by the rules --allow takes).`); return 1; }
   const named = V.list.map((v) => `${v.name}@${v.sha256}`).join(', ');
-  const say = (p: { line: number; why: string }): string => (p.why === 'end'
+  // a line in the language alone, but not in its place, or not written as ltms writes it (S374's closure read, S3 and U6)
+  const place: Readonly<Record<string, string>> = {
+    'first line': 'it is not a first line (k "shapes")',
+    'second first line': 'it is a second first line (k "shapes"): a report has one, its first',
+    'end before the last line': 'it is an end line before the last line: a report has one end line, its last',
+    order: "it is out of the format's order: a report's lines come shapes, version, kind, path, rare, end, and the lines of each kind in ltms's order (versions in numeric order, kinds by their text, paths by kind and then path)",
+    repeat: 'it repeats the line of its kind before it (the same version, kind, or kind and path): a report has one line for each',
+    'under the floor': 'it is a path line in fewer files than the floor the first line states: ltms prints no such line',
+    form: "it is not written as ltms writes a line: its fields in the format's order, each map's keys in ltms's order, each key once, no space",
+  };
+  const cut = (p: { why: string }): boolean => p.why === 'cut' || p.why === 'count';
+  const say = (p: { line: number; why: string }): string => (cut(p)
     ? `the last line is not an end line that counts the report's ${r.lines} lines: the report is cut, or was edited`
     : p.why === 'vocabulary' && p.line === 1
       ? `the first line names another vocabulary than the one given, ${named}: give the one the report was made with (--vocabulary <file>)`
-      : `its ${p.why} is not in the report's language`);
-  const shown = r.problems.filter((p, i) => i < 20 || p.why === 'end');
+      : place[p.why] ?? `its ${p.why} is not in the report's language`);
+  const shown = r.problems.filter((p, i) => i < 20 || cut(p));
   for (const p of shown) err(`ltms shapes --check: line ${p.line}: ${say(p)}.`);
   if (r.problems.length > shown.length) err(`ltms shapes --check: and ${r.problems.length - shown.length} more.`);
   if (r.problems.length) { err(`ltms shapes --check: '${file}': ${plural(r.problems.length, 'problem', 'problems')}; do not send it as it is.`); return 1; }
-  err(`ltms shapes --check: '${file}': ${r.lines} lines, every token in the report's language (vocabulary ${named}; allowed: ${r.allowed.length ? r.allowed.join(' ') : 'none'}).`);
+  err(`ltms shapes --check: '${file}': ${r.lines} lines, every token in the report's language and every line in its place (vocabulary ${named}; allowed: ${r.allowed.length ? r.allowed.join(' ') : 'none'}).`);
   return 0;
 }
 

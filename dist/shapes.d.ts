@@ -200,25 +200,47 @@ export declare function shapesLanguage(V: ShapesVocabulary, allowed: readonly st
 /** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words (the
  *  field or the line kind that failed), never a part of the line. */
 export declare function checkLine(o: unknown, Lg: ShapesLanguage): string | null;
+/** A problem of a report: the number of its line, and why, as one of the check's own words (checkLine's, or one of the
+ *  report as a whole: CHECK_WORDS), never a part of the line. */
+export interface ShapesProblem {
+    /** The line's number in the report, from 1. */
+    line: number;
+    /** Why it is not in the language. */
+    why: string;
+}
+/** The words of the report as a whole, beside checkLine's: a line that is in the language alone but not where it stands
+ *  ('first line': line 1 is not a first line; 'second first line'; 'end before the last line'; 'order': out of the
+ *  format's order of line kinds, or of its kind's order; 'repeat': the same key as the line of its kind before it;
+ *  'under the floor': a path line in fewer files than the floor), one not written as the builder writes it ('form'), and
+ *  the end ('cut': the last line is not an end line; 'count': the end line does not count the report's lines). */
+export declare const CHECK_WORDS: string[];
+/** THE CHECK OF A REPORT WHOLE, the same at the write and at --check (S374's closure read, S3 and U6). `rows` are its
+ *  lines' text (null: a line that has none, an object JSON cannot write). Each line alone: JSON, an object, in the
+ *  language (checkLine), and written byte for byte as the builder writes it (canonicalText: its fields in the format's
+ *  order, each map's keys in the builder's order, each key once, no space, JSON's own spelling of every string and
+ *  number). Then each line in its place: line 1 the first line, and no other; the line kinds in the format's order
+ *  (shapes, version, kind, path, rare, end); within each kind, the lines strictly in the builder's order, so none
+ *  repeats; a path line in at least the floor's files; one end line, the last, that counts the lines. A line that fails
+ *  alone is not held to its place. Returns the problems, by line; none when the report is in the language. */
+export declare function checkRows(rows: readonly (string | null)[], Lg: ShapesLanguage): ShapesProblem[];
 /** What writeReport did. */
 export interface ShapesWritten {
-    /** Lines written. */
+    /** Lines written: every line of the report, or none. */
     written: number;
-    /** Lines refused at the write (each a bug in ltms): not written. */
+    /** The lines that failed the check (each a bug in ltms); when there is one, nothing is written. */
     refused: number;
-    /** For each refused line, its number in the report and why (checkLine's word). */
-    reasons: {
-        line: number;
-        why: string;
-    }[];
+    /** Each problem, by its line's number in the report and why (checkRows' words). */
+    reasons: ShapesProblem[];
     /** Bytes written. */
     bytes: number;
 }
-/** THE WRITE GUARD, and the only way a report leaves this module: each line is turned into the text that will be
- *  written, that text is parsed back and checked against the language, and only that text is written: what is checked is
- *  exactly what goes out (an object whose JSON is not its own fields, through an inherited toJSON say, cannot pass as one
- *  line and be written as another: S374's closure read, S1). A line that fails is not written. `write` is given the text
- *  in parts of at most 1,000 lines. */
+/** THE WRITE GUARD, and the only way a report leaves this module. Each line is turned into the text that will be
+ *  written; the report, that text, is checked whole (checkRows: each line parsed back and checked against the language,
+ *  and each in its place) before any of it is written; and only that text is written: what is checked is exactly what
+ *  goes out (an object whose JSON is not its own fields, through an inherited toJSON say, cannot pass as one line and be
+ *  written as another: S374's closure read, S1). A report with any problem is not written at all: no part of a report
+ *  out of the language (a line repeated, say) leaves, and which lines failed cannot be read from what does. `write` is
+ *  given the text in parts of at most 1,000 lines. */
 export declare function writeReport(lines: readonly unknown[], Lg: ShapesLanguage, write: (text: string) => void): ShapesWritten;
 /** What --check found in a report file. */
 export type ShapesCheck = {
@@ -229,17 +251,15 @@ export type ShapesCheck = {
     k: 'checked';
     /** The lines read. */
     lines: number;
-    /** Each line outside the language, by its number and checkLine's word; the cut or edited end, as 'end'. */
-    problems: {
-        line: number;
-        why: string;
-    }[];
+    /** Each problem, by its line's number and why (checkRows' words). */
+    problems: ShapesProblem[];
     /** The allowed list of its first line, as read. */
     allowed: string[];
 };
-/** --check: is every token of this report in its language? The language is the vocabulary given and the report's own
- *  allowed list (its first line); every line is checked as the writer checks it, and the last line must be an end line
- *  that counts the report's lines. */
+/** --check: is this report, every token of it and every line in its place, in its language? The language is the
+ *  vocabulary given and the report's own allowed list (its first line); the report is checked whole as the writer checks
+ *  it (checkRows), its floor the one its first line states. It cannot tell whether ltms wrote it, nor whether its counts
+ *  are true. */
 export declare function checkReport(text: string, V: ShapesVocabulary): ShapesCheck;
 /** --unlisted: NOT a report. The names and values the vocabulary lacks, read from the transcripts as written, for the
  *  person's own review before an --allow; every line says "send":false, and --check refuses the list. Exact counts. A
