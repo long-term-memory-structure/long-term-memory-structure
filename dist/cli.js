@@ -781,6 +781,35 @@ function prefixCollisions(cmd, files) {
 const out = (s) => { if (s)
     process.stdout.write(s); };
 const err = (s) => { process.stderr.write(s.endsWith('\n') ? s : s + '\n'); };
+/** Set once outParts has said what it could not write: the stdout error handler (at the end of this file) then exits
+ *  with the status set, adding no message of its own. */
+let outCutSaid = false;
+/** stdout for output that must arrive whole (shapes' report and its --unlisted list): the parts are written in order,
+ *  and `done` is called once, after the last part was written (null), or with the error that stopped the first part
+ *  that failed (EPIPE: the reader stopped before the end; ENOSPC: a full disk) and the number of parts written before
+ *  it. A failure sets the exit status to 1; `done` says what was cut (S374's closure read, U9). */
+function outParts(parts, done) {
+    let written = 0, over = false;
+    for (const part of parts) {
+        process.stdout.write(part, (e) => {
+            if (over)
+                return;
+            if (e) {
+                over = true;
+                outCutSaid = true;
+                process.exitCode = 1;
+                done(e, written);
+                return;
+            }
+            if (++written === parts.length) {
+                over = true;
+                done(null, written);
+            }
+        });
+    }
+    if (!parts.length)
+        done(null, 0);
+}
 /** The skeleton is written in chunks, never joined whole: millions of call lines can pass JavaScript's limit on a
  *  string's length even when the file itself could be read. */
 function writeSkeleton(lines) {
@@ -2846,18 +2875,23 @@ The --unlisted list, never a report:
                 label or holds ':' at the kind path or a sub-kind's path)
 
 stderr holds the files and directories that could not be read, by their
-paths, and one closing line with the totals and the time; the report holds
-no path and no exact count, and no time but a version written as a date
-(above). --unlisted's closing line gives the names and the values it lists,
-apart, and the occurrences past the first 2048 names or values at a path,
-which it counts and does not list (it keeps no name past them, so it cannot
-say how many names they are).
+paths, and, once every line is written, one closing line with the totals
+and the time; the report holds no path and no exact count, and no time but
+a version written as a date (above). --unlisted's closing line gives the
+names and the values it lists, apart, and the occurrences past the first
+2048 names or values at a path, which it counts and does not list (it keeps
+no name past them, so it cannot say how many names they are).
 
-Exit status: 0 when every file was read and every line written; 1 when a
-file could not be read, or the report failed its language at the write (a
-bug in ltms: none of it is then written, and stderr says why); --check: 0
-when the report is in its language, every token and every line in its
-place, 1 when not or when it cannot be read; 2 on a usage error.
+Exit status: 0 when every file was read and every line written to stdout;
+1 when a file could not be read, when the report failed its language at
+the write (a bug in ltms: none of it is then written, and stderr says why),
+or when the write to stdout failed (a reader that stopped before the end,
+as head can, or a full disk: stderr says the output was cut and how many
+of its lines were written, and gives no closing line); --check: 0 when the
+report is in its language, every token and every line in its place, 1 when
+not or when it cannot be read; 2 on a usage error. A reader can still drop
+lines a write gave it (head -1 on a report a pipe holds whole: exit 0), so
+whether a saved report is whole is told by its end line and --check.
 `;
 /** shapes' arguments, or the exit status of a usage error already reported (or of --help, --version). */
 function readShapesArgs(args) {
@@ -3010,20 +3044,31 @@ function shapesRun(args) {
     if (a.unlisted) {
         // NOT a report: the names and values as the transcripts write them, for the person's own review
         const review = reviewLines(S, V);
+        const reviewParts = [];
         for (let i = 0; i < review.length; i += 1000)
-            out(review.slice(i, i + 1000).map((o) => JSON.stringify(o) + '\n').join(''));
+            reviewParts.push(review.slice(i, i + 1000).map((o) => JSON.stringify(o) + '\n').join(''));
         // what the list holds, names and values apart, and what it counted past the cap without listing it: the occurrences,
         // since no name or value past the cap is kept (S374's closure read, U8 and S5)
         const t = reviewTotals(review);
         const more = t.moreNamePaths + t.moreValuePaths
             ? `; past the first ${SHAPES_NAMES_PER_PATH} at a path, ${plural(t.moreNames, 'occurrence', 'occurrences')} of names (at ${plural(t.moreNamePaths, 'path', 'paths')}) and ${t.moreValues} of values (at ${plural(t.moreValuePaths, 'path', 'paths')}) are counted on unlisted-more lines, not listed`
             : ', every one met';
-        err(`ltms shapes --unlisted: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; listed: ${plural(t.names, 'name', 'names')} (at ${plural(t.namePaths, '.* path', '.* paths')}) and ${plural(t.values, 'value', 'values')} (at ${plural(t.valuePaths, 'path', 'paths')}) the vocabulary does not hold, as the transcripts write them${more}; ${secs()} s. This list is for your own review, not a report: do not send it. To print a name in a report, rerun without --unlisted, with the --allow its line gives.`);
+        const head = `ltms shapes --unlisted: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; `;
+        // the closing line once every line is written; at a write that fails, what was cut instead (S374's closure read, U9)
+        outParts(reviewParts, (e, parts) => {
+            if (e) {
+                err(`${head}${shapesCut('list', e, linesIn(reviewParts, parts), review.length)} The list is incomplete.`);
+                return;
+            }
+            err(`${head}listed: ${plural(t.names, 'name', 'names')} (at ${plural(t.namePaths, '.* path', '.* paths')}) and ${plural(t.values, 'value', 'values')} (at ${plural(t.valuePaths, 'path', 'paths')}) the vocabulary does not hold, as the transcripts write them${more}; ${secs()} s. This list is for your own review, not a report: do not send it. To print a name in a report, rerun without --unlisted, with the --allow its line gives.`);
+        });
         return S.filesFailed ? 1 : 0;
     }
     const floor = a.floor ?? SHAPES_FLOOR;
     const report = buildReport(V, S, floor, allowed);
-    const w = writeReport(report.lines, shapesLanguage(V, allowed, { floor, lines: report.lines.length }), out);
+    // the parts writeReport hands its writer, and nothing else, go out through outParts, which reports a write that fails
+    const reportParts = [];
+    const w = writeReport(report.lines, shapesLanguage(V, allowed, { floor, lines: report.lines.length }), (text) => { reportParts.push(text); });
     if (w.refused) {
         // the report is checked whole before any of it is written: none of a report that fails is
         const first = w.reasons[0];
@@ -3031,8 +3076,30 @@ function shapesRun(args) {
         err(`ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; no report was written; ${secs()} s.`);
         return 1;
     }
-    err(`ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. Before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>${vocabularyArg}`);
-    return S.filesFailed || w.refused ? 1 : 0;
+    const head = `ltms shapes: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; `;
+    // the closing line once every line is written, so it never claims a line that was not; at a write that fails, what
+    // was cut instead, exit 1 (S374's closure read, U9)
+    outParts(reportParts, (e, parts) => {
+        if (e) {
+            err(`${head}${shapesCut('report', e, linesIn(reportParts, parts), w.written)} A cut report fails ltms shapes --check: do not send it.`);
+            return;
+        }
+        err(`${head}the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. Before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>${vocabularyArg}`);
+    });
+    return S.filesFailed ? 1 : 0;
+}
+/** The lines in the first `n` parts of an output (each line ends with a new line, which JSON never holds inside one). */
+function linesIn(parts, n) {
+    let lines = 0;
+    for (const p of parts.slice(0, n))
+        for (let i = p.indexOf('\n'); i >= 0; i = p.indexOf('\n', i + 1))
+            lines++;
+    return lines;
+}
+/** What a write to stdout that failed cut: its error, and how many of the output's lines were written before it. */
+function shapesCut(what, e, wrote, of) {
+    const why = e.code === 'EPIPE' ? 'EPIPE: the reader stopped before the end' : e.code === 'ENOSPC' ? 'ENOSPC: the disk is full' : (e.code ?? 'an error');
+    return `the ${what} was cut: writing it to stdout failed (${why}) after ${wrote} of its ${of} lines were written; the rest were not, or not whole.`;
 }
 /** --check: every line of a report against its language (the vocabulary given, the report's own allowed list). Each
  *  message says what is wrong in plain words, by the line and the field that failed or the place it stands in, and
@@ -3356,9 +3423,11 @@ function main(argv) {
     }
     return 0;
 }
-// A reader that stops early (e.g. `| head`) closes the pipe: stop quietly, it is not an error here.
+// A reader that stops early (e.g. `| head`) closes the pipe: stop quietly, with the status the command set. Output that
+// must arrive whole (outParts: shapes) has said what was cut, and set the status to 1, before this runs (a write's
+// callback comes before the stream's error), so nothing more is said for it.
 process.stdout.on('error', (e) => {
-    if (e.code === 'EPIPE')
+    if (e.code === 'EPIPE' || outCutSaid)
         process.exit(process.exitCode ?? 0);
     process.stderr.write(`ltms: cannot write the output (${e.code ?? e.message}); what was written so far is incomplete.\n`);
     process.exit(1);

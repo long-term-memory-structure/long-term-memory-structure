@@ -15,8 +15,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { closeSync, constants, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -517,12 +517,17 @@ test('shapes: source: shapes.ts holds ASCII only and no typed backslash-u, names
   const shaped = [...words].filter((w) => /[A-Z_$@-]/.test(w));
   assert.ok(shaped.length > 50, `${shaped.length} identifier-shaped words in the vocabularies`);
   assert.deepEqual(shaped.filter((w) => src.includes(w)), [], "src/shapes.ts holds a supplier's key or value");
-  // the command's section: one writeReport call writes the report; out() writes its help and the review list, nothing else
+  // the command's section: one writeReport call writes the report; out() writes its help, nothing else; the report and
+  // the review list go out through outParts (S374's closure read, U9: a write that fails is reported), the report's parts
+  // being what writeReport hands its writer, and nothing else
   const cli = readFileSync(join(root, 'src', 'cli.ts'), 'utf8');
   const section = cli.slice(cli.indexOf('// ---- ltms shapes'), cli.indexOf('\n// ---- ltms records'));   // 0.3.0: records' section follows
   assert.ok(section.length > 1000, 'the shapes section of src/cli.ts');
   assert.equal(section.match(/\bwriteReport\(/g)?.length, 1, 'one writeReport call');
-  assert.deepEqual([...section.matchAll(/\bout\(([A-Za-z_]+)/g)].map((m) => m[1]).sort(), ['SHAPES_HELP', 'review'], "shapes' out() calls: its help, and the review list");
+  assert.deepEqual([...section.matchAll(/\bout\(([A-Za-z_]+)/g)].map((m) => m[1]), ['SHAPES_HELP'], "shapes' out() call: its help");
+  assert.deepEqual([...section.matchAll(/\boutParts\(([A-Za-z_]+)/g)].map((m) => m[1]).sort(), ['reportParts', 'reviewParts'], "shapes' outParts() calls: the report's parts, and the review list's");
+  assert.match(section, /\bwriteReport\([^\n]*, \(text\) => \{ reportParts\.push\(text\); \}\);/, "the report's parts are what writeReport hands its writer");
+  assert.equal(section.match(/\breportParts\.push\(/g)?.length, 1, "nothing else is put in the report's parts");
   assert.doesNotMatch(section, /process\.stdout|console\./);
 });
 
@@ -1556,4 +1561,92 @@ test("shapes --unlisted: the closing line states the names and the values listed
     assert.ok(listed[0] > 0 && listed[2] > 0, `${listed}`);
     assert.deepEqual(closingTotals(c.err), [listed, null], `the closing line states them: ${c.err}`);
   } finally { rm(dir); }
+});
+
+// U9 (S374's closure read): a reader that stopped before the end (EPIPE) gave exit 0, and the closing line, printed as
+// soon as the report was handed to stdout, said "the report: 216 lines" when none had reached a reader; on a full disk
+// (ENOSPC) the closing line claimed every line, and the next line said the output was incomplete. A write to stdout that
+// fails is now a failure: exit 1, one line saying the output was cut and how many of its lines were written, and no
+// closing line, which is printed only once every line was written. The reader that stops is made here without a race:
+// a FIFO whose read end is closed before ltms starts, or one this test reads from and closes after a known count of bytes.
+const NO_FIFOS_HERE = process.platform === 'win32' && 'no FIFOs on win32';
+test('shapes: a write to stdout that fails (a reader that stopped before the end, a full disk) gives exit 1 and a line saying the output was cut and how many of its lines were written, and no closing line; the closing line is printed once every line is written', { skip: NO_FIFOS_HERE }, async () => {
+  const dir = tmp();
+  try {
+    let fifos = 0;
+    const fifo = () => { const f = join(dir, `out-${fifos++}.fifo`); assert.equal(spawnSync('mkfifo', [f]).status, 0); return f; };
+    /** The write end of a FIFO whose read end is closed: the first write to it fails with EPIPE. */
+    const closedReader = () => { const f = fifo(); const r = openSync(f, constants.O_RDONLY | constants.O_NONBLOCK), w = openSync(f, constants.O_WRONLY); closeSync(r); return w; };
+    /** ltms shapes with stdout on `fd` (closed here once it has started). */
+    const run = (args, fd) => {
+      try {
+        const r = spawnSync(process.execPath, [CLI, 'shapes', ...args], { stdio: ['ignore', fd, 'pipe'], encoding: 'utf8', timeout: 120000, cwd: root });
+        if (r.error) throw r.error;
+        return { code: r.status, err: r.stderr };
+      } finally { closeSync(fd); }
+    };
+    const lines = shapes([...CC]).lines.length;
+    const reportHead = 'ltms shapes: 4 files read \\(0 failed\\), 49 records; ';
+    // the reader is gone before ltms starts
+    const a = run([...CC], closedReader());
+    assert.equal(a.code, 1, a.err);
+    assert.match(a.err, new RegExp(`^${reportHead}the report was cut: writing it to stdout failed \\(EPIPE: the reader stopped before the end\\) after 0 of its ${lines} lines were written`, 'm'), a.err);
+    assert.doesNotMatch(a.err, /the report: \d+ lines/, `no closing line claims what was not written: ${a.err}`);
+    assert.equal(a.err.split('\n').filter(Boolean).length, 1, `one line for one failure: ${a.err}`);
+    // a full disk
+    if (existsSync('/dev/full')) {
+      const f = run([...CC], openSync('/dev/full', 'w'));
+      assert.equal(f.code, 1, f.err);
+      assert.match(f.err, new RegExp(`^${reportHead}the report was cut: writing it to stdout failed \\(ENOSPC: the disk is full\\) after 0 of its ${lines} lines were written`, 'm'), f.err);
+      assert.equal(f.err.split('\n').filter(Boolean).length, 1, `one line for one failure: ${f.err}`);
+    }
+    // a regular file: the closing line, printed after the write, says what the file holds
+    const file = join(dir, 'r.txt');
+    const ok = run([...CC], openSync(file, 'w'));
+    assert.equal(ok.code, 0, ok.err);
+    const held = readFileSync(file, 'utf8');
+    assert.equal(held.split('\n').length - 1, lines);
+    assert.match(ok.err, new RegExp(`^${reportHead}the report: ${lines} lines, ${Buffer.byteLength(held)} bytes;`, 'm'), ok.err);
+    // the --unlisted list, its reader gone
+    const u = run(['--unlisted', ...CC], closedReader());
+    assert.equal(u.code, 1, u.err);
+    assert.match(u.err, /^ltms shapes --unlisted: 4 files read \(0 failed\), 49 records; the list was cut: writing it to stdout failed \(EPIPE: the reader stopped before the end\) after 0 of its \d+ lines were written/m, u.err);
+    assert.doesNotMatch(u.err, /listed: \d+ names?/, `no closing line: ${u.err}`);
+    // a reader that takes the list's first 1000 lines (its first write) and stops: 1000 were written. Its second 1000
+    // lines are more than a pipe holds, so their write waits until the reader is gone, and fails
+    const long = putLines(dir, 'long', { 'a.jsonl': range(0, 2048).map((i) => JSON.stringify({ type: 'user', [`zk${String(i).padStart(4, '0')}${'x'.repeat(200)}`]: 1 })) });
+    const whole = join(dir, 'u.txt');
+    const all = run(['--unlisted', long], openSync(whole, 'w'));
+    assert.equal(all.code, 0, all.err);
+    const rows = readFileSync(whole, 'utf8').split('\n').slice(0, -1);
+    assert.equal(rows.length, 2049);
+    const first = Buffer.byteLength(rows.slice(0, 1000).join('\n') + '\n');
+    assert.ok(Buffer.byteLength(rows.slice(1000, 2000).join('\n') + '\n') > 4 * 65536, 'the second write is more than a pipe holds (64 KiB by default; 1 MiB at most, unless raised)');
+    const f = fifo();
+    const r = openSync(f, constants.O_RDONLY | constants.O_NONBLOCK), w = openSync(f, constants.O_WRONLY);
+    const child = spawn(process.execPath, [CLI, 'shapes', '--unlisted', long], { stdio: ['ignore', w, 'pipe'], cwd: root });
+    closeSync(w);
+    let errText = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (d) => { errText += d; });
+    const closed = new Promise((resolve) => child.on('close', resolve));
+    const buf = Buffer.alloc(65536), pause = new Int32Array(new SharedArrayBuffer(4)), deadline = Date.now() + 60000;
+    let got = 0;
+    while (got < first && Date.now() < deadline) {
+      let n;
+      try { n = readSync(r, buf, 0, Math.min(buf.length, first - got), null); }
+      catch (e) { if (e.code !== 'EAGAIN') throw e; Atomics.wait(pause, 0, 0, 5); continue; }
+      if (n === 0) break;
+      got += n;
+    }
+    closeSync(r);
+    const code = await closed;
+    assert.equal(got, first, 'the reader took the first 1000 lines');
+    assert.equal(code, 1, errText);
+    assert.match(errText, /the list was cut: writing it to stdout failed \(EPIPE: the reader stopped before the end\) after 1000 of its 2049 lines were written/, errText);
+  } finally { rm(dir); }
+  // the README and --help say that a failed write exits 1
+  const flat = (s) => s.replace(/\s+/g, ' ');
+  assert.match(flat(readFileSync(join(root, 'README.md'), 'utf8')), /when the write to stdout failed: a reader that stopped before the end/);
+  assert.match(flat(spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout), /when the write to stdout failed \(a reader that stopped before the end/);
 });
