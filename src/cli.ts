@@ -54,6 +54,13 @@ interface StatsLine {
   errorClasses: Record<string, number>; retries: number; detours: number; maxHops: number; hopsOver2: number;
 }
 
+/** The issues of ltms's repository, package.json's bugs.url (the tests hold the two equal), written here once: where a
+ *  bug in ltms is reported, and where a shapes report is sent. An issue there is public (S374's closure read, U2). */
+const ISSUES = 'https://github.com/long-term-memory-structure/long-term-memory-structure/issues';
+/** The words of every message that calls an error a bug in ltms, with where to report it: each such message takes them
+ *  from here, so none can leave the place out (S375's known issue k17). */
+const A_BUG = `a bug in ltms (report it at ${ISSUES}; an issue there is public)`;
+
 const USAGE = `Usage:
   ltms index <path>...            one JSON line per session, newest first
   ltms skeleton <file.jsonl>...   one JSON line per turn and per tool call
@@ -1334,7 +1341,7 @@ function walkSummary(wk: Walker, w: { read: number; journal: number; empty: numb
 /** search, with an internal error outside any one file reported by its kind and its place, never its message. */
 function searchMain(args: string[]): number {
   try { return searchRun(args); }
-  catch (e) { err(`ltms search: stopped with an internal error (${internalError(e)}). This is a bug in ltms; anything printed before it is incomplete.`); return 1; }
+  catch (e) { err(`ltms search: stopped with an internal error (${internalError(e)}). This is ${A_BUG}; anything printed before it is incomplete.`); return 1; }
 }
 function searchRun(args: string[]): number {
   const started = Date.now();
@@ -1433,7 +1440,7 @@ function searchRun(args: string[]): number {
         if (after && sieveKey(after) === sieveKey(st) && cache.write(st, sieveTranscript(t, q.segmenter), flags)) sieves.kept++;
       }
     } catch (e) {
-      err(`ltms search: '${f.path}': stopped with an internal error (${internalError(e)}), so nothing in it was searched. This is a bug in ltms; the other files are processed as usual.`);
+      err(`ltms search: '${f.path}': stopped with an internal error (${internalError(e)}), so nothing in it was searched. This is ${A_BUG}; the other files are processed as usual.`);
       failed++;
     }
   }
@@ -1650,7 +1657,7 @@ function readIndexArgs(args: string[]): IndexSetup | number {
 /** index, with an internal error outside any one file reported by its kind and its place, never its message. */
 function indexMain(args: string[]): number {
   try { return indexRun(args); }
-  catch (e) { err(`ltms index: stopped with an internal error (${internalError(e)}). This is a bug in ltms; anything printed before it is incomplete.`); return 1; }
+  catch (e) { err(`ltms index: stopped with an internal error (${internalError(e)}). This is ${A_BUG}; anything printed before it is incomplete.`); return 1; }
 }
 function indexRun(args: string[]): number {
   const started = Date.now();
@@ -1695,7 +1702,7 @@ function indexRun(args: string[]): number {
         compactions: x.compactions, agents, firstPrompt: x.firstPrompt, lastPrompt: x.lastPrompt, lastReply: x.lastReply, path: f.path,
       } });
     } catch (e) {
-      err(`ltms index: '${f.path}': stopped with an internal error (${internalError(e)}), so it has no line. This is a bug in ltms; the other files are processed as usual.`);
+      err(`ltms index: '${f.path}': stopped with an internal error (${internalError(e)}), so it has no line. This is ${A_BUG}; the other files are processed as usual.`);
       failed++;
     }
   }
@@ -2255,9 +2262,6 @@ async function pinMain(argv: string[]): Promise<number> {
 /** The vocabularies that ship with ltms, by the name --supplier takes: files of the package's vocab/, beside dist/. */
 const SHAPES_SUPPLIERS: Readonly<Record<string, string>> = { 'claude-code': 'claude-code.docs.json' };
 const SHAPES_SUPPLIER = 'claude-code';
-/** Where a report is sent: the issues of ltms's repository, package.json's bugs.url (a test holds the two equal). An
- *  issue there is public (S374's closure read, U2). */
-const SHAPES_SEND_TO = 'https://github.com/long-term-memory-structure/long-term-memory-structure/issues';
 const SHAPES_OPTIONS = '--supplier, --vocabulary, --floor, --allow, --max-line, --check, --unlisted, --help and --version';
 /** What each option that takes a value takes, for the message when it is given none. */
 const SHAPES_VALUES: Readonly<Record<string, string>> = {
@@ -2314,7 +2318,7 @@ count over fewer files than the floor is added into (rare). Before you send
 a report, read its first line's allowed list (the only words in it you
 chose, but those of a vocabulary you gave with --vocabulary: read that file
 too), and run ltms shapes --check on it. To send it, open an issue at
-${SHAPES_SEND_TO}
+${ISSUES}
 (it is public: anyone can read it), attach the report file, and write which
 program and version wrote the transcripts.
 
@@ -2512,7 +2516,7 @@ const isReadError = (e: unknown): e is NodeJS.ErrnoException => e instanceof Err
 /** shapes, with an internal error outside any one file reported by its kind and its place, never its message. */
 function shapesMain(args: string[]): number {
   try { return shapesRun(args); }
-  catch (e) { err(`ltms shapes: stopped with an internal error (${internalError(e)}). This is a bug in ltms; anything printed before it is incomplete.`); return 1; }
+  catch (e) { err(`ltms shapes: stopped with an internal error (${internalError(e)}). This is ${A_BUG}; anything printed before it is incomplete.`); return 1; }
 }
 function shapesRun(args: string[]): number {
   const started = Date.now();
@@ -2549,7 +2553,7 @@ function shapesRun(args: string[]): number {
   const S = readShapes(V, found.files, { maxLine: a.maxLine ?? SHAPES_MAX_LINE, unlisted: a.unlisted });
   for (const f of S.failures) {
     err(isReadError(f.error) ? cannotRead('shapes', f.file, f.error)
-      : `ltms shapes: '${f.file}': stopped with an internal error (${internalError(f.error)}), so it counts as failed, and the report counts what was read of it before. This is a bug in ltms; the other files are read as usual.`);
+      : `ltms shapes: '${f.file}': stopped with an internal error (${internalError(f.error)}), so it counts as failed, and the report counts what was read of it before. This is ${A_BUG}; the other files are read as usual.`);
   }
   S.filesFailed += found.failed.length + found.notUtf8.length;
   // the entries named .jsonl that are not regular files, counted as search counts them (S374's closure read, U13)
@@ -2595,7 +2599,7 @@ function shapesRun(args: string[]): number {
   if (w.refused) {
     // the report is checked whole before any of it is written: none of a report that fails is
     const first = w.reasons[0];
-    err(`ltms shapes: ${plural(w.refused, 'line', 'lines')} failed the report's own language at the write, so none of the report was written (the first, line ${first.line}: ${first.why}). This is a bug in ltms.`);
+    err(`ltms shapes: ${plural(w.refused, 'line', 'lines')} failed the report's own language at the write, so none of the report was written (the first, line ${first.line}: ${first.why}). This is ${A_BUG}.`);
     err(`ltms shapes: ${plural(S.filesRead, 'file', 'files')} read (${S.filesFailed} failed), ${plural(S.records, 'record', 'records')}; no report was written; ${secs()} s.`);
     return 1;
   }
@@ -2604,7 +2608,7 @@ function shapesRun(args: string[]): number {
   // was cut instead, exit 1 (S374's closure read, U9)
   outParts(reportParts, (e, parts) => {
     if (e) { err(`${head}${shapesCut('report', e, linesIn(reportParts, parts), w.written)} A cut report fails ltms shapes --check: do not send it.`); return; }
-    err(`${head}the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. To send it, open an issue at ${SHAPES_SEND_TO} (it is public: anyone can read it), attach the report file, and write which program and version wrote the transcripts; before you send it, read ${toRead}, and check it: ltms shapes --check <the report>${vocabularyArg}`);
+    err(`${head}the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. To send it, open an issue at ${ISSUES} (it is public: anyone can read it), attach the report file, and write which program and version wrote the transcripts; before you send it, read ${toRead}, and check it: ltms shapes --check <the report>${vocabularyArg}`);
   });
   return S.filesFailed ? 1 : 0;
 }
@@ -2838,7 +2842,7 @@ file (a FIFO, a directory) included.
 /** records, with an internal error reported by its kind and its place, never its message. */
 function recordsMain(args: string[]): number {
   try { return recordsRun(args); }
-  catch (e) { err(`ltms records: stopped with an internal error (${internalError(e)}). This is a bug in ltms; anything printed before it is incomplete.`); return 1; }
+  catch (e) { err(`ltms records: stopped with an internal error (${internalError(e)}). This is ${A_BUG}; anything printed before it is incomplete.`); return 1; }
 }
 function recordsRun(args: string[]): number {
   const paths: string[] = [];
@@ -2890,7 +2894,7 @@ function recordsRun(args: string[]): number {
   const B = r.balance;
   const kinds = RECORD_KINDS.filter((k) => B.byKind[k]).map((k) => `${B.byKind[k]} ${k}`).join(', ');
   const ok = B.linesRead === B.recordsWritten;
-  err(`ltms records: '${file}': ${plural(B.linesRead, 'line', 'lines')} read${r.header.source.last_line_unterminated ? ' (the last without a newline)' : ''}, ${plural(B.recordsWritten, 'record', 'records')} written${kinds ? ` (${kinds})` : ''}; ${B.dupOf} repeating an earlier record's uuid; parents: ${B.parents.resolved} in the file, ${B.parents.root} ${B.parents.root === 1 ? 'root' : 'roots'}, ${B.parents.unresolved} not in this file, ${B.parents.none} outside the tree; links: ${B.links.found} in the file, ${B.links.missing} not in this file.${ok ? '' : ' THE COUNT DOES NOT BALANCE: a bug in ltms.'}`);
+  err(`ltms records: '${file}': ${plural(B.linesRead, 'line', 'lines')} read${r.header.source.last_line_unterminated ? ' (the last without a newline)' : ''}, ${plural(B.recordsWritten, 'record', 'records')} written${kinds ? ` (${kinds})` : ''}; ${B.dupOf} repeating an earlier record's uuid; parents: ${B.parents.resolved} in the file, ${B.parents.root} ${B.parents.root === 1 ? 'root' : 'roots'}, ${B.parents.unresolved} not in this file, ${B.parents.none} outside the tree; links: ${B.links.found} in the file, ${B.links.missing} not in this file.${ok ? '' : ` THE COUNT DOES NOT BALANCE: ${A_BUG}.`}`);
   return ok ? 0 : 1;
 }
 
@@ -2936,7 +2940,7 @@ function main(argv: string[]): number | Promise<number> {
       if (cmd === 'skeleton') writeSkeleton(lines); else out(JSON.stringify(statsOf(file, lines)) + '\n');
       done.push(file);
     } catch (e) {
-      err(`ltms ${cmd}: '${file}': stopped with an internal error (${internalError(e)}), so nothing was written for it. This is a bug in ltms; the other files are processed as usual.`);
+      err(`ltms ${cmd}: '${file}': stopped with an internal error (${internalError(e)}), so nothing was written for it. This is ${A_BUG}; the other files are processed as usual.`);
       failed++;
     }
   }
@@ -2958,7 +2962,7 @@ if (typeof status === 'number') process.exitCode = status;
 else {
   // pin is the only command that runs asynchronously: the lock is removed on a signal only while the event loop turns
   status.then((s) => { process.exitCode = s; }, (e: unknown) => {
-    err(`ltms pin: stopped with an internal error (${internalError(e)}). This is a bug in ltms; a pin's lock is removed when it stops, and the next pin records what this one left.`);
+    err(`ltms pin: stopped with an internal error (${internalError(e)}). This is ${A_BUG}; a pin's lock is removed when it stops, and the next pin records what this one left.`);
     process.exitCode = 1;
   });
 }

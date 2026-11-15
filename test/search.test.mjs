@@ -30,6 +30,8 @@ const SEARCH_URL = pathToFileURL(join(DIST, 'search.js')).href;
 const S = await import(SEARCH_URL);
 const P = await import(pathToFileURL(join(DIST, 'parser.js')).href);
 const CLI = join(DIST, 'cli.js');
+/** How a message calls an error a bug in ltms, with where to report it: package.json's bugs.url (S375's known issue k17). */
+const A_BUG_RE = `a bug in ltms (report it at ${JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).bugs?.url}; an issue there is public)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const fixture = (name) => join(here, 'fixtures', name);
 const read = (name) => readFileSync(fixture(name), 'utf8');
 const cp = (...c) => String.fromCodePoint(...c);
@@ -1591,7 +1593,7 @@ test('command: an internal error inside search is reported by its kind and its p
     const r = ltms(['search', W, dir], { node: ['-r', boom] });
     assert.equal(r.code, 1);
     const lines = r.err.split('\n').filter((l) => l);
-    assert.match(lines[0], new RegExp(`^ltms search: '${join(dir, 'a-boom.jsonl').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}': stopped with an internal error \\(TypeError at search\\.js:\\d+\\), so nothing in it was searched\\. This is a bug in ltms; the other files are processed as usual\\.$`));
+    assert.match(lines[0], new RegExp(`^ltms search: '${join(dir, 'a-boom.jsonl').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}': stopped with an internal error \\(TypeError at search\\.js:\\d+\\), so nothing in it was searched\\. This is ${A_BUG_RE}; the other files are processed as usual\\.$`));
     assert.equal(lines[1], 'ltms search: 1 matching turn in 1 of 2 files (1 read, 1 failed, as reported above); 1 shown.');
     assert.deepEqual(r.lines.filter((l) => l.k === 'file').map((l) => l.path), [join(dir, 'b-ok.jsonl')]);
     assert.ok(!(r.out + r.err).includes('zqcsecret') && !(r.out + r.err).includes('zqcboom'));
@@ -1944,7 +1946,7 @@ test('command: an internal error outside any one file is reported by its kind an
     writeFileSync(join(dir, 's.jsonl'), sessionWith([['zqvword', 'x']]));
     const r = ltms(['search', 'zqvword', dir], { node: ['-r', boom] });
     assert.deepEqual([r.code, r.out], [1, '']);
-    assert.match(r.err, /^ltms search: stopped with an internal error \(RangeError at cli\.js:\d+\)\. This is a bug in ltms; anything printed before it is incomplete\.\n$/);
+    assert.match(r.err, new RegExp(`^ltms search: stopped with an internal error \\(RangeError at cli\\.js:\\d+\\)\\. This is ${A_BUG_RE}; anything printed before it is incomplete\\.\\n$`));
     assert.ok(!r.err.includes('zqcsecret'));
   } finally { rm(dir); }
 });

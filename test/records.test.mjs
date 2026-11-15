@@ -466,7 +466,9 @@ test('records (S375, R10): the command\'s own balance check: a splitter that los
   ].join('\n'));
   const r = spawnSync(process.execPath, ['--import', mod, CLI, 'records', f], { encoding: 'utf8', maxBuffer: 64 << 20 });
   assert.equal(r.status, 1, r.stderr);
-  assert.match(r.stderr, /THE COUNT DOES NOT BALANCE: a bug in ltms\./);
+  // with where to report it: package.json's bugs.url (S375's known issue k17)
+  const url = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).bugs?.url;
+  assert.ok(r.stderr.includes(` THE COUNT DOES NOT BALANCE: a bug in ltms (report it at ${url}; an issue there is public).`), r.stderr);
   rmSync(d, { recursive: true });
 });
 

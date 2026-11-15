@@ -31,6 +31,8 @@ const SH = await import(pathToFileURL(join(DIST, 'shapes.js')).href);
 const RECOMPUTE = join(here, 'shapes-recompute.mjs');
 const FX = (n) => join(here, 'shapes-fixtures', n);
 const DOCS = join(root, 'vocab', 'claude-code.docs.json');
+/** How a message calls an error a bug in ltms, with where to report it: package.json's bugs.url (S375's known issue k17). */
+const A_BUG_RE = `a bug in ltms (report it at ${JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).bugs?.url}; an issue there is public)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const CODEX_V = FX('codex.sketch.json'), GEMINI_V = FX('gemini-cli.sketch.json');
 const CC = ['cc-a.jsonl', 'cc-b.jsonl', 'cc-c.jsonl', 'cc-map.jsonl'].map(FX);
 const CODEX = ['codex-a.jsonl', 'codex-b.jsonl', 'codex-c.jsonl'].map(FX);
@@ -479,7 +481,7 @@ test('shapes: the write guard refuses each line that holds a token outside the l
       if (w.written !== 0 || wrote !== '' || JSON.stringify(w.reasons) !== JSON.stringify([{ line: at, why: word }])) { wrong.push(`${what}: the module wrote ${w.written} lines, reasons ${JSON.stringify(w.reasons)}, not line ${at}: ${word}`); continue; }
       // the command, its builder giving these lines: exit 1, nothing on stdout, and stderr saying this, and nothing more
       const r = plantedRun(build, lines, [join(tiny, 't.jsonl')]);
-      const said = new RegExp(`^ltms shapes: 1 line failed the report's own language at the write, so none of the report was written \\(the first, line ${at}: ${esc(word)}\\)\\. This is a bug in ltms\\.\\nltms shapes: 1 file read \\(0 failed\\), 1 record; no report was written; \\d+\\.\\d s\\.\\n$`);
+      const said = new RegExp(`^ltms shapes: 1 line failed the report's own language at the write, so none of the report was written \\(the first, line ${at}: ${esc(word)}\\)\\. This is ${A_BUG_RE}\\.\\nltms shapes: 1 file read \\(0 failed\\), 1 record; no report was written; \\d+\\.\\d s\\.\\n$`);
       if (r.code !== 1 || r.out !== '' || !said.test(r.err)) wrong.push(`${what}: the command exits ${r.code}, ${r.out.length} bytes on stdout, stderr ${JSON.stringify(r.err)}`);
     }
     assert.deepEqual(wrong, [], 'each planted line refused at the write, by its rule\'s word, at its line');
@@ -563,7 +565,7 @@ test('shapes: an internal error is reported by its kind and its place in shapes.
     writeFileSync(join(dir, 'p', 'zqtop.jsonl'), '{}\n');
     const t = shapes([join(dir, 'p')], { node: ['-r', top] });
     assert.deepEqual([t.code, t.out], [1, '']);
-    assert.match(t.err, /^ltms shapes: stopped with an internal error \(TypeError at shapes\.js:\d+\)\. This is a bug in ltms; anything printed before it is incomplete\.\n$/);
+    assert.match(t.err, new RegExp(`^ltms shapes: stopped with an internal error \\(TypeError at shapes\\.js:\\d+\\)\\. This is ${A_BUG_RE}; anything printed before it is incomplete\\.\\n$`));
     assert.ok(!t.err.includes('zqcsecret'));
   } finally { rm(dir); }
 });
@@ -2042,4 +2044,41 @@ test('shapes (0.3.1, k15): a real bind mount of a directory inside itself, in a 
     assert.equal(s.status, 0, s.stderr);
     assert.deepEqual(warningsOf(s.stderr, 'search'), [`ltms search: warning: ${AGAIN_WORDS(1)}.`]);
   } finally { rm(dir); }
+});
+
+// k17 (S375's known issues, for 0.3.1), shapes' part: its three messages that call an error a bug in ltms (an internal
+// error outside any file, one in a file, and a report refused at the write) named no place to report it. Each now says
+// where: package.json's bugs.url (test/cli.test.mjs holds the other commands' messages, and the source's one constant).
+test("shapes (0.3.1, k17): its messages that call an error a bug in ltms (outside a file, in a file, a report refused at the write) say where to report it, package.json's bugs.url", () => {
+  const url = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).bugs?.url;
+  assert.match(url ?? '', /^https:\/\/github\.com\/[^/]+\/[^/]+\/issues$/, "package.json's bugs.url");
+  const said = `a bug in ltms (report it at ${url}; an issue there is public)`;
+  const dir = tmp(), build = plantedBuild();
+  try {
+    mkdirSync(join(dir, 'p'));
+    writeFileSync(join(dir, 'p', 'a.jsonl'), JSON.stringify({ type: 'user', zqboom: 1 }) + '\n');
+    writeFileSync(join(dir, 'p', 'b.jsonl'), JSON.stringify({ type: 'user' }) + '\n');
+    // stand-ins for future bugs (the internal-error test's): in a file, RegExp.prototype.test throws on a planted key;
+    // outside any file, listing a directory throws on a planted name
+    const boom = join(dir, 'boom.cjs'), top = join(dir, 'top.cjs');
+    writeFileSync(boom, "const test = RegExp.prototype.test;\nRegExp.prototype.test = function (s) { if (s === 'zqboom') throw new TypeError('zqcsecret ' + s); return test.call(this, s); };\n");
+    writeFileSync(top, "const { Dirent } = require('node:fs');\nconst orig = Dirent.prototype.isSymbolicLink;\nDirent.prototype.isSymbolicLink = function () { if (String(this.name).includes('zqtop')) throw new TypeError('zqcsecret ' + this.name); return orig.call(this); };\n");
+    const inFile = shapes([join(dir, 'p')], { node: ['-r', boom] });
+    mkdirSync(join(dir, 'q'));
+    writeFileSync(join(dir, 'q', 'zqtop.jsonl'), '{}\n');
+    const outside = shapes([join(dir, 'q')], { node: ['-r', top] });
+    // at the write: the builder's lines with one of no line kind planted, refused whole
+    const t = join(dir, 'p', 'b.jsonl'), [planted] = plant(shapes([t]).lines, { k: 'zq7canary' });
+    const refused = plantedRun(build, planted, [t]);
+    const wrong = [];
+    for (const [what, r, start] of [
+      ['in a file', inFile, `ltms shapes: '${join(dir, 'p', 'a.jsonl')}': stopped with an internal error (`],
+      ['outside any file', outside, 'ltms shapes: stopped with an internal error ('],
+      ['at the write', refused, "ltms shapes: 1 line failed the report's own language at the write"],
+    ]) {
+      const bugs = r.err.split('\n').filter((l) => l.includes('bug in ltms'));
+      if (r.code !== 1 || bugs.length !== 1 || !bugs[0].startsWith(start) || !bugs[0].includes(said) || /zqcsecret/.test(r.err)) wrong.push(`${what}: exit ${r.code}, stderr ${JSON.stringify(r.err)}`);
+    }
+    assert.deepEqual(wrong, [], `each message says: ${said}`);
+  } finally { rm(dir); rm(build); }
 });

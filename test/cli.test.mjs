@@ -17,9 +17,10 @@ import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { freemem, tmpdir } from 'node:os';
 import { constants } from 'node:buffer';
+import { createRequire } from 'node:module';
 // ltms runs below with the cache off (LTMS_CACHE unset), and any sieve in a directory of this file's own, removed at exit
 { const { mkdtempSync: m, rmSync: r } = await import('node:fs'); const { tmpdir: d } = await import('node:os'); const c = m((await import('node:path')).join(d(), 'ltms-test-cache-')); process.env.XDG_CACHE_HOME = c; delete process.env.LTMS_CACHE; process.on('exit', () => r(c, { recursive: true, force: true })); }
 
@@ -1625,4 +1626,86 @@ test('--help (S375): every line of prose in ltms --help and in each command\'s -
     for (const l of r.stdout.split('\n')) if (l.length > 80 && !COMMAND.test(l)) long.push(`${args.join(' ')}: ${l.length}: ${l}`);
   }
   assert.deepEqual(long, []);
+});
+
+// k17 (S375's known issues, for 0.3.1): the messages that call an error a bug in ltms said nothing of where to report it.
+// Each now says: package.json's bugs.url, which src/ writes once, in words every such message takes from one constant.
+// Here search's, index's, skeleton's, stats', records' and pin's, each reached by a stand-in for a future bug; shapes'
+// three are test/shapes.test.mjs's.
+const bugsUrl = () => JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).bugs?.url;
+test("k17 (0.3.1): every message that calls an error a bug in ltms says where to report it, package.json's bugs.url: search's, index's, skeleton's, stats', records' and pin's, each one reached", () => {
+  const url = bugsUrl();
+  assert.match(url ?? '', /^https:\/\/github\.com\/[^/]+\/[^/]+\/issues$/, "package.json's bugs.url");
+  const said = `a bug in ltms (report it at ${url}; an issue there is public)`;
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  try {
+    // preloaded stand-ins: one throws inside the parser on a planted record (an error in a file), the other on a planted
+    // argument (an error outside any file); records' balance check made to fail as records' R10 test makes it
+    const inFile = join(dir, 'in-file.cjs'), outside = join(dir, 'outside.cjs'), skip = join(dir, 'skip.mjs');
+    writeFileSync(inFile, "const orig = String.prototype.trimStart;\nString.prototype.trimStart = function () { if (String.prototype.includes.call(this, 'ZQXCRASH')) throw new TypeError('quoted ' + this); return orig.call(this); };\n");
+    writeFileSync(outside, "const orig = String.prototype.startsWith;\nString.prototype.startsWith = function (...a) { if (String(this) === 'ZQXARG') throw new TypeError('quoted ' + this); return orig.apply(this, a); };\n");
+    writeFileSync(skip, [
+      'const indexOf = Buffer.prototype.indexOf; let starts = 0;',
+      'Buffer.prototype.indexOf = function (v, from, ...rest) { if (v === 10 && from === 0 && ++starts === 2) { const i = indexOf.call(this, v, 0); return i < 0 ? i : indexOf.call(this, v, i + 1); } return indexOf.call(this, v, from, ...rest); };',
+    ].join('\n') + '\n');
+    const crash = join(dir, 'crash.jsonl');
+    writeFileSync(crash, JSON.stringify({ parentUuid: null, ...sessionEnv, type: 'user', promptSource: 'typed', message: { role: 'user', content: 'ZQXCRASH a secret' }, uuid: uuidOf(1) }) + '\n');
+    const cases = [
+      // [what, node's options, the arguments, how the message starts]
+      ['skeleton: a file', ['-r', inFile], ['skeleton', crash, DEMO], `ltms skeleton: '${crash}': stopped with an internal error (`],
+      ['stats: a file', ['-r', inFile], ['stats', crash, DEMO], `ltms stats: '${crash}': stopped with an internal error (`],
+      ['search: a file', ['-r', inFile], ['search', 'zqvabsent', crash, DEMO], `ltms search: '${crash}': stopped with an internal error (`],
+      ['index: a file', ['-r', inFile], ['index', crash, DEMO], `ltms index: '${crash}': stopped with an internal error (`],
+      ['records: the run, in its file', ['-r', inFile], ['records', crash], 'ltms records: stopped with an internal error ('],
+      ['search: the run', ['-r', outside], ['search', 'ZQXARG', DEMO], 'ltms search: stopped with an internal error ('],
+      ['index: the run', ['-r', outside], ['index', 'ZQXARG'], 'ltms index: stopped with an internal error ('],
+      ['records: the run, its arguments', ['-r', outside], ['records', 'ZQXARG'], 'ltms records: stopped with an internal error ('],
+      ['pin: the run', ['-r', outside], ['pin', 'ZQXARG', '--to', join(dir, 'pins')], 'ltms pin: stopped with an internal error ('],
+      ["records: its count's balance", ['--import', new URL(`file://${skip}`).href], ['records', DEMO], `ltms records: '${DEMO}': `],
+    ];
+    const wrong = [];
+    for (const [what, node, args, start] of cases) {
+      const r = spawnSync(process.execPath, [...node, CLI, ...args], { encoding: 'utf8', timeout: 20000, env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'config') } });
+      const bugs = nonEmpty(r.stderr).filter((l) => l.includes('bug in ltms'));
+      if (r.status !== 1 || bugs.length !== 1 || !bugs[0].startsWith(start) || !bugs[0].includes(said) || /quoted|secret/.test(r.stderr)) wrong.push(`${what}: exit ${r.status}, stderr ${JSON.stringify(r.stderr)}`);
+    }
+    assert.deepEqual(wrong, [], `each message says: ${said}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+let ts = null, noTs = false;
+try { ts = createRequire(import.meta.url)('typescript'); }
+catch (e) { noTs = `the typescript package cannot be imported (${e?.code ?? e?.name}): npm install installs it, as a devDependency`; }
+test("k17 (0.3.1): src/ writes package.json's bugs.url once, and the words that call an error a bug in ltms once, in a constant that names that address; no message has words of its own (read through the typescript package)", { skip: noTs }, () => {
+  const url = bugsUrl();
+  const files = readdirSync(join(root, 'src')).filter((f) => f.endsWith('.ts')).sort();
+  const text = Object.fromEntries(files.map((f) => [f, readFileSync(join(root, 'src', f), 'utf8')]));
+  assert.deepEqual(files.flatMap((f) => (text[f].includes(url) ? [[f, text[f].split(url).length - 1]] : [])), [['cli.ts', 1]], 'the address, written once');
+  // each string of the code (a literal, or a part of a template) that says "bug in ltms", by the top-level declaration it
+  // stands in: the help texts, which give the exit statuses, and the one constant
+  const holders = [];
+  const decls = new Map();
+  for (const f of files) {
+    const sf = ts.createSourceFile(f, text[f], ts.ScriptTarget.Latest, true);
+    const visit = (node) => {
+      const literal = ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node);
+      if (literal && node.text.includes('bug in ltms')) {
+        let top = node;
+        while (top.parent && top.parent !== sf) top = top.parent;
+        const name = ts.isVariableStatement(top) ? top.declarationList.declarations.map((d) => d.name.getText(sf)).join(',') : ts.isFunctionDeclaration(top) ? top.name?.getText(sf) : ts.SyntaxKind[top.kind];
+        holders.push(`${f}: ${name}`);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+    for (const st of sf.statements) if (ts.isVariableStatement(st)) for (const d of st.declarationList.declarations) decls.set(`${f}: ${d.name.getText(sf)}`, d);
+  }
+  const constant = holders.filter((h) => !/: [A-Z_]*HELP$/.test(h));
+  assert.equal(constant.length, 1, `the words are written once, outside the help texts: ${holders.join('; ')}`);
+  // that constant is a template that names the address by the constant holding it
+  const d = decls.get(constant[0]);
+  assert.ok(d && d.initializer && ts.isTemplateExpression(d.initializer), `${constant[0]} is a template`);
+  const named = d.initializer.templateSpans.map((s) => s.expression).filter(ts.isIdentifier).map((x) => x.text);
+  const [file] = constant[0].split(': ');
+  assert.ok(named.some((n) => { const v = decls.get(`${file}: ${n}`)?.initializer; return v && ts.isStringLiteral(v) && v.text === url; }), `${constant[0]} names the address (${named.join(', ')})`);
 });
