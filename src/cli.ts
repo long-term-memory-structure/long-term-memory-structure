@@ -2752,9 +2752,9 @@ A record, one per line of the file:
   logical_parent
                 the address of the record its logicalParentUuid names (a
                 compaction's boundary: the record before it), or null
-  calls         a tool result's: for each tool_result block, in order, the
-                address of the first assistant record holding its tool_use,
-                or null when not in the file
+  calls         a user record's that holds tool_result blocks: for each, in
+                order, the address of the first assistant record holding its
+                tool_use, or null when not in the file
   parent_by     "supplied" (the record has a uuid and a parentUuid), or
                 "none" (it is outside the session's tree: last-prompt,
                 ai-title and the like, and blank and malformed lines)
@@ -2815,8 +2815,8 @@ Exit status: 0 when the count balances; 1 when the file cannot be read, the
 two reads differ, a line is too long for this Node to read as a string, the
 count does not balance (a bug in ltms), or the write to stdout fails (a
 reader that stopped before the end, as head does, or a full disk: stderr says
-the records were cut and how many of their lines were written, and the rest
-of the file is not read); 2 on a usage error, a path that is not a regular
+the records were cut and how many of their lines were written, and the
+second read stops there); 2 on a usage error, a path that is not a regular
 file (a FIFO, a directory) included.
 `;
 
@@ -2839,8 +2839,11 @@ function recordsRun(args: string[]): number {
   const FOLDER = 'mkdir -p records; for f in <folder>/*.jsonl; do [ -f "$f" ] || continue; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; echo "failed: $f" >&2; fi; done';
   if (paths.length !== 1) { err(`ltms records: give one transcript (${paths.length ? `${paths.length} were given` : 'none was given'}): a records file is one transcript's. For a folder: ${FOLDER}`); return 2; }
   const file = paths[0];
-  let isDir = false;
-  try { isDir = statSync(file).isDirectory(); } catch { /* reading it below says why */ }
+  let isDir = false, notRegular = false;
+  // a FIFO is refused here, before it is opened: opening it would join (and end) a writer already waiting on it
+  try { const pre = statSync(file); isDir = pre.isDirectory(); notRegular = !isDir && !pre.isFile(); } catch { /* reading it below says why */ }
+  const notRegularMessage = `ltms records: '${file}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Save it to one first: a FIFO with a writer, cat ${q(file)} > transcript.jsonl; a process substitution, the command's own output (<command> > transcript.jsonl); then give that file.`;
+  if (notRegular) { err(notRegularMessage); return 2; }
   if (isDir) { err(`ltms records: '${file}' is a directory; records reads one transcript. For a folder: ${FOLDER.replace('<folder>', q(file.replace(/\/+$/, '')))}`); return 2; }
   // Read twice, a chunk at a time (src/records.ts says why). O_NONBLOCK: a FIFO opens at once, without waiting for a
   // writer, and is refused below; a regular file reads as usual.
@@ -2851,7 +2854,7 @@ function recordsRun(args: string[]): number {
   const warnings: string[] = [];
   try {
     const st = fstatSync(fd);
-    if (!st.isFile()) { err(`ltms records: '${file}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Save it to one first: a FIFO with a writer, cat ${q(file)} > transcript.jsonl; a process substitution, the command's own output (<command> > transcript.jsonl); then give that file.`); return 2; }
+    if (!st.isFile()) { err(notRegularMessage); return 2; } // a file replaced by a FIFO since the stat above
     r = writeRecords((buf, pos) => readSync(fd, buf, 0, buf.length, pos), st.size, { prefix: prefixOf(file), path: resolve(file), readAt: new Date().toISOString(), converterVersion: readVersion() }, recordsOutput());
     // what the two reads could not see: bytes past the size it had when it was opened (it grew, or its size is not its
     // length, as a file under /proc), and the path naming another file by now (replaced while it was read)
@@ -2862,7 +2865,7 @@ function recordsRun(args: string[]): number {
     try { const now = statSync(file); replaced = now.dev !== st.dev || now.ino !== st.ino; } catch { replaced = true; }
     if (replaced) warnings.push(`ltms records: warning: '${file}' now names another file than the one read (it was replaced or removed while it was read): the records are of the file as it was when it was opened.`);
   } catch (e) {
-    if (e instanceof RecordsOutputCut) { outCutSaid = true; err(`ltms records: '${file}': the records were cut: writing them to stdout failed (${writeFailure(e.failure)}) after ${e.lines} of their lines were written; the rest of the file was not read, so they are not a view of it.`); return 1; }
+    if (e instanceof RecordsOutputCut) { outCutSaid = true; err(`ltms records: '${file}': the records were cut: writing them to stdout failed (${writeFailure(e.failure)}) after ${e.lines} of their lines were written; the second read stopped there, so they are not a view of it.`); return 1; }
     if (e instanceof RecordsLineTooLong) { err(`ltms records: '${file}': ${e.message}, so it cannot be converted; what was written before it is incomplete.`); return 1; }
     if (typeof (e as NodeJS.ErrnoException)?.code === 'string') { err(`${cannotRead('records', file, e)} What was written before it is incomplete.`); return 1; }
     throw e;

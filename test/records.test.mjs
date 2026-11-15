@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, constants, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync, writeSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -603,7 +603,7 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   closeSync(rd);
   const a = runTo(wr);
   assert.equal(a.status, 1, a.stderr);
-  assert.match(a.stderr, /^ltms records: '.*gggggggg-big\.jsonl': the records were cut: writing them to stdout failed \(EPIPE: the reader stopped before the end\) after 0 of their lines were written; the rest of the file was not read, so they are not a view of it\.$/m);
+  assert.match(a.stderr, /^ltms records: '.*gggggggg-big\.jsonl': the records were cut: writing them to stdout failed \(EPIPE: the reader stopped before the end\) after 0 of their lines were written; the second read stopped there, so they are not a view of it\.$/m);
   assert.doesNotMatch(a.stderr, /records written/, 'no balance line claims what was not written');
   assert.ok(Number(/READ (\d+)/.exec(a.stderr)?.[1]) < 2 * size, `the reading stopped at the failed write: ${/READ (\d+)/.exec(a.stderr)?.[1]} bytes read of a file of ${size}, read twice whole ${2 * size}`);
   if (existsSync('/dev/full')) {
@@ -616,5 +616,27 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   assert.equal(c.status, 0, c.stderr);
   assert.match(c.stderr, / records written /);
   assert.equal(readFileSync(out, 'utf8').split('\n').length - 1, 1 + 80 * 37);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, R6 of the closure check): a FIFO is refused before it is opened, so a writer already waiting on it is not joined and ended: its data reaches a reader that comes later, whole', { skip: process.platform === 'win32' && 'no FIFOs on win32' }, async () => {
+  const d = tmp(), fifo = join(d, 'waiting.fifo');
+  assert.equal(spawnSync('mkfifo', [fifo]).status, 0);
+  const body = 'line\n'.repeat(1000);
+  // the writer says so, then blocks in open until a reader opens the other end
+  const writer = spawn(process.execPath, ['-e', `process.stderr.write('opening\\n'); require('node:fs').writeFileSync(${JSON.stringify(fifo)}, ${JSON.stringify(body)});`], { stdio: ['ignore', 'ignore', 'pipe'] });
+  await new Promise((res) => writer.stderr.on('data', (c) => { if (String(c).includes('opening')) res(); }));
+  await new Promise((res) => setTimeout(res, 200));
+  const r = spawnSync(process.execPath, [CLI, 'records', fifo], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /is not a regular file/);
+  // still waiting: a records that had opened the FIFO would have joined the writer and, closing it, ended it (EPIPE);
+  // read only then, or this test would wait for a writer that is gone
+  await new Promise((res) => setTimeout(res, 300));
+  if (writer.exitCode !== null || writer.signalCode !== null) assert.fail(`the writer ended (code ${writer.exitCode}, signal ${writer.signalCode}) when records was given its FIFO`);
+  const got = readFileSync(fifo, 'utf8');                 // a reader that comes later
+  const code = await new Promise((res) => writer.on('close', (c, sig) => res(sig ?? c)));
+  assert.equal(code, 0, 'the writer was not ended by records');
+  assert.equal(got, body, 'its data reached the later reader whole');
   rmSync(d, { recursive: true });
 });
