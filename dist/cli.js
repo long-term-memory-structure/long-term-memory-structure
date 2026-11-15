@@ -3077,7 +3077,10 @@ A record, one per line of the file:
   supplier      what the transcript says of it: type; subtype (a system
                 record's subtype, an attachment's type); id (its uuid);
                 parent (its parentUuid, null for a root; a parent that is not
-                in this file shows here and not in parent); version
+                in this file shows here and not in parent); version. Each
+                as written when it passes the label rule (at most 64 ASCII
+                letters, digits and . _ : + -), else (withheld); so are
+                group, time's as_written and the header's versions
   time          as_written (its timestamp), utc (when the stamp names its
                 zone), kind ("stamped")
   src           where its bytes are: kind ("line"), line, offset (bytes from

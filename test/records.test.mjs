@@ -298,3 +298,67 @@ test('records (S375): through the command, a file that changes between its two r
   assert.match(r.stderr, /the file changed between the two reads \(its first \d+ bytes differ\), so the records written are not a view of it\. Run it again\./);
   rmSync(d, { recursive: true });
 });
+
+test('records (S375): what a record says as the file wrote it prints only when it passes the label rule, else (withheld), as every command prints a label (README, Privacy)', () => {
+  const d = tmp(), f = join(d, 'abcdefgh-odd.jsonl');
+  const odd = (k) => `zq odd ${k} with spaces / and a slash`;
+  const long = 'u'.repeat(65);
+  const L = [
+    { type: odd('type'), uuid: 'v1', parentUuid: null, version: odd('version'), timestamp: odd('time') },
+    { type: 'system', subtype: odd('subtype'), uuid: long, parentUuid: odd('parent'), version: '2.1.300', timestamp: '2026-01-01T00:00:00.000Z' },
+    { type: 'assistant', uuid: 'v3', parentUuid: 'v1', requestId: odd('group'), message: { content: [{ type: 'text', text: 'x' }] } },
+    { type: 'attachment', uuid: 'v4', parentUuid: 'v3', attachment: { type: odd('attachment') } },
+    { type: 'user', uuid: 'v5', parentUuid: long, message: { content: 'y' }, promptSource: 'typed' },
+  ];
+  writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stdout + r.stderr, /zq odd|u{65}/, 'a value that fails the label rule, printed as written');
+  const [h, ...recs] = lines(r.stdout);
+  assert.deepEqual(h.supplier.versions, ['2.1.300', '(withheld)']);
+  assert.deepEqual([recs[0].supplier.type, recs[0].supplier.version, recs[0].time.as_written, recs[0].time.utc], ['(withheld)', '(withheld)', '(withheld)', undefined]);
+  assert.deepEqual([recs[1].supplier.subtype, recs[1].supplier.id, recs[1].supplier.parent], ['(withheld)', '(withheld)', '(withheld)']);
+  assert.deepEqual([recs[2].group, recs[3].supplier.subtype], ['(withheld)', '(withheld)']);
+  // links are made from the values as written, and print as addresses
+  assert.equal(recs[2].parent, 'abcdefgh:L1');
+  assert.equal(recs[4].parent, 'abcdefgh:L2', 'a parent whose uuid is withheld is still found, by its address');
+  assert.equal(recs[4].supplier.parent, '(withheld)');
+  rmSync(d, { recursive: true });
+});
+
+test("records (S375): the label rule in dist/records.js is dist/cli.js's", () => {
+  const rule = (f) => /^const LABEL = (\/.+\/[a-z]*);$/m.exec(readFileSync(join(DIST, f), 'utf8'))?.[1];
+  assert.ok(rule('cli.js'), 'dist/cli.js has a LABEL');
+  assert.equal(rule('records.js'), rule('cli.js'));
+});
+
+test("records (S375): README: its section's example lines are what the command prints (the header's path and read_at aside), its stderr line too, and it names every field and every kind", async () => {
+  const R = await import(pathToFileURL(join(DIST, 'records.js')).href);
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const start = readme.indexOf('### `ltms records');
+  assert.ok(start >= 0, 'the README has no section on records');
+  const section = readme.slice(start, Math.min(...['\n### ', '\n## '].map((m) => readme.indexOf(m, start + 1)).filter((i) => i > 0)));
+  const r = spawnSync(process.execPath, [CLI, 'records', 'test/fixtures/demo.jsonl'], { encoding: 'utf8', cwd: root });
+  assert.equal(r.status, 0, r.stderr);
+  const norm = (l) => { const o = JSON.parse(l); if (o.kind === 'header') { o.source.path = '(path)'; o.source.read_at = '(time)'; } return JSON.stringify(o); };
+  const printed = new Set(r.stdout.split('\n').filter(Boolean).map(norm));
+  const examples = section.split('\n').filter((l) => l.startsWith('{"format":') || l.startsWith('{"id":'));
+  assert.ok(examples.length >= 4, `only ${examples.length} example lines in the section`);
+  for (const l of examples) assert.ok(printed.has(norm(l)), `the README shows a line records does not print: ${l}`);
+  assert.ok(section.includes(r.stderr.trim()), `the README's stderr line is not what records prints: ${r.stderr.trim()}`);
+  assert.match(section, new RegExp(`It writes ${r.stdout.split('\n').filter(Boolean).length} lines, the header and ${r.stdout.split('\n').filter(Boolean).length - 1} records`));
+  // every key the command prints, over the demo and the synthetic file of every kind: a top-level key has its own row
+  // in the table; a key below one is named in that key's row
+  const d = tmp(), f = synthetic(d);
+  const keys = new Map();
+  const walk = (o, top) => { if (o && typeof o === 'object' && !Array.isArray(o)) for (const [k, v] of Object.entries(o)) { const t = top ?? k; if (!keys.has(t)) keys.set(t, new Set()); if (top) keys.get(t).add(k); walk(v, t); } };
+  for (const text of [r.stdout, run(f).stdout]) for (const l of text.split('\n').filter(Boolean)) walk(JSON.parse(l), null);
+  const rowOf = (k) => section.split('\n').find((l) => l.startsWith(`| \`${k}\` |`));
+  for (const [top, below] of keys) {
+    const row = rowOf(top);
+    assert.ok(row, `the README's section on records has no row for '${top}'`);
+    for (const k of below) assert.ok(row.includes(`\`${k}\``), `the README's row for '${top}' does not name '${k}'`);
+  }
+  for (const k of R.RECORD_KINDS) assert.ok(section.includes(`\`${k}\``), `the README's section on records does not name the kind '${k}'`);
+  rmSync(d, { recursive: true });
+});

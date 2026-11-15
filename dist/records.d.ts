@@ -19,7 +19,7 @@ export interface RecordSrc {
 }
 /** What the source says of a record, as it wrote it. */
 export interface RecordSupplier {
-    /** Its type, when it is a string. */
+    /** Its type, when it is a string (by the label rule). */
     type?: string;
     /** A system record's subtype, or an attachment's type, when it is a string. */
     subtype?: string;

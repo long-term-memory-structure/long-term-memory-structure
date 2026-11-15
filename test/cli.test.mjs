@@ -573,7 +573,10 @@ test('README: no part of it appears twice (a duplicated block once hid inside a 
 
 test('README: every row of the table in "The Bash verb" is what the build prints', () => {
   const readme = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'README.md'), 'utf8');
-  const section = readme.slice(readme.indexOf('### The Bash verb'), readme.indexOf('## What it reads'));
+  // the section alone, to the next heading of its level (S375: it ran on to "## What it reads", and read the rows of
+  // records' tables, whose first two cells are in backticks too, as commands)
+  const start = readme.indexOf('### The Bash verb');
+  const section = readme.slice(start, readme.indexOf('\n### ', start + 1));
   const rows = [...section.matchAll(/^\| `(.+?)` \| `(.+?)` /gm)].map(([, cmd, verb]) => [cmd.replaceAll('\\|', '|'), verb]);
   assert.ok(rows.length >= 10, `only ${rows.length} rows were read from the README`);
   const dir = mkdtempSync(join(tmpdir(), 'ltms-readme-'));

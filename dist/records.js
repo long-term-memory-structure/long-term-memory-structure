@@ -43,6 +43,11 @@ export const RECORDS_FORMAT = 'ltms-records/0';
 /** Every kind a record may have, in the order the balance line prints them. */
 export const RECORD_KINDS = ['input', 'reply', 'thinking', 'tool call', 'tool result', 'system', 'context', 'summary', 'compaction', 'marker', 'other', 'blank', 'malformed'];
 const NL = 0x0a;
+/** The label rule, as cli.ts, search.ts and shapes.ts hold it (a test holds this copy equal to cli.ts's): a string the
+ *  file wrote prints only when it is at most 64 ASCII letters, digits and . _ : + -, else as (withheld). The links are
+ *  made from the values as written; only what is printed passes the rule. */
+const LABEL = /^[\w.:+-]{1,64}$/;
+const shown = (v) => (LABEL.test(v) ? v : '(withheld)');
 /** Lenient: a byte sequence that is not UTF-8 becomes U+FFFD in the text parsed; the sha256 is of the bytes. */
 const DECODER = new TextDecoder('utf-8');
 const isObj = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -97,7 +102,7 @@ function timeOf(r) {
     const t = str(r.timestamp);
     if (t === undefined)
         return undefined;
-    const out = { as_written: t, kind: 'stamped' };
+    const out = { as_written: shown(t), kind: 'stamped' };
     if (ZONED.test(t)) {
         const d = new Date(t);
         if (!Number.isNaN(d.getTime()))
@@ -193,7 +198,7 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
     const header = {
         format: RECORDS_FORMAT, kind: 'header',
         source: { id: o.prefix, path: o.path, bytes: one.bytes, lines: one.newlines, last_line_unterminated: one.unterminated, read_at: o.readAt },
-        supplier: { name: 'claude-code', versions: [...versions].sort(cmpVersions) },
+        supplier: { name: 'claude-code', versions: [...new Set([...versions].map(shown))].sort(cmpVersions) },
         converter: { name: 'ltms', version: o.converterVersion },
         content: 'by-address',
     };
@@ -215,15 +220,15 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
             const supplier = {};
             const type = str(p.type);
             if (type !== undefined)
-                supplier.type = type;
+                supplier.type = shown(type);
             const sub = p.type === 'system' ? str(p.subtype) : p.type === 'attachment' && isObj(p.attachment) ? str(p.attachment.type) : undefined;
             if (sub !== undefined)
-                supplier.subtype = sub;
+                supplier.subtype = shown(sub);
             let parent = null, parentBy = 'none', dup;
             if (hasEnvelope(p)) {
-                supplier.id = p.uuid;
+                supplier.id = shown(p.uuid);
                 const pu = typeof p.parentUuid === 'string' ? p.parentUuid : null;
-                supplier.parent = pu;
+                supplier.parent = pu === null ? null : shown(pu);
                 parentBy = 'supplied';
                 if (pu === null)
                     parents.root++;
@@ -246,12 +251,12 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
                 parents.none++;
             const version = str(p.version);
             if (version !== undefined)
-                supplier.version = version;
+                supplier.version = shown(version);
             const group = p.type === 'assistant' ? str(p.requestId) ?? (isObj(p.message) ? str(p.message.id) : undefined) : undefined;
             const time = timeOf(p);
             rec = {
                 id: at(line), kind, ...(kinds ? { kinds } : {}), order: line, parent, parent_by: parentBy,
-                ...(group !== undefined ? { group } : {}), ...(dup !== undefined ? { dup_of: dup } : {}),
+                ...(group !== undefined ? { group: shown(group) } : {}), ...(dup !== undefined ? { dup_of: dup } : {}),
                 ...(Object.keys(supplier).length ? { supplier } : {}), ...(time ? { time } : {}), src,
             };
         }
