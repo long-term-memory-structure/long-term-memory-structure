@@ -35,6 +35,7 @@ const CODEX_V = FX('codex.sketch.json'), GEMINI_V = FX('gemini-cli.sketch.json')
 const CC = ['cc-a.jsonl', 'cc-b.jsonl', 'cc-c.jsonl', 'cc-map.jsonl'].map(FX);
 const CODEX = ['codex-a.jsonl', 'codex-b.jsonl', 'codex-c.jsonl'].map(FX);
 const GEMINI = ['gemini-a.jsonl', 'gemini-b.jsonl', 'gemini-c.jsonl'].map(FX);
+const LENS = ['len-a.jsonl', 'len-b.jsonl', 'len-c.jsonl'].map(FX);
 /** The fixtures' own schema, which the prototype's curated vocabulary named and the shipped one does not. */
 const ALLOW = ['.message.type', '.attachment.type=hook_success', '.attachment.hookName', '.attachment.content', '.snapshot.trackedFileBackups',
   '.snapshot.messageId', '.snapshot.timestamp', '.messageId', '.isSnapshotUpdate', '.durationMs'].flatMap((a) => ['--allow', a]);
@@ -144,6 +145,8 @@ const CONFIGS = [
   ['codex', [...CODEX], CODEX_V, ['legacy']],
   ['gemini', [...GEMINI], GEMINI_V, []],
   ['codex and gemini files, the shipped vocabulary', [...ALLOW, ...CODEX, ...GEMINI], null, []],
+  // (S374's closure read, S2) arrays of 0 to 200 elements in three files: every lengths label printed, 0 to 64+
+  ['arrays of 0 to 200 elements in three files', [...LENS], null, []],
 ];
 const withVocabulary = (args, vocab) => (vocab === null ? args : ['--vocabulary', vocab, ...args]);
 
@@ -325,7 +328,13 @@ test('shapes: the vocabulary files: every path a path of field names, every valu
 
 // ---- the port's own: what the core needs beyond the prototype's tests ------------------------------------------------
 
-test('shapes: the write guard refuses each line that holds a token outside the language, whatever built it, and writes nothing of the report; the command prints what writeReport writes', () => {
+// S2 (S374's closure read): the planted list held 26 lines, and 16 of checkLine's rules (more, by its refuter's count)
+// could be lost with the suite green, since none of these lines needed them. It now holds one line per rule at each line
+// kind: seat R's list (guard-unit2.mjs), and its refuter's lines, each a line the builder made with one token changed;
+// each with the word the guard must give. Each is refused at the write, alone in a report the builder made: by the module
+// (nothing written, that word at that line), and through the command (exit 1, nothing on stdout, and stderr naming that
+// line and that word, and nothing else).
+test('shapes: the write guard refuses each line that holds a token outside the language, whatever built it, and writes nothing of the report: one planted line per rule of the language at each line kind, refused by the module and by the command, which names the line and the field; the command prints what writeReport writes', () => {
   const V = SH.loadVocabulary(DOCS), allowed = SH.applyAllow(V, []);
   const R = SH.buildReport(V, SH.readShapes(V, [...CC].sort(), { maxLine: SH.SHAPES_MAX_LINE, unlisted: false }), 3, allowed);
   const Lg = SH.shapesLanguage(V, allowed, { floor: 3, lines: R.lines.length });
@@ -333,46 +342,154 @@ test('shapes: the write guard refuses each line that holds a token outside the l
   const all = SH.writeReport(R.lines, Lg, (s) => { text += s; });
   assert.deepEqual([all.refused, all.written], [0, R.lines.length]);
   assert.equal(text, shapes([...CC]).out, 'the command prints what writeReport writes');
-  const head = R.lines[0];
-  // one line per channel a defect upstream could leak through
+  const L = R.lines, head = L[0];
+  const real = (pred) => { const o = L.find(pred); assert.ok(o, `the report has a line ${pred}`); return o; };
+  const vl = real((o) => o.k === 'version' && /^\d/.test(o.v)), kl = real((o) => o.k === 'kind' && Object.keys(o.versions).length);
+  const pl = real((o) => o.k === 'path' && o.types && o.strings && o.first), sl = real((o) => o.k === 'path' && o.path.endsWith('.*') && o.names);
+  const vp = real((o) => o.k === 'path' && o.values), plain = real((o) => o.k === 'path' && !o.values && !o.names && !o.path.endsWith('[]'));
+  const rl = real((o) => o.k === 'rare'), ver = Object.keys(kl.versions)[0];
+  const P = (extra) => ({ k: 'path', kind: 'user', path: '.type', n: '1', files: '4-7', ...extra });
+  const withProto = (proto, own) => Object.assign(Object.create(proto), own);
+  const T = new Date(0x7fffffffff);   // a time
+  // [what, the line, the word the guard gives]
   const planted = [
-    ['a raw name in a path', { k: 'path', kind: 'user', path: '.zqPrivateParam', n: '1', files: '4-7' }],
-    ['a raw name below a .* step', { k: 'path', kind: 'user', path: '.toolUseResult.zqPrivateParam', n: '1', files: '4-7' }],
-    ['a raw kind', { k: 'kind', kind: 'zqcanarytype3', records: '1', files: '1', versions: {} }],
-    ['a raw sub-kind', { k: 'kind', kind: 'system:zq_sub3', records: '1', files: '1', versions: {} }],
-    ['a raw value', { k: 'path', kind: '(unlisted)', path: '.type', n: '1', files: '4-7', values: { zqcanarytype3: '1' } }],
-    ['a raw name as the key of a count', { k: 'path', kind: 'user', path: '.toolUseResult.*', n: '1', files: '4-7', types: { zqPrivateParam: '1' } }],
-    ['a class that is not one', { k: 'path', kind: 'user', path: '.type', n: '1', files: '4-7', strings: { zq7canary: '1' } }],
-    ['an exact count', { k: 'path', kind: 'user', path: '.type', n: '5', files: '4-7' }],
-    ['a number where a count is a string', { k: 'path', kind: 'user', path: '.type', n: 31337, files: '4-7' }],
-    ['a count in an array', { k: 'path', kind: 'user', path: '.type', n: ['2-3'], files: '4-7' }],
-    ['a count with more digits than a bucket has', { k: 'path', kind: 'user', path: '.type', n: '9007199254740993-18014398509481983', files: '4-7' }],
-    ['a suffixed version', { k: 'version', v: '9.9.9-zqcanary', records: '1', files: '1' }],
-    ['a version with a five-digit part', { k: 'version', v: '31337.1.1', records: '1', files: '1' }],
-    ['a word as a version', { k: 'path', kind: 'user', path: '.type', n: '1', files: '1', first: 'zq-not-a-version' }],
-    ['a version of a kind that is not one', { k: 'kind', kind: 'user', records: '1', files: '1', versions: { 'zq-not-a-version': '1' } }],
-    ['an extra field', { k: 'path', kind: 'user', path: '.type', n: '1', files: '4-7', x: 'zq7canary' }],
-    ['a timing field', { k: 'end', lines: R.lines.length, ms: 4242 }],
-    ['names on a line that is not .*', { k: 'path', kind: 'user', path: '.type', n: '1', files: '4-7', names: '64+' }],
-    ['values at a path that is not a value path', { k: 'path', kind: 'user', path: '.uuid', n: '1', files: '4-7', values: { user: '1' } }],
-    ['a line kind that is not one', { k: 'zq7canary' }],
-    ['a line that is not an object', 'zq7canary'],
-    ['a first line with an allowed entry it was not given', { ...head, allowed: ['.zq7canary'] }],
-    ['a first line with another floor', { ...head, floor: 31337 }],
-    ['a first line with another vocabulary', { ...head, vocabulary: [{ ...head.vocabulary[0], name: 'zq7canary' }] }],
-    ['an end line with another count', { k: 'end', lines: 31337 }],
-    ['a rare line of a raw kind', { k: 'rare', kind: 'zqcanarytype', paths: '1', n: '1' }],
+    // the first line
+    ['header: an extra field', { ...head, x: 'zq7canary' }, 'fields'],
+    ['header: a field missing', (() => { const h = { ...head }; delete h.lines; return h; })(), 'fields'],
+    ['header: format', { ...head, format: 'zq7canary' }, 'format'],
+    ['header: another vocabulary', { ...head, vocabulary: [{ ...head.vocabulary[0], name: 'zq7canary' }] }, 'vocabulary'],
+    ['header: another floor', { ...head, floor: 31337 }, 'floor'],
+    ['header: floor 0', { ...head, floor: 0 }, 'floor'],
+    ['header: an allowed entry it was not given', { ...head, allowed: ['.zq7canary'] }, 'allowed'],
+    ['header: files, an exact count', { ...head, files: { ...head.files, read: '5' } }, 'files'],
+    ['header: files, an extra key', { ...head, files: { ...head.files, zq7canary: '1' } }, 'files'],
+    ['header: files, a key missing', { ...head, files: { read: head.files.read } }, 'files'],
+    ['header: lines, a count not a bucket', { ...head, lines: { ...head.lines, records: '9753102' } }, 'lines'],
+    ['header: lines, an extra key', { ...head, lines: { ...head.lines, zq7canary: '1' } }, 'lines'],
+    ['header: lines, a key missing', { ...head, lines: { records: head.lines.records } }, 'lines'],
+    // version lines
+    ['version: an extra field', { ...vl, x: 'zq7canary' }, 'fields'],
+    ['version: v a word', { k: 'version', v: 'zq7canary', records: '1', files: '1' }, 'v'],
+    ['version: v suffixed', { k: 'version', v: '9.9.9-zqcanary', records: '1', files: '1' }, 'v'],
+    ['version: v four parts', { k: 'version', v: '1.2.3.4', records: '1', files: '1' }, 'v'],
+    ['version: v a five-digit part', { k: 'version', v: '31337.1.1', records: '1', files: '1' }, 'v'],
+    ['version: v an array', { ...vl, v: [vl.v] }, 'v'],
+    ['version: records exact', { ...vl, records: '5' }, 'records'],
+    ['version: files exact', { ...vl, files: '5' }, 'files'],
+    // kind lines
+    ['kind: an extra field', { ...kl, x: 'zq7canary' }, 'fields'],
+    ['kind: a raw kind', { k: 'kind', kind: 'zqcanarytype3', records: '1', files: '1', versions: {} }, 'kind'],
+    ['kind: a raw sub-kind', { k: 'kind', kind: 'system:zq_sub3', records: '1', files: '1', versions: {} }, 'kind'],
+    ['kind: a sub-kind on a kind with no sub-kind path', { k: 'kind', kind: 'user:text', records: '1', files: '1', versions: {} }, 'kind'],
+    ['kind: records exact', { ...kl, records: '5' }, 'records'],
+    ['kind: records a range at any start', { ...kl, records: '37-73' }, 'records'],
+    ['kind: files exact', { ...kl, files: '5' }, 'files'],
+    ['kind: versions, a raw key', { ...kl, versions: { 'zq-not-a-version': '1' } }, 'versions'],
+    ['kind: versions, a count exact', { ...kl, versions: { ...kl.versions, [ver]: '5' } }, 'versions'],
+    ['kind: versions, (none) with an exact count', { ...kl, versions: { ...kl.versions, '(none)': '5' } }, 'versions'],
+    ['kind: versions an array', { ...kl, versions: [ver] }, 'versions'],
+    ['kind: versions a number', { ...kl, versions: 31337 }, 'versions'],
+    ['kind: versions a time (a Date)', { ...kl, versions: T }, 'versions'],
+    // path lines
+    ['path: an extra field', P({ x: 'zq7canary' }), 'fields'],
+    ['path: a timing field', { ...pl, ms: 4242 }, 'fields'],
+    ['path: a raw kind', P({ kind: 'zqcanarykind' }), 'kind'],
+    ['path: a raw sub-kind', P({ kind: 'system:zqsub' }), 'kind'],
+    ['path: a raw name', P({ path: '.zqPrivateParam' }), 'path'],
+    ['path: a raw name below a map', P({ path: '.toolUseResult.zqPrivateParam' }), 'path'],
+    ['path: a raw name before .*', { ...sl, path: '.zqPrivateParam.*' }, 'path'],
+    ['path: a raw name before []', { ...plain, path: '.zqPrivateParam[]' }, 'path'],
+    ['path: a path that is no string', P({ path: ['.type'] }), 'path'],
+    ['path: n exact', P({ n: '5' }), 'n'],
+    ['path: n a number', P({ n: 31337 }), 'n'],
+    ['path: n in an array', P({ n: ['2-3'] }), 'n'],
+    ['path: n a range at any start', P({ n: '37-73' }), 'n'],
+    ['path: n a power of two, its top not', P({ n: '4-31337' }), 'n'],
+    ['path: n not a power of two', P({ n: '6-11' }), 'n'],
+    ['path: n with a leading zero', P({ n: '04-7' }), 'n'],
+    ['path: n 1-1', P({ n: '1-1' }), 'n'],
+    ['path: n of 17 digits', P({ n: '9007199254740993-18014398509481983' }), 'n'],
+    ['path: n 64+, a cap, not a bucket', P({ n: '64+' }), 'n'],
+    ['path: files exact', { ...pl, files: '5' }, 'files'],
+    ['path: first suffixed', P({ first: '1.2.3-zq', last: '1.2.3' }), 'first'],
+    ['path: first a number', P({ first: 12345, last: '1.2.3' }), 'first'],
+    ['path: first a five-digit part', P({ first: '31337.1.1', last: '1.2.3' }), 'first'],
+    ['path: first an array', { ...pl, first: [pl.first] }, 'first'],
+    ['path: last a word', { ...pl, last: 'zq-not-a-version' }, 'last'],
+    ['path: types, a raw key', P({ types: { zqPrivateParam: '1' } }), 'types'],
+    ['path: types, a count exact', P({ types: { string: '5' } }), 'types'],
+    ['path: types a number', { ...pl, types: 31337 }, 'types'],
+    ['path: types a time (a Date)', P({ types: T }), 'types'],
+    ['path: strings, a raw key', P({ strings: { zq7canary: '1' } }), 'strings'],
+    ['path: strings, a count exact', { ...pl, strings: { text: '5' } }, 'strings'],
+    ['path: strings a number', { ...pl, strings: 31337 }, 'strings'],
+    ['path: numbers, a raw key', P({ numbers: { 9753102: '1' } }), 'numbers'],
+    ['path: numbers, a count exact', { ...pl, numbers: { int: '5' } }, 'numbers'],
+    ['path: numbers a number', { ...pl, numbers: 31337 }, 'numbers'],
+    ['path: booleans, a raw key', P({ booleans: { maybe: '1' } }), 'booleans'],
+    ['path: booleans, a count exact', { ...pl, booleans: { true: '5' } }, 'booleans'],
+    ['path: booleans a number', { ...pl, booleans: 31337 }, 'booleans'],
+    ['path: lengths, an exact length', P({ lengths: { 5: '1' } }), 'lengths'],
+    ['path: lengths, an exact length past the cap', { ...pl, lengths: { 65: '1' } }, 'lengths'],
+    ['path: lengths, a bucket past the cap', P({ lengths: { '128-255': '1' } }), 'lengths'],
+    ['path: lengths, a count exact', P({ lengths: { '2-3': '5' } }), 'lengths'],
+    ['path: lengths a string', { ...pl, lengths: '01' }, 'lengths'],
+    ['path: values, a raw key', P({ values: { zqvalue: '1' } }), 'values'],
+    ["path: values, another value path's value", P({ values: { tool_use: '1' } }), 'values'],
+    ['path: values at a path with none', P({ path: '.uuid', values: { user: '1' } }), 'values'],
+    ['path: values, a count exact', { ...vp, values: { [Object.keys(vp.values)[0]]: '5' } }, 'values'],
+    ['path: values a number', { ...vp, values: 31337 }, 'values'],
+    ['path: names on a line that is not .*', P({ names: '1' }), 'names'],
+    ['path: names on a [] line', P({ path: '.message.content[]', names: '1' }), 'names'],
+    ['path: names exact', { ...sl, names: '17' }, 'names'],
+    ['path: names a number', { ...sl, names: 17 }, 'names'],
+    // rare lines
+    ['rare: an extra field', { ...rl, x: 'zq7canary' }, 'fields'],
+    ['rare: a raw kind', { k: 'rare', kind: 'zqcanarytype', paths: '1', n: '1' }, 'kind'],
+    ['rare: paths exact', { ...rl, paths: '5' }, 'paths'],
+    ['rare: paths a number', { ...rl, paths: 3 }, 'paths'],
+    ['rare: n exact', { ...rl, n: '3' }, 'n'],
+    ['rare: n a range at any start', { ...rl, n: '37-73' }, 'n'],
+    // the end line
+    ['end: another count', { k: 'end', lines: 31337 }, 'lines'],
+    ['end: a count as a string', { k: 'end', lines: String(L.length) }, 'lines'],
+    ['end: a timing field', { k: 'end', lines: L.length, ms: 4242 }, 'fields'],
+    // no line of the format
+    ['a line kind that is not one', { k: 'zq7canary' }, 'k'],
+    ['a string line', 'zq7canary', 'not an object'],
+    ['an array line', ['zq7canary'], 'not an object'],
+    ['a null line', null, 'not an object'],
+    ['a number line', 9753102, 'not an object'],
+    // what JSON makes of an object is what the guard reads (S1): its toJSON, inherited, gives the line written
+    ['an inherited toJSON gives the header exact counts', { ...head, files: withProto({ toJSON() { return { read: '6', failed: '0' }; } }, { ...head.files }) }, 'files'],
+    ['an inherited toJSON gives a path line a raw name', withProto({ toJSON() { return { ...this, path: '.zqPrivateName' }; } }, P({})), 'path'],
+    ['an inherited toJSON gives a version line a raw version', withProto({ toJSON() { return { ...this, v: '9.9.9-zqsecret' }; } }, { ...vl }), 'v'],
   ];
-  for (const [what, line] of planted) {
-    // each in a report the builder made, where the format puts a line of its kind and key, so that its token alone can
-    // fail it: since S3 and U6 the guard checks the report whole, and a line given alone fails as no report
-    const [lines, at] = plant(R.lines, line);
+  const tiny = tmp(), build = plantedBuild();
+  try {
+    writeFileSync(join(tiny, 't.jsonl'), '{"type":"user"}\n');
+    const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const wrong = [];
+    for (const [what, line, word] of planted) {
+      // each in a report the builder made, where the format puts a line of its kind and key, so that its token alone can
+      // fail it: since S3 and U6 the guard checks the report whole, and a line given alone fails as no report
+      const [lines, at] = plant(L, line);
+      let wrote = '';
+      const w = SH.writeReport(lines, SH.shapesLanguage(V, allowed, { floor: 3, lines: lines.length }), (s) => { wrote += s; });
+      if (w.written !== 0 || wrote !== '' || JSON.stringify(w.reasons) !== JSON.stringify([{ line: at, why: word }])) { wrong.push(`${what}: the module wrote ${w.written} lines, reasons ${JSON.stringify(w.reasons)}, not line ${at}: ${word}`); continue; }
+      // the command, its builder giving these lines: exit 1, nothing on stdout, and stderr saying this, and nothing more
+      const r = plantedRun(build, lines, [join(tiny, 't.jsonl')]);
+      const said = new RegExp(`^ltms shapes: 1 line failed the report's own language at the write, so none of the report was written \\(the first, line ${at}: ${esc(word)}\\)\\. This is a bug in ltms\\.\\nltms shapes: 1 files read \\(0 failed\\), 1 records; no report was written; \\d+\\.\\d s\\.\\n$`);
+      if (r.code !== 1 || r.out !== '' || !said.test(r.err)) wrong.push(`${what}: the command exits ${r.code}, ${r.out.length} bytes on stdout, stderr ${JSON.stringify(r.err)}`);
+    }
+    assert.deepEqual(wrong, [], 'each planted line refused at the write, by its rule\'s word, at its line');
+    assert.ok(planted.length >= 100, `${planted.length} planted lines`);
+    // a String object holding a bucket is written as that bucket: the text, which the guard reads, is in the language
+    const [lines] = plant(L, P({ n: new String('2-3'), types: { string: '2-3' } }));
     let wrote = '';
-    const w = SH.writeReport(lines, SH.shapesLanguage(V, allowed, { floor: 3, lines: lines.length }), (s) => { wrote += s; });
-    assert.deepEqual([w.refused, w.written, wrote], [1, 0, ''], what);
-    assert.deepEqual(w.reasons.map((p) => p.line), [at], `${what}: the planted line, line ${at}, and no other, fails: ${JSON.stringify(w.reasons)}`);
-    assert.match(w.reasons[0].why, /^[a-z .]+$/, `${what}: the reason is one of the guard's own words: ${w.reasons[0].why}`);
-  }
+    assert.equal(SH.writeReport(lines, SH.shapesLanguage(V, allowed, { floor: 3, lines: lines.length }), (s) => { wrote += s; }).written, lines.length);
+    assert.ok(wrote.includes('{"k":"path","kind":"user","path":".type","n":"2-3","files":"4-7","types":{"string":"2-3"}}\n'));
+  } finally { rm(tiny); rm(build); }
 });
 
 test('shapes: source: shapes.ts holds ASCII only and no typed backslash-u, names no supplier, writes nothing itself, and imports only node:fs, node:path and node:crypto; cli.ts writes a report only through writeReport', () => {
@@ -895,12 +1012,15 @@ test('shapes: the write guard checks the report whole before writing any of it: 
       ['a kind line after the path lines', withEnd(kindMoved), lp + 1],
       ['a path line in 1 file, under the floor of 3', withEnd(body.map((o, i) => (i === fp ? { ...o, files: '1' } : o))), fp + 1],
       ["a path line's fields in reverse order", withEnd(body.map((o, i) => (i === fp ? Object.fromEntries(Object.entries(o).reverse()) : o))), fp + 1],
+      // (S2's sweep: no case needed the rule that line 1 is the first line, so a mutant without it lived)
+      ['no first line: the builder gives the others alone', withEnd(body.slice(1)), 1, 'first line'],
+      ['no end line: the builder gives the others alone', body, body.length, 'cut'],
     ];
     assert.ok(mapsMoved > fp && fr > lp && lp > fp && fp > fk && fk > 0, 'the fixtures give the lines these cases move');
-    for (const [what, lines, line] of cases) {
+    for (const [what, lines, line, word] of cases) {
       const r = plantedRun(build, lines, [...CC]);
       assert.deepEqual([r.code, r.out], [1, ''], `${what}: ${r.err}`);
-      assert.match(r.err, new RegExp(`failed the report's own language at the write.*\\(the first, line ${line}: [a-z .]+\\)`), `${what}: ${r.err}`);
+      assert.match(r.err, new RegExp(`failed the report's own language at the write.*\\(the first, line ${line}: ${word ?? '[a-z .]+'}\\)`), `${what}: ${r.err}`);
       assert.match(r.err, /so none of the report was written/, what);
     }
   } finally { rm(build); }
@@ -1096,5 +1216,59 @@ test('shapes: --check says what is wrong in plain words, by the line and the fie
     // a final new line left off: a report all the same (the format is about lines)
     writeFileSync(join(dir, 'nl.jsonl'), good.slice(0, -1));
     assert.equal(shapes(['--check', join(dir, 'nl.jsonl')]).code, 0);
+  } finally { rm(dir); }
+});
+
+// S2 (S374's closure read), --check's side: no test of the suite gave --check a floor of another type (a mutant that let
+// any floor through --check, CL15, survived it). A string, an object, 1, 2.5 and 0 are each refused, as is an end line
+// inside the report whose count is a string or 2.5; each message names the line and the field, and holds none of the edit.
+test('shapes: --check refuses a first line whose floor is not a whole number of files from 2 to 2^53 - 1 (a string, an object, 1, 2.5, 0), and an end line inside the report whose count is not a whole number; each message names the line and the field', () => {
+  const dir = tmp();
+  try {
+    const R = shapes([...CC]).out.slice(0, -1).split('\n');
+    const at = R.findIndex((r) => r.startsWith('{"k":"path"'));
+    const head = (floor) => [JSON.stringify({ ...JSON.parse(R[0]), floor }), ...R.slice(1)];
+    const inside = (lines) => [...R.slice(0, at), JSON.stringify({ k: 'end', lines }), ...R.slice(at, -1), JSON.stringify({ k: 'end', lines: R.length + 1 })];
+    const cases = [
+      ...['zqEdit', { zq: 'zqEdit' }, 1, 2.5, 0].map((floor) => [`floor ${JSON.stringify(floor)}`, head(floor), /^ltms shapes --check: line 1: its floor is not a whole number of files from 2 to 9007199254740991\.$/m]),
+      ...['zqEdit', 2.5].map((lines) => [`an end line inside the report, lines ${JSON.stringify(lines)}`, inside(lines), new RegExp(`^ltms shapes --check: line ${at + 1}: field "lines" holds a value the report's language does not allow there\\.$`, 'm')]),
+    ];
+    for (const [what, rows, message] of cases) {
+      writeFileSync(join(dir, 'r.jsonl'), rows.join('\n') + '\n');
+      const r = shapes(['--check', join(dir, 'r.jsonl')]);
+      assert.deepEqual([r.code, r.out], [1, ''], what);
+      assert.match(r.err, message, `${what}: ${r.err}`);
+      assert.match(r.err, /: 1 problem; do not send it as it is\.\n$/, `${what}: ${r.err}`);
+      assert.ok(!r.err.includes('zqEdit'), what);
+    }
+  } finally { rm(dir); }
+});
+
+// S2 (S374's closure read), the sweep over the guard's rules: the rules of the report as a whole are each needed by a
+// test, but a second first line is refused by the rules of order and of repeats too, so no test held --check to its own
+// word (a mutant without it lived). Each place a line can be out of is named by --check, in its own words, one problem.
+test("shapes: --check names the place a line is out of, one problem each: a second first line, an end line before the last, a line out of order, a line repeated, a path line under the floor, a line not written as ltms writes one, a report cut", () => {
+  const dir = tmp();
+  try {
+    const R = shapes([...CC]).out.slice(0, -1).split('\n'), n = R.length;
+    const fp = R.findIndex((r) => r.startsWith('{"k":"path"')), fv = R.findIndex((r) => r.startsWith('{"k":"version"'));
+    const fixEnd = (rows) => [...rows.slice(0, -1), JSON.stringify({ k: 'end', lines: rows.length })];
+    const at = (i, fn) => R.map((r, j) => (j === i ? fn(r) : r));
+    const cases = [
+      ['a second first line', fixEnd([...R.slice(0, fp), R[0], ...R.slice(fp)]), `line ${fp + 1} is a second first line (k "shapes"): a report has one, its first`],
+      ['an end line before the last', fixEnd([...R.slice(0, fp), JSON.stringify({ k: 'end', lines: n + 1 }), ...R.slice(fp)]), `line ${fp + 1} is an end line before the last line: a report has one end line, its last`],
+      ['a version line after the rare lines', [...R.slice(0, fv), ...R.slice(fv + 1, -1), R[fv], R[n - 1]], `line ${n - 1} is out of the format's order: a report's lines come shapes, version, kind, path, rare, end, and the lines of each kind in ltms's order (versions in numeric order, kinds by their text, paths by kind and then path)`],
+      ['a path line twice', fixEnd([...R.slice(0, fp), R[fp], ...R.slice(fp)]), `line ${fp + 2} repeats the line of its kind before it (the same version, kind, or kind and path): a report has one line for each`],
+      ['a path line in 1 file, under the floor of 3', at(fp, (r) => JSON.stringify({ ...JSON.parse(r), files: '1' })), `line ${fp + 1} is a path line in fewer files than the floor the first line states: ltms prints no such line`],
+      ["a path line's fields in reverse order", at(fp, (r) => JSON.stringify(Object.fromEntries(Object.entries(JSON.parse(r)).reverse()))), `line ${fp + 1} is not written as ltms writes a line: its fields in the format's order, each map's keys in ltms's order, each key once, no space`],
+      ['the end line cut away', R.slice(0, -1), `line ${n - 1}: the last line is not an end line that counts the report's ${n - 1} lines: the report is cut, or was edited`],
+    ];
+    for (const [what, rows, message] of cases) {
+      writeFileSync(join(dir, 'r.jsonl'), rows.join('\n') + '\n');
+      const r = shapes(['--check', join(dir, 'r.jsonl')]);
+      assert.deepEqual([r.code, r.out], [1, ''], what);
+      assert.ok(r.err.startsWith(`ltms shapes --check: ${message}.\n`), `${what}: ${r.err}`);
+      assert.match(r.err, /: 1 problem; do not send it as it is\.\n$/, `${what}: ${r.err}`);
+    }
   } finally { rm(dir); }
 });
