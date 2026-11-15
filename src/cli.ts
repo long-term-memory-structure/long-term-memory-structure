@@ -17,7 +17,7 @@
 // it is given, and its pin directory; records reads only the one file named; skill reads its own SKILL.md. Writes only to stdout and stderr, except pin, which
 // writes only into its --to directory. No network, no telemetry.
 
-import { accessSync, closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import { accessSync, closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeSync } from 'node:fs';
 import type { BigIntStats, Dirent } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -2602,9 +2602,13 @@ function linesIn(parts: readonly string[], n: number): number {
 }
 /** What a write to stdout that failed cut: its error, and how many of the output's lines were written before it. */
 function shapesCut(what: 'report' | 'list', e: NodeJS.ErrnoException, wrote: number, of: number): string {
-  const why = e.code === 'EPIPE' ? 'EPIPE: the reader stopped before the end' : e.code === 'ENOSPC' ? 'ENOSPC: the disk is full' : (e.code ?? 'an error');
-  return `the ${what} was cut: writing it to stdout failed (${why}) after ${wrote} of its ${of} lines were written; the rest were not, or not whole.`;
+  return `the ${what} was cut: writing it to stdout failed (${writeFailure(e)}) after ${wrote} of its ${of} lines were written; the rest were not, or not whole.`;
 }
+/** Why a write to stdout failed, in the words shapes and records both print. */
+function writeFailure(e: NodeJS.ErrnoException): string {
+  return e.code === 'EPIPE' ? 'EPIPE: the reader stopped before the end' : e.code === 'ENOSPC' ? 'ENOSPC: the disk is full' : (e.code ?? 'an error');
+}
+
 
 /** --check: every line of a report against its language (the vocabulary given, the report's own allowed list). Each
  *  message says what is wrong in plain words, by the line and the field that failed or the place it stands in, and
@@ -2677,6 +2681,31 @@ function shapesCheck(file: string, V: ShapesVocabulary): number {
 
 
 // ---- ltms records --------------------------------------------------------------------------------------------------
+/** records' output, written to stdout synchronously: a reader that stopped (EPIPE) or a full disk (ENOSPC) throws at the
+ *  write, so the reading stops there. process.stdout tells either only after the whole file was read, and keeps every
+ *  part written after the failure until then (measured, S375: 100,000 writes to a closed pipe, none refused). Node has
+ *  made a pipe non-blocking, so a pipe that is full (EAGAIN) is waited on, 5 ms at a time. */
+class RecordsOutputCut extends Error {
+  constructor(readonly failure: NodeJS.ErrnoException, readonly lines: number) { super('the output was cut'); this.name = 'RecordsOutputCut'; }
+}
+const WAIT = new Int32Array(new SharedArrayBuffer(4));
+function recordsOutput(): (text: string) => void {
+  let lines = 0;
+  const newlines = (b: Buffer): number => { let n = 0; for (let i = b.indexOf(10); i >= 0; i = b.indexOf(10, i + 1)) n++; return n; };
+  return (text: string): void => {
+    const b = Buffer.from(text, 'utf8');
+    for (let off = 0; off < b.length;) {
+      try { off += writeSync(1, b, off, b.length - off); }
+      catch (e) {
+        const x = e as NodeJS.ErrnoException;
+        if (x.code === 'EAGAIN') { Atomics.wait(WAIT, 0, 0, 5); continue; }
+        throw new RecordsOutputCut(x, lines + newlines(b.subarray(0, off)));
+      }
+    }
+    lines += newlines(b);
+  };
+}
+
 // The command around ./records.js: one transcript in, ltms-records/0 out (a header, then one record per line), and on
 // stderr the balance: lines read against records written, which must be equal.
 
@@ -2783,9 +2812,12 @@ outside the tree), and the other links (in the file, not in this file). A
 warning comes before it; an error stands alone.
 
 Exit status: 0 when the count balances; 1 when the file cannot be read, the
-two reads differ, a line is too long for this Node to read as a string, or
-the count does not balance (a bug in ltms); 2 on a usage error, a path that
-is not a regular file (a FIFO, a directory) included.
+two reads differ, a line is too long for this Node to read as a string, the
+count does not balance (a bug in ltms), or the write to stdout fails (a
+reader that stopped before the end, as head does, or a full disk: stderr says
+the records were cut and how many of their lines were written, and the rest
+of the file is not read); 2 on a usage error, a path that is not a regular
+file (a FIFO, a directory) included.
 `;
 
 /** records, with an internal error reported by its kind and its place, never its message. */
@@ -2820,7 +2852,7 @@ function recordsRun(args: string[]): number {
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) { err(`ltms records: '${file}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Save it to one first: a FIFO with a writer, cat ${q(file)} > transcript.jsonl; a process substitution, the command's own output (<command> > transcript.jsonl); then give that file.`); return 2; }
-    r = writeRecords((buf, pos) => readSync(fd, buf, 0, buf.length, pos), st.size, { prefix: prefixOf(file), path: resolve(file), readAt: new Date().toISOString(), converterVersion: readVersion() }, out);
+    r = writeRecords((buf, pos) => readSync(fd, buf, 0, buf.length, pos), st.size, { prefix: prefixOf(file), path: resolve(file), readAt: new Date().toISOString(), converterVersion: readVersion() }, recordsOutput());
     // what the two reads could not see: bytes past the size it had when it was opened (it grew, or its size is not its
     // length, as a file under /proc), and the path naming another file by now (replaced while it was read)
     let more = false;
@@ -2830,6 +2862,7 @@ function recordsRun(args: string[]): number {
     try { const now = statSync(file); replaced = now.dev !== st.dev || now.ino !== st.ino; } catch { replaced = true; }
     if (replaced) warnings.push(`ltms records: warning: '${file}' now names another file than the one read (it was replaced or removed while it was read): the records are of the file as it was when it was opened.`);
   } catch (e) {
+    if (e instanceof RecordsOutputCut) { outCutSaid = true; err(`ltms records: '${file}': the records were cut: writing them to stdout failed (${writeFailure(e.failure)}) after ${e.lines} of their lines were written; the rest of the file was not read, so they are not a view of it.`); return 1; }
     if (e instanceof RecordsLineTooLong) { err(`ltms records: '${file}': ${e.message}, so it cannot be converted; what was written before it is incomplete.`); return 1; }
     if (typeof (e as NodeJS.ErrnoException)?.code === 'string') { err(`${cannotRead('records', file, e)} What was written before it is incomplete.`); return 1; }
     throw e;

@@ -624,7 +624,7 @@ Every value under `supplier`, and `group`, `as_written` and the header's `versio
 mkdir -p records; for f in <folder>/*.jsonl; do [ -f "$f" ] || continue; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; echo "failed: $f" >&2; fi; done
 ```
 
-Exit status: 0 when the count balances; 1 when the file cannot be read, the two reads differ, a line is too long for this Node to read as a string, or the count does not balance (a bug in ltms); 2 on a usage error, a path that is not a regular file included. stderr ends with the balance line; a warning comes before it (the file holds more than it had when it was opened; its path names another file by the end), and an error stands alone.
+Exit status: 0 when the count balances; 1 when the file cannot be read, the two reads differ, a line is too long for this Node to read as a string, or the count does not balance (a bug in ltms); 2 on a usage error, a path that is not a regular file included. A write to stdout that fails (a reader that stopped before the end, as `head` does, or a full disk) is a failure too, exit 1: stderr says the records were cut and how many of their lines were written, and the rest of the file is not read. stderr ends with the balance line; a warning comes before it (the file holds more than it had when it was opened; its path names another file by the end), and an error stands alone.
 
 **Limits.**
 - Claude Code's transcripts only, so far: the kinds are its record types, and a file of another program gets records of kind `other` where its types are not Claude Code's. The format is version 0, a draft; the header names it, so a reader can tell when it changes.

@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync, writeSync, mkdirSync } from 'node:fs';
+import { closeSync, constants, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync, writeSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -458,10 +458,11 @@ test('records (S375, R9 R8): redacted_thinking is thinking; a uuid carried three
 
 test('records (S375, R10): the command\'s own balance check: a splitter that loses a line makes it exit 1 and say the count does not balance', () => {
   const d = tmp(), f = synthetic(d);
-  // the second search for a newline from the start of a piece is the second read's first: there, the first newline is skipped
+  // the second search for a newline from the start of a piece (the splitter passes 0; the output's own count of
+  // newlines passes none) is the second read's first: there, the first newline is skipped
   const mod = importModule(d, 'skip.mjs', [
     'const indexOf = Buffer.prototype.indexOf; let starts = 0;',
-    'Buffer.prototype.indexOf = function (v, from, ...rest) { if (v === 10 && (from ?? 0) === 0 && ++starts === 2) { const i = indexOf.call(this, v, 0); return i < 0 ? i : indexOf.call(this, v, i + 1); } return indexOf.call(this, v, from, ...rest); };',
+    'Buffer.prototype.indexOf = function (v, from, ...rest) { if (v === 10 && from === 0 && ++starts === 2) { const i = indexOf.call(this, v, 0); return i < 0 ? i : indexOf.call(this, v, i + 1); } return indexOf.call(this, v, from, ...rest); };',
   ].join('\n'));
   const r = spawnSync(process.execPath, ['--import', mod, CLI, 'records', f], { encoding: 'utf8', maxBuffer: 64 << 20 });
   assert.equal(r.status, 1, r.stderr);
@@ -582,5 +583,38 @@ test('records (S375, O3, his word 22:43): the links the file supplies, as addres
   assert.equal(recs[0].calls, undefined, 'no links where the file supplies none');
   assert.doesNotMatch(r.stdout, /zq odd/);
   assert.match(r.stderr, /; links: 4 in the file, 5 not in this file\./);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, O1 O7): a write to stdout that fails (a reader gone before the end, a full disk) stops the reading at once and exits 1, one line saying how many lines were written, and no balance line; a file still gets the balance line', { skip: process.platform === 'win32' && 'no FIFOs on win32' }, () => {
+  const d = tmp();
+  const demo = readFileSync(join(here, 'fixtures', 'demo.jsonl'));
+  const f = join(d, 'gggggggg-big.jsonl'), fd0 = openSync(f, 'w');
+  for (let i = 0; i < 80; i++) writeSync(fd0, demo); // about 2 MB: two pieces a read
+  closeSync(fd0);
+  const size = readFileSync(f).length;
+  // the bytes read, counted by a module loaded before the command
+  const mod = importModule(d, 'count.mjs', "const readSync = fs.readSync; let n = 0; fs.readSync = (...a) => { const r = readSync(...a); n += r; return r; }; process.on('exit', () => process.stderr.write('READ ' + n + '\\n'));");
+  const runTo = (fd) => { try { const r = spawnSync(process.execPath, ['--import', mod, CLI, 'records', f], { stdio: ['ignore', fd, 'pipe'], encoding: 'utf8', timeout: 120000 }); if (r.error) throw r.error; return r; } finally { closeSync(fd); } };
+  // the write end of a FIFO whose read end is closed: the first write fails with EPIPE (S375's shapes U9 test made it so)
+  const fifo = join(d, 'out.fifo');
+  assert.equal(spawnSync('mkfifo', [fifo]).status, 0);
+  const rd = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK), wr = openSync(fifo, constants.O_WRONLY);
+  closeSync(rd);
+  const a = runTo(wr);
+  assert.equal(a.status, 1, a.stderr);
+  assert.match(a.stderr, /^ltms records: '.*gggggggg-big\.jsonl': the records were cut: writing them to stdout failed \(EPIPE: the reader stopped before the end\) after 0 of their lines were written; the rest of the file was not read, so they are not a view of it\.$/m);
+  assert.doesNotMatch(a.stderr, /records written/, 'no balance line claims what was not written');
+  assert.ok(Number(/READ (\d+)/.exec(a.stderr)?.[1]) < 2 * size, `the reading stopped at the failed write: ${/READ (\d+)/.exec(a.stderr)?.[1]} bytes read of a file of ${size}, read twice whole ${2 * size}`);
+  if (existsSync('/dev/full')) {
+    const b = runTo(openSync('/dev/full', 'w'));
+    assert.equal(b.status, 1, b.stderr);
+    assert.match(b.stderr, /the records were cut: writing them to stdout failed \(ENOSPC: the disk is full\) after 0 of their lines were written/);
+  }
+  const out = join(d, 'out.records');
+  const c = runTo(openSync(out, 'w'));
+  assert.equal(c.status, 0, c.stderr);
+  assert.match(c.stderr, / records written /);
+  assert.equal(readFileSync(out, 'utf8').split('\n').length - 1, 1 + 80 * 37);
   rmSync(d, { recursive: true });
 });
