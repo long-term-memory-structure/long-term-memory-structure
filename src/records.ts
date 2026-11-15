@@ -208,9 +208,18 @@ export function lineSpans(bytes: Uint8Array): { spans: [number, number][]; termi
   return { spans, terminated: unterminated ? spans.length - 1 : spans.length, unterminated };
 }
 
+/** The lines of a file counted by another route than lineSpans: its newline bytes, and a last line without one. The
+ *  balance compares this count with the records written, so a defect in the splitting shows as a count that differs. */
+export function countLines(bytes: Uint8Array): { newlines: number; unterminated: boolean } {
+  let newlines = 0;
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] === NL) newlines++;
+  return { newlines, unterminated: bytes.length > 0 && bytes[bytes.length - 1] !== NL };
+}
+
 /** A transcript's bytes as ltms-records/0: its header, one record per line, and the balance. */
 export function recordsOf(bytes: Uint8Array, o: RecordsOptions): { header: RecordsHeader; records: ViewRecord[]; balance: RecordsBalance } {
-  const { spans, terminated, unterminated } = lineSpans(bytes);
+  const { spans } = lineSpans(bytes);
+  const counted = countLines(bytes);
   const at = (line: number): string => `${o.prefix}:L${line}`;
   // first pass: each line parsed alone; the first line that carries each uuid, so a parent may be written after its child
   const parsed: (Record<string, any> | 'blank' | 'malformed')[] = [];
@@ -270,10 +279,10 @@ export function recordsOf(bytes: Uint8Array, o: RecordsOptions): { header: Recor
   });
   const header: RecordsHeader = {
     format: RECORDS_FORMAT, kind: 'header',
-    source: { id: o.prefix, path: o.path, bytes: bytes.length, lines: terminated, last_line_unterminated: unterminated, read_at: o.readAt },
+    source: { id: o.prefix, path: o.path, bytes: bytes.length, lines: counted.newlines, last_line_unterminated: counted.unterminated, read_at: o.readAt },
     supplier: { name: 'claude-code', versions: [...versions].sort(cmpVersions) },
     converter: { name: 'ltms', version: o.converterVersion },
     content: 'by-address',
   };
-  return { header, records, balance: { linesRead: spans.length, recordsWritten: records.length, byKind, dupOf, parents } };
+  return { header, records, balance: { linesRead: counted.newlines + (counted.unterminated ? 1 : 0), recordsWritten: records.length, byKind, dupOf, parents } };
 }

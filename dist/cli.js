@@ -14,7 +14,7 @@
 // skeleton and stats read only the files named on the command line; search reads the files named and the .jsonl files
 // under the directories named; index the same, but those in a session's own directory, set-aside copies and pin
 // directories, which it counts; shapes the same as search, and its vocabulary file; pin reads the files under the paths
-// it is given, and its pin directory; skill reads its own SKILL.md. Writes only to stdout and stderr, except pin, which
+// it is given, and its pin directory; records reads only the one file named; skill reads its own SKILL.md. Writes only to stdout and stderr, except pin, which
 // writes only into its --to directory. No network, no telemetry.
 import { accessSync, constants as fsConstants, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -28,6 +28,7 @@ import { openSieveCache, sieveKey } from './sieve-cache.js';
 import { indexTranscript } from './session.js';
 import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
 import { applyAllow, buildReport, checkReport, collectFiles, loadVocabulary, readShapes, reviewLines, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE } from './shapes.js';
+import { recordsOf, RECORD_KINDS } from './records.js';
 const USAGE = `Usage:
   ltms index <path>...            one JSON line per session, newest first
   ltms skeleton <file.jsonl>...   one JSON line per turn and per tool call
@@ -36,6 +37,7 @@ const USAGE = `Usage:
   ltms pin <path>... --to <dir>   copies the cleanup does not delete, and a log
   ltms skill                      the skill that teaches an agent to use ltms
   ltms shapes <path>...           the shape of transcripts, not their content
+  ltms records <file.jsonl>       the transcript as records: one per line, no text
   ltms --help                     show the help, with every output field
   ltms --version                  show the version
 `;
@@ -202,6 +204,11 @@ of values, counts in powers of two, and the versions of the program that
 wrote them, every name and value in it from a vocabulary that ships with
 ltms or from your own --allow, but those versions. ltms shapes --help gives
 its whole part.
+
+records prints a transcript as ltms-records/0, the record protocol's format:
+a header, then one JSON line per line of the file, with the address of its
+bytes, its kind and its parent link, and no text; lines read and records
+written always balance. ltms records --help gives its whole part.
 
 Warnings go to stderr: lines that are not JSON objects (or are nested more
 than 1,000 levels deep), files with nothing to show (empty, a workflow journal,
@@ -749,7 +756,7 @@ function internalError(e) {
     const kind = LABEL.test(e.name) ? e.name : 'Error';
     const head = e.message ? `${e.name}: ${e.message}` : e.name;
     const stack = typeof e.stack === 'string' && e.stack.startsWith(head) ? e.stack.slice(head.length) : '';
-    const frame = stack.split('\n').map((l) => /^\s+at .*?([^()\s/\\]+\.js):(\d+):\d+\)?$/.exec(l)).find((m) => m !== null && /^(?:cli|parser|pin|search|session|shapes)\.js$/.test(m[1]));
+    const frame = stack.split('\n').map((l) => /^\s+at .*?([^()\s/\\]+\.js):(\d+):\d+\)?$/.exec(l)).find((m) => m !== null && /^(?:cli|parser|pin|records|search|session|shapes)\.js$/.test(m[1]));
     return frame ? `${kind} at ${frame[1]}:${frame[2]}` : kind;
 }
 /** Files that get one address prefix cannot be told apart in one run's output: say so, naming them. */
@@ -3023,6 +3030,148 @@ function shapesCheck(file, V) {
     err(`ltms shapes --check: '${file}': ${r.lines} lines, every token in the report's language (vocabulary ${named}; allowed: ${r.allowed.length ? r.allowed.join(' ') : 'none'}).`);
     return 0;
 }
+// ---- ltms records --------------------------------------------------------------------------------------------------
+// The command around ./records.js: one transcript in, ltms-records/0 out (a header, then one record per line), and on
+// stderr the balance: lines read against records written, which must be equal.
+const RECORDS_HELP = `ltms records <file.jsonl>
+
+Prints the transcript as ltms-records/0, the record protocol's format (version 0,
+a draft): a header line, then one JSON line per line of the file, the lines it
+does not understand included, so the count always balances: lines read =
+records written. Anyone can check it: wc -l on the file, and the output's lines
+after the first. A record holds no text: it gives the address of its bytes,
+and the text is read there.
+  ltms records ~/.claude/projects/-home-me-my-app/<session>.jsonl > session.records.jsonl
+One transcript at a time; for a folder, write the records outside ~/.claude:
+  mkdir -p records; for f in <folder>/*.jsonl; do ltms records "$f" > "records/$(basename "$f" .jsonl).records.jsonl"; done
+
+The first line, the header:
+  format        "ltms-records/0"
+  kind          "header"
+  source        id (the address prefix, as skeleton's), path (as resolved),
+                bytes (the file's length), lines (those that end in a
+                newline: what wc -l counts), last_line_unterminated (true when
+                the last line has no newline; it is a record too), read_at
+                (UTC)
+  supplier      name ("claude-code"); versions (the versions of the program
+                that wrote the records, in order)
+  converter     name ("ltms"), version
+  content       "by-address": no record holds text
+
+A record, one per line of the file:
+  id            its address, <prefix>:L<line>, as skeleton's
+  kind          input, reply, thinking, tool call, tool result, system,
+                context, summary, compaction, marker, other, blank or
+                malformed (below)
+  kinds         every block's kind, when an assistant record holds several
+                (kind is the first's)
+  order         its line, 1-based
+  parent        the address of the record its parentUuid names (the first in
+                the file that carries that uuid), or null
+  parent_by     "supplied" (the record has a uuid and a parentUuid), or
+                "none" (it is outside the session's tree: last-prompt,
+                ai-title and the like, and blank and malformed lines)
+  group         an assistant record's requestId (its message's id where it
+                has none): the records of one response share it
+  dup_of        the first record that carries its uuid, when it repeats one
+  supplier      what the transcript says of it: type; subtype (a system
+                record's subtype, an attachment's type); id (its uuid);
+                parent (its parentUuid, null for a root; a parent that is not
+                in this file shows here and not in parent); version
+  time          as_written (its timestamp), utc (when the stamp names its
+                zone), kind ("stamped")
+  src           where its bytes are: kind ("line"), line, offset (bytes from
+                the file's start), bytes (its length, without the newline),
+                sha256 (of exactly those bytes)
+
+The kinds:
+  assistant     reply (a text block), thinking (thinking or redacted_thinking),
+                tool call (tool_use); system when written for an API error
+  user          tool result; summary (a compaction's); input (a channel that
+                opens a turn, as skeleton's prompts); system (what the
+                harness wrote: meta, command output, an interrupt, a queued
+                copy)
+  attachment    input (a prompt queued while the model worked); context
+                (anything else the harness added to the model's context)
+  system        compaction (compact_boundary); system (any other subtype)
+  last-prompt   marker (the session's head pointer)
+  other types   other (the type is in supplier.type)
+  a line        blank (white space only); malformed (not a JSON object)
+
+stderr holds one line: the lines read, the records written by kind, the
+repeats, and the parent links (in the file, roots, not in this file, outside
+the tree).
+
+Exit status: 0 when the count balances; 1 when the file cannot be read, or
+the count does not balance (a bug in ltms); 2 on a usage error.
+`;
+/** records, with an internal error reported by its kind and its place, never its message. */
+function recordsMain(args) {
+    try {
+        return recordsRun(args);
+    }
+    catch (e) {
+        err(`ltms records: stopped with an internal error (${internalError(e)}). This is a bug in ltms; anything printed before it is incomplete.`);
+        return 1;
+    }
+}
+function recordsRun(args) {
+    const paths = [];
+    let ended = false;
+    for (const a of args) {
+        if (!ended && a === '--') {
+            ended = true;
+            continue;
+        }
+        if (!ended && (a === '--help' || a === '-h')) {
+            out(RECORDS_HELP);
+            return 0;
+        }
+        if (!ended && (a === '--version' || a === '-v'))
+            return printVersion();
+        if (!ended && a === '-') {
+            err(`ltms records: reading from standard input ('-') is not supported. Give the transcript's path, e.g. ltms records ~/.claude/projects/<project>/<session>.jsonl > session.records.jsonl`);
+            return 2;
+        }
+        if (!ended && a.startsWith('-')) {
+            err(`ltms records: unknown option '${a}'. The options are --help and --version; put -- before a path that starts with '-'.`);
+            return 2;
+        }
+        paths.push(a);
+    }
+    const FOLDER = 'mkdir -p records; for f in <folder>/*.jsonl; do ltms records "$f" > "records/$(basename "$f" .jsonl).records.jsonl"; done';
+    if (paths.length !== 1) {
+        err(`ltms records: give one transcript (${paths.length ? `${paths.length} were given` : 'none was given'}): a records file is one transcript's. For a folder: ${FOLDER}`);
+        return 2;
+    }
+    const file = paths[0];
+    let isDir = false;
+    try {
+        isDir = statSync(file).isDirectory();
+    }
+    catch { /* reading it below says why */ }
+    if (isDir) {
+        err(`ltms records: '${file}' is a directory; records reads one transcript. For a folder: ${FOLDER.replace('<folder>', q(file.replace(/\/+$/, '')))}`);
+        return 2;
+    }
+    let bytes;
+    try {
+        bytes = readFileSync(file);
+    }
+    catch (e) {
+        err(cannotRead('records', file, e));
+        return 1;
+    }
+    const r = recordsOf(bytes, { prefix: prefixOf(file), path: resolve(file), readAt: new Date().toISOString(), converterVersion: readVersion() });
+    out(JSON.stringify(r.header) + '\n');
+    for (let i = 0; i < r.records.length; i += 1000)
+        out(r.records.slice(i, i + 1000).map((x) => JSON.stringify(x) + '\n').join(''));
+    const B = r.balance;
+    const kinds = RECORD_KINDS.filter((k) => B.byKind[k]).map((k) => `${B.byKind[k]} ${k}`).join(', ');
+    const ok = B.linesRead === B.recordsWritten;
+    err(`ltms records: '${file}': ${plural(B.linesRead, 'line', 'lines')} read${r.header.source.last_line_unterminated ? ' (the last without a newline)' : ''}, ${plural(B.recordsWritten, 'record', 'records')} written${kinds ? ` (${kinds})` : ''}; ${B.dupOf} repeating an earlier record's uuid; parents: ${B.parents.resolved} in the file, ${B.parents.root} ${B.parents.root === 1 ? 'root' : 'roots'}, ${B.parents.unresolved} not in this file, ${B.parents.none} outside the tree.${ok ? '' : ' THE COUNT DOES NOT BALANCE: a bug in ltms.'}`);
+    return ok ? 0 : 1;
+}
 function main(argv) {
     const cmd = argv[0];
     if (cmd === undefined) {
@@ -3045,11 +3194,13 @@ function main(argv) {
         return pinMain(argv.slice(1));
     if (cmd === 'shapes')
         return shapesMain(argv.slice(1));
+    if (cmd === 'records')
+        return recordsMain(argv.slice(1));
     if (cmd !== 'skeleton' && cmd !== 'stats') {
         if (cmd.startsWith('-'))
             err(`ltms: unknown option '${cmd}'. The options are --help and --version.\n\n${USAGE}`);
         else
-            err(`ltms: unknown command '${cmd}'. The commands are index, skeleton, stats, search, pin, skill and shapes.\n\n${USAGE}`);
+            err(`ltms: unknown command '${cmd}'. The commands are index, skeleton, stats, search, pin, skill, shapes and records.\n\n${USAGE}`);
         return 2;
     }
     const files = [];

@@ -339,7 +339,7 @@ test('shapes: source: shapes.ts holds ASCII only and no typed backslash-u, names
   assert.deepEqual(shaped.filter((w) => src.includes(w)), [], "src/shapes.ts holds a supplier's key or value");
   // the command's section: one writeReport call writes the report; out() writes its help and the review list, nothing else
   const cli = readFileSync(join(root, 'src', 'cli.ts'), 'utf8');
-  const section = cli.slice(cli.indexOf('// ---- ltms shapes'), cli.indexOf('\nfunction main('));
+  const section = cli.slice(cli.indexOf('// ---- ltms shapes'), cli.indexOf('\n// ---- ltms records'));   // 0.3.0: records' section follows
   assert.ok(section.length > 1000, 'the shapes section of src/cli.ts');
   assert.equal(section.match(/\bwriteReport\(/g)?.length, 1, 'one writeReport call');
   assert.deepEqual([...section.matchAll(/\bout\(([A-Za-z_]+)/g)].map((m) => m[1]).sort(), ['SHAPES_HELP', 'review'], "shapes' out() calls: its help, and the review list");

@@ -1290,7 +1290,7 @@ test('command: every string an output line carries is a fixed word, a label, an 
 });
 
 const HELP_005 = read('help-0.0.5.txt');   // `ltms --help` as 0.0.5 printed it (its build, run once; 9,026 bytes)
-test("help: ltms --help is 0.0.5's, with search's, index's, pin's, skill's and shapes' usage lines and paragraphs more (each pointing to its own --help, after the stats fields in that order), pin's two sentences (DESIGN 4.5), the sentence on reading with search's, index's and shapes' walks, the index named apart from skeleton (0.2.0), and nothing else changed", () => {
+test("help: ltms --help is 0.0.5's, with search's, index's, pin's, skill's, shapes' and records' usage lines and paragraphs more (each pointing to its own --help, after the stats fields in that order), pin's two sentences (DESIGN 4.5), the sentence on reading with search's, index's and shapes' walks, the index named apart from skeleton (0.2.0), and nothing else changed", () => {
   const h = ltms(['--help']).out;
   const usageLine = '  ltms search <query> <path>...   the turns that hold every word of the query\n';
   const start = h.indexOf('search finds the turns'), stop = h.indexOf('\n\n', start) + 2;
@@ -1321,6 +1321,12 @@ test("help: ltms --help is 0.0.5's, with search's, index's, pin's, skill's and s
   assert.ok(shapesStart > 0 && h.includes(shapesUsageLine));
   const shapesParagraph = h.slice(shapesStart, shapesStop);
   assert.match(shapesParagraph.replace(/\s+/g, ' '), /ltms shapes --help gives its whole part/);
+  // 0.3.0: records' usage line and paragraph, right after shapes'
+  const recordsUsageLine = '  ltms records <file.jsonl>       the transcript as records: one per line, no text\n';
+  const recordsStart = h.indexOf('records prints a transcript as ltms-records/0'), recordsStop = h.indexOf('\n\n', recordsStart) + 2;
+  assert.ok(recordsStart > 0 && h.includes(recordsUsageLine));
+  const recordsParagraph = h.slice(recordsStart, recordsStop);
+  assert.match(recordsParagraph.replace(/\s+/g, ' '), /ltms records --help gives its whole part/);
   // 0.2.0: the index is index's list of sessions; the per-turn lines are skeleton's (the sentence as printed now, and
   // as 0.0.5 printed it)
   const appends = ['Claude Code appends to it (it can rewrite one only in rare cases, and pin\nkeeps both versions). ltms index lists the sessions, one line each, and\nltms skeleton prints one line per turn and per tool call of a session, each\nwith the line of the file where it is written, so what compaction took out of\nthe context can be found and read again (for line 22: sed -n 22p <file>).\n',
@@ -1333,16 +1339,16 @@ test("help: ltms --help is 0.0.5's, with search's, index's, pin's, skill's and s
   // the repair round (merge 11), then 0.2.0: search's paragraph right after the stats fields, then index's, pin's and
   // skill's; 0.3.0: then shapes'
   assert.ok(h.slice(0, start).endsWith('  hopsOver2     chains of more than 2 hops\n\n'), "search's paragraph does not follow the stats fields");
-  assert.deepEqual([indexStart, pinStart, skillStart, shapesStart], [stop, indexStop, pinStop, skillStop], 'the paragraphs are not search, index, pin, skill and shapes, in that order');
+  assert.deepEqual([indexStart, pinStart, skillStart, shapesStart, recordsStart], [stop, indexStop, pinStop, skillStop, shapesStop], 'the paragraphs are not search, index, pin, skill, shapes and records, in that order');
   assert.equal(h.replace(usageLine, '').replace(indexUsageLine, '').replace(skillUsageLine, '').replace(paragraph, '').replace(indexParagraph, '')
-    .replace(pinUsageLine, '').replace(pinParagraph, '').replace(skillParagraph, '').replace(shapesUsageLine, '').replace(shapesParagraph, '')
+    .replace(pinUsageLine, '').replace(pinParagraph, '').replace(skillParagraph, '').replace(shapesUsageLine, '').replace(shapesParagraph, '').replace(recordsUsageLine, '').replace(recordsParagraph, '')
     .replace(...appends).replace(...reads)
     // 0.2.0: index tells files with one prefix apart by their path, so the sentence names skeleton and stats
     .replace('that get the same prefix cannot be told apart in one run of skeleton or stats\n(a warning names them): give them to separate runs.\n', 'that get the same prefix cannot be told apart in one run (a warning names\nthem): give them to separate runs.\n'), HELP_005);
   for (const args of [['skeleton', '--help'], ['stats', '-h'], ['help']]) assert.equal(ltms(args).out, h, args.join(' '));
   // the usage errors print the usage with every command in it
-  for (const l of [usageLine, indexUsageLine, pinUsageLine, skillUsageLine, shapesUsageLine]) assert.ok(ltms([]).err.includes(l), l);
-  assert.match(ltms(['skelton']).err, /^ltms: unknown command 'skelton'\. The commands are index, skeleton, stats, search, pin, skill and shapes\.\n/);
+  for (const l of [usageLine, indexUsageLine, pinUsageLine, skillUsageLine, shapesUsageLine, recordsUsageLine]) assert.ok(ltms([]).err.includes(l), l);
+  assert.match(ltms(['skelton']).err, /^ltms: unknown command 'skelton'\. The commands are index, skeleton, stats, search, pin, skill, shapes and records\.\n/);
 });
 
 /** The keys search prints, read from its output: the top-level keys of each kind of line, and the nested ones. */
@@ -1598,7 +1604,7 @@ test('source: cli.ts holds ASCII only and no typed backslash-u escape, and impor
   assert.ok(!src.includes(BSL + 'u'), 'a typed backslash-u in src/cli.ts');
   for (const text of [src, readFileSync(CLI, 'utf8')]) {
     const specifiers = [...text.matchAll(/^\s*(?:import|export)\b[^;]*?\bfrom\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
-    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js' || s === './sieve-cache.js' || s === './shapes.js', s);
+    for (const s of specifiers) assert.ok(s.startsWith('node:') || s === './parser.js' || s === './search.js' || s === './session.js' || s === './pin.js' || s === './sieve-cache.js' || s === './shapes.js' || s === './records.js', s);
     assert.ok(specifiers.includes('./search.js'));
   }
 });
