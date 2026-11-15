@@ -8,6 +8,7 @@
 // Changed since the prototype, each with the rule it follows (S375, after S374's closure read):
 //   - vOrder: versions equal as numbers (1.2.3, 01.2.3) are ordered by their text, not by where they were met (S4).
 //   - isVersion: no part of more than one digit starts with 0 (U3); the class version follows it, as before.
+//   - kindOf: a sub-kind gives (none) when the record has none there, (not a string) for another type (U14).
 //
 //   node test/shapes-recompute.mjs --vocabulary <v.json>... [--floor <n>] [--allow <spec>]... [--max-line <bytes>] <file>...
 //   node test/shapes-recompute.mjs --canon <report.jsonl>      the same report, each line's keys sorted (to compare with)
@@ -127,8 +128,9 @@ function kindOf(r) {
   if (!(VALUES[KIND] && VALUES[KIND].has(t))) return '(unlisted)';
   if (!Object.prototype.hasOwnProperty.call(SUB, t)) return t;
   const s = getAt(r, SUB[t]);
-  if (s === undefined) return t;
-  return typeof s === 'string' && VALUES[SUB[t]] && VALUES[SUB[t]].has(s) ? t + ':' + s : t + ':(unlisted)';
+  if (s === undefined) return t + ':(none)';
+  if (typeof s !== 'string') return t + ':(not a string)';
+  return VALUES[SUB[t]] && VALUES[SUB[t]].has(s) ? t + ':' + s : t + ':(unlisted)';
 }
 files.forEach((file, fi) => {
   let buf;

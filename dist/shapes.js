@@ -389,10 +389,14 @@ export function readShapes(V, files, opts) {
         const sp = V.sub.get(t);
         if (!sp)
             return t;
+        // the sub-kind as the kind path gives its own: (none), (not a string), a listed value, or (unlisted) (S374's
+        // closure read, U14)
         const s = getPlain(rec, sp);
         if (s === undefined)
-            return t;
-        return typeof s === 'string' && V.values.get(sp)?.has(s) ? `${t}:${s}` : `${t}:${UNLISTED}`;
+            return `${t}:${NONE}`;
+        if (typeof s !== 'string')
+            return `${t}:${NOT_STRING}`;
+        return V.values.get(sp)?.has(s) ? `${t}:${s}` : `${t}:${UNLISTED}`;
     };
     const note = (L, v, fi, ver, path) => {
         L.n++;
@@ -639,16 +643,17 @@ export function buildReport(V, S, floor, allowed) {
 /** The language a report of this vocabulary and allowed list is written in. `expect`, at the write, is the run's floor
  *  and its number of lines. */
 export function shapesLanguage(V, allowed, expect) {
+    // exactly what kindOf can give: a kind that has a sub-kind's path never prints alone
     const kindTokens = new Set([NONE, NOT_STRING, UNLISTED, ALL]);
     if (V.kindPath)
         for (const t of V.values.get(V.kindPath) ?? []) {
-            kindTokens.add(t);
             const sp = V.sub.get(t);
-            if (sp) {
-                kindTokens.add(`${t}:${UNLISTED}`);
-                for (const s of V.values.get(sp) ?? [])
-                    kindTokens.add(`${t}:${s}`);
+            if (!sp) {
+                kindTokens.add(t);
+                continue;
             }
+            for (const s of [UNLISTED, NONE, NOT_STRING, ...(V.values.get(sp) ?? [])])
+                kindTokens.add(`${t}:${s}`);
         }
     return { V, allowed: [...allowed], kindTokens, floor: expect?.floor ?? null, lines: expect?.lines ?? null };
 }

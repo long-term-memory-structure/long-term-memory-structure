@@ -2323,8 +2323,9 @@ A version line, k "version", one per version in force:
 A kind line, k "kind", one per record kind:
   kind          the value at the vocabulary's kind path, joined with its
                 sub-kind where the vocabulary names one (system:api_error);
-                (unlisted) for a value the vocabulary lacks, (none) when
-                there is none, (not a string) for another type
+                at either path, (unlisted) for a string the vocabulary
+                lacks, (none) when the record has none, (not a string) for
+                another type: (none), system:(none), system:(unlisted)
   records       the records of that kind
   files         the files they are in
   versions      the records per version

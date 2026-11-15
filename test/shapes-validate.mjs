@@ -7,6 +7,8 @@
 //
 // Changed since the prototype, each with the rule it follows (S375, after S374's closure read):
 //   - isVersion: no part of more than one digit starts with 0 (U3).
+//   - kindOk: a sub-kind may also be (none) or (not a string), and a kind whose sub-kind the vocabulary names never
+//     stands alone (U14).
 //   node test/shapes-validate.mjs <report.jsonl> <vocabulary.json>...     exit 0 when every token is allowed
 import { readFileSync } from 'node:fs';
 
@@ -38,7 +40,7 @@ export function validate(lines, vocabFiles) {
   const header = lines[0];
   if (!header || header.k !== 'shapes' || !Array.isArray(header.allowed)) return [{ line: 1, at: 'header' }];
   const L = language(vocabFiles, header.allowed);
-  const kindOk = (k) => FIXED.has(k) || (L.VALUES.get(L.KIND.path)?.has(k)) || (() => { const i = k.indexOf(':'); if (i < 0) return false; const t = k.slice(0, i), s = k.slice(i + 1); const sp = L.KIND.sub.get(t); return !!sp && !!L.VALUES.get(L.KIND.path)?.has(t) && (s === '(unlisted)' || !!L.VALUES.get(sp)?.has(s)); })();
+  const kindOk = (k) => FIXED.has(k) || (L.VALUES.get(L.KIND.path)?.has(k) && !L.KIND.sub.has(k)) || (() => { const i = k.indexOf(':'); if (i < 0) return false; const t = k.slice(0, i), s = k.slice(i + 1); const sp = L.KIND.sub.get(t); return !!sp && !!L.VALUES.get(L.KIND.path)?.has(t) && (['(unlisted)', '(none)', '(not a string)'].includes(s) || !!L.VALUES.get(sp)?.has(s)); })();
   const pathOk = (p) => L.P.has(p) || p === '.*' || (p.endsWith('.*') && L.P.has(p.slice(0, -2))) || (p.endsWith('[]') && L.P.has(p.slice(0, -2)));
   const anyValue = (s) => [...L.VALUES.values()].some((set) => set.has(s));
   lines.forEach((o, i) => {

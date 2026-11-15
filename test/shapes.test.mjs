@@ -612,3 +612,49 @@ test('shapes: the version rule: N.N.N, its parts of 1 to 4, 1 to 4 and 1 to 6 di
   // and the README no longer says a report holds no number from a record without naming this one
   assert.match(readme, /a value at a version path that follows the version rule prints as written, and it can be a date, when a program writes its version as one \(`2026\.11\.15`\)/);
 });
+
+// U14 (S374's closure read): a sub-kind gave the bare kind when its path was missing (system, not system:(none)) and
+// (unlisted) when it held another type (system:(unlisted) for 314159), where the kind path itself gives (none) and
+// (not a string). The sub-kind now gives the kind path's three, and the language admits exactly those.
+test('shapes: a sub-kind prints (none) when the record has none there and (not a string) for another type, as the kind does; the language admits exactly these', () => {
+  const dir = tmp();
+  try {
+    const cases = [
+      [{ type: 'system', level: 'info' }, 'system:(none)'],
+      [{ type: 'system', subtype: 314159 }, 'system:(not a string)'],
+      [{ type: 'system', subtype: null }, 'system:(not a string)'],
+      [{ type: 'system', subtype: ['turn_duration'] }, 'system:(not a string)'],
+      [{ type: 'system', subtype: '' }, 'system:(unlisted)'],
+      [{ type: 'system', subtype: 'zq_sub' }, 'system:(unlisted)'],
+      [{ type: 'system', subtype: 'turn_duration' }, 'system:turn_duration'],
+      [{ type: 'attachment' }, 'attachment:(none)'],
+      [{ type: 'attachment', attachment: 'zq7canary' }, 'attachment:(none)'],
+      [{ type: 'attachment', attachment: {} }, 'attachment:(none)'],
+      [{ type: 'attachment', attachment: { type: 42 } }, 'attachment:(not a string)'],
+      [{ type: 'attachment', attachment: { type: 'zq_attach' } }, 'attachment:(unlisted)'],
+      [{ subtype: 'turn_duration' }, '(none)'],
+      [{ type: 7 }, '(not a string)'],
+      [{ type: 'user' }, 'user'],
+    ];
+    const files = ['a', 'b', 'c'].map((f) => join(dir, `${f}.jsonl`));
+    for (const f of files) writeFileSync(f, cases.map(([rec]) => JSON.stringify(rec)).join('\n') + '\n');
+    const r = shapes([dir]);
+    assert.equal(r.code, 0, r.err);
+    assertNoCanary(r.out);
+    assert.deepEqual(r.lines.filter((o) => o.k === 'kind').map((o) => o.kind), [...new Set(cases.map(([, kind]) => kind))].sort(), 'the kinds printed');
+    assert.deepEqual(r.lines.map(canon), recompute(['--vocabulary', DOCS, ...files]), 'every field equals the recompute');
+    writeFileSync(join(dir, 'r.json'), r.out);
+    assert.equal(shapes(['--check', join(dir, 'r.json')]).code, 0, '--check accepts the report');
+  } finally { rm(dir); }
+  // the language: a kind with a sub-kind's path gives kind:sub for each value listed there, and kind:(unlisted),
+  // kind:(none) and kind:(not a string), never the kind alone; a kind without one, the kind alone
+  const V = SH.loadVocabulary(DOCS), Lg = SH.shapesLanguage(V, []);
+  const kindLine = (kind) => ({ k: 'kind', kind, records: '1', files: '1', versions: {} });
+  for (const kind of ['system:(none)', 'system:(not a string)', 'system:(unlisted)', 'system:turn_duration', 'attachment:(none)', 'attachment:(not a string)', 'attachment:(unlisted)', 'user', '(none)', '(not a string)', '(unlisted)'])
+    assert.equal(SH.checkLine(kindLine(kind), Lg), null, `the language admits the kind ${kind}`);
+  for (const kind of ['system', 'attachment', 'user:(none)', 'user:(not a string)', 'system:(all)', 'system:(rare)', 'system:(withheld)', 'system:zq_sub', 'system:(none):(none)'])
+    assert.equal(SH.checkLine(kindLine(kind), Lg), 'kind', `the language refuses the kind ${kind}`);
+  const head = (lines) => [{ k: 'shapes', format: 'ltms-shapes/0', vocabulary: V.list, floor: 3, allowed: [], files: { read: '1', failed: '0' }, lines: { records: '1', blank: '0', notJson: '0', notObject: '0', tooLong: '0' } }, ...lines, { k: 'end', lines: lines.length + 2 }];
+  assert.deepEqual(validate(head([kindLine('system:(none)'), kindLine('attachment:(not a string)')]), [DOCS]), [], 'the independent validator admits the new kinds');
+  assert.notDeepEqual(validate(head([kindLine('system')]), [DOCS]), [], 'the independent validator refuses a kind alone where the vocabulary names its sub-kind');
+});
