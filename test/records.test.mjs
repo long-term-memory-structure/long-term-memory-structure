@@ -238,11 +238,14 @@ test('records (S375): the module gives the same records from chunks of any size,
   assert.match(String(runWith(7, [bytes, flipped]).r.changed), /changed between the two reads/);
   // the file shorter at the second read than at the first: refused
   assert.match(String(runWith(1 << 20, [bytes, bytes.subarray(0, bytes.length - 10)]).r.changed), /shrank/);
-  // the file grown since it was opened: only the bytes it had then are read, twice, and nothing is refused
+  // the file grown since it was opened: only the bytes it had then are read, twice, and nothing is refused (at small
+  // chunks too: a chunk of 1 MiB is cut to the file's size, so only a small one can read past it)
   const grown = Buffer.concat([bytes, Buffer.from('{"type":"late"}\n')]);
-  const g = runWith(1 << 20, [grown, grown], bytes.length);
-  assert.equal(g.r.changed, null);
-  assert.equal(g.text, want.text);
+  for (const chunk of [7, 1 << 20]) {
+    const g = runWith(chunk, [grown, grown], bytes.length);
+    assert.equal(g.r.changed, null, `chunks of ${chunk}`);
+    assert.equal(g.text, want.text, `chunks of ${chunk}`);
+  }
   rmSync(d, { recursive: true });
 });
 
@@ -275,5 +278,23 @@ test('records (S375): a line too long for this Node to read as a string stops th
   assert.equal(status, 1, stderr);
   assert.match(stderr, /line 1 is \d+ bytes, longer than this Node can read as a string/);
   assert.doesNotMatch(stderr, /a bug in ltms/);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375): through the command, a file that changes between its two reads exits 1, and stderr says the records are not a view of it', () => {
+  const d = tmp(), f = synthetic(d);
+  // a module loaded before the command: it flips one byte of the second read's first piece, as a file rewritten in
+  // place between the two reads would read
+  const flip = join(d, 'flip.mjs');
+  writeFileSync(flip, [
+    "import fs from 'node:fs';",
+    "import { syncBuiltinESMExports } from 'node:module';",
+    'const readSync = fs.readSync; let starts = 0;',
+    'fs.readSync = (fd, buf, off, len, pos) => { if (pos === 0) starts++; const n = readSync(fd, buf, off, len, pos); if (starts === 2 && pos === 0 && n > 100) buf[off + 100] ^= 1; return n; };',
+    'syncBuiltinESMExports();',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, ['--import', pathToFileURL(flip).href, CLI, 'records', f], { encoding: 'utf8', maxBuffer: 64 << 20 });
+  assert.equal(r.status, 1, `status ${r.status}: ${r.stderr}`);
+  assert.match(r.stderr, /the file changed between the two reads \(its first \d+ bytes differ\), so the records written are not a view of it\. Run it again\./);
   rmSync(d, { recursive: true });
 });
