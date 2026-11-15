@@ -362,3 +362,15 @@ test("records (S375): README: its section's example lines are what the command p
   for (const k of R.RECORD_KINDS) assert.ok(section.includes(`\`${k}\``), `the README's section on records does not name the kind '${k}'`);
   rmSync(d, { recursive: true });
 });
+
+test('records (S375): the header lists versions equal as numbers but spelled apart by their text, so the order of the records does not change the header (the shapes S4 defect, found in records by G1\'s check)', () => {
+  const d = tmp();
+  const rec = (v, u) => JSON.stringify({ type: 'user', uuid: u, parentUuid: null, version: v, message: { content: 'x' }, promptSource: 'typed' });
+  const a = join(d, 'aaaaaaaa-1.jsonl'), b = join(d, 'aaaaaaaa-2.jsonl');
+  writeFileSync(a, [rec('01.2.3', 'u1'), rec('1.2.3', 'u2'), rec('0.9.9', 'u3')].join('\n') + '\n');
+  writeFileSync(b, [rec('1.2.3', 'u2'), rec('01.2.3', 'u1'), rec('0.9.9', 'u3')].join('\n') + '\n');
+  const versions = (f) => lines(run(f).stdout)[0].supplier.versions;
+  assert.deepEqual(versions(a), ['0.9.9', '01.2.3', '1.2.3']);
+  assert.deepEqual(versions(b), versions(a));
+  rmSync(d, { recursive: true });
+});

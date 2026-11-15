@@ -55,7 +55,8 @@ const str = (v) => (typeof v === 'string' ? v : undefined);
 /** A stamp that names its zone: Z, or an offset. */
 const ZONED = /(?:Z|[+-]\d{2}:?\d{2})$/;
 const N3 = /^\d+\.\d+\.\d+$/;
-/** Versions N.N.N in numeric order, then any other strings by their text. */
+/** Versions N.N.N in numeric order (two spellings of one number, 01.2.3 and 1.2.3, by their text), then any other
+ *  strings by their text: a total order, so the header does not depend on the order of the records. */
 function cmpVersions(a, b) {
     const na = N3.test(a), nb = N3.test(b);
     if (na && nb) {
@@ -63,7 +64,7 @@ function cmpVersions(a, b) {
         for (let i = 0; i < 3; i++)
             if (x[i] !== y[i])
                 return x[i] - y[i];
-        return 0;
+        return a < b ? -1 : a > b ? 1 : 0;
     }
     if (na !== nb)
         return na ? -1 : 1;
