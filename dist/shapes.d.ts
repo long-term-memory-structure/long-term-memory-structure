@@ -39,7 +39,7 @@ export interface ShapesVocabulary {
 /** Reads a vocabulary file (ltms-shapes-vocabulary/0). A file that cannot be read throws its own error; one that is not a
  *  vocabulary, that holds a field the format does not name (at its top or in kinds), whose path, name or value breaks
  *  the rules, or that names in kinds, versions or values a path that paths does not list, is a usage error whose
- *  message names the entry by its field and index (paths[3], values[".type"][2], kinds.sub["system"], versions[0]). */
+ *  message names the entry by its field and index (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]). */
 export declare function loadVocabulary(file: string): ShapesVocabulary;
 /** --allow <path> or --allow <path>=<value>: the person names a key path (and with it every path above it) or a value, to
  *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. A value
