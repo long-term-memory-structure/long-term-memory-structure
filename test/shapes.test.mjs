@@ -687,3 +687,50 @@ test("shapes: an --allow value at the kind path or at a sub-kind's path may not 
     assert.deepEqual([allowOf('.type', 'zq:colon'), allowOf('.subtype', 'zq:sub'), allowOf('.message.content[].type', 'zq:block')], [null, null, '.message.content[].type=zq:block']);
   } finally { rm(dir); }
 });
+
+// U4 (S374's closure read): the vocabulary file's format was not written down, a misspelled field ('value', 'kind',
+// 'subs') or a path that paths lacks passed in silence and made a weaker report, and an error named no entry. The
+// README now gives the format; the loader refuses any other field, at the top or in kinds, and any path that kinds,
+// versions or values name but paths lacks; each message names the entry by its field and index.
+test('shapes: a vocabulary file: a field it does not know, at its top or in kinds, and a path that kinds, versions or values name but paths lacks, are refused (exit 2), each message naming the entry by its field and index; the vocabulary that ships passes, and its fields are the README\'s', () => {
+  const base = JSON.parse(readFileSync(DOCS, 'utf8'));
+  const variant = (fn) => { const v = structuredClone(base); fn(v); return v; };
+  const rename = (o, from, to) => { o[to] = o[from]; delete o[from]; };
+  const cases = [
+    ['values spelled value', variant((v) => rename(v, 'values', 'value')), /: the field "value" is not a vocabulary's; its fields are format, name, source, paths, values, kinds and versions/],
+    ['kinds spelled kind', variant((v) => rename(v, 'kinds', 'kind')), /: the field "kind" is not a vocabulary's/],
+    ['kinds.sub spelled subs', variant((v) => rename(v.kinds, 'sub', 'subs')), /: kinds holds the field "subs"; its fields are path and sub/],
+    ['kinds.path spelled paths', variant((v) => rename(v.kinds, 'path', 'paths')), /: kinds holds the field "paths"; its fields are path and sub/],
+    ['a value list at a path paths lacks', variant((v) => { v.values['.zqNotListed'] = ['a']; }), /: values\[".zqNotListed"\] is a path that paths does not list; every path named in kinds, versions and values must be in paths/],
+    ['a version path paths lacks', variant((v) => { v.versions = ['.version', '.release']; }), /: versions\[1\] ".release" is a path that paths does not list/],
+    ['a kind path paths lacks', variant((v) => { v.kinds.path = '.kind'; }), /: kinds\.path ".kind" is a path that paths does not list/],
+    ["a sub-kind's path paths lacks", variant((v) => { v.kinds.sub.system = '.zqSub'; }), /: kinds\.sub\["system"\] ".zqSub" is a path that paths does not list/],
+    ['no paths', variant((v) => { delete v.paths; v.values = {}; delete v.kinds; v.versions = []; }), /: paths is missing/],
+    ['a bad path', variant((v) => { v.paths[2] = '.zq secret'; }), /: paths\[2\] ".zq secret" is not a key path/],
+    ['a path whose step starts with a digit', variant((v) => { v.paths[5] = '.1abc'; }), /: paths\[5\] ".1abc" is not a key path/],
+    ['a bad value', variant((v) => { v.values['.type'][3] = 'has space'; }), /: values\["\.type"\]\[3\] "has space" is not a value/],
+    ['a version path with a [] step', variant((v) => { v.versions = ['.message.content[]']; }), /: versions\[0\] ".message.content\[\]" is not a plain path/],
+    ['a sub-kind path that is not a string', variant((v) => { v.kinds.sub.attachment = 7; }), /: kinds\.sub\["attachment"\] a number is not a plain path/],
+  ];
+  const dir = tmp();
+  try {
+    cases.forEach(([what, v], i) => {
+      const f = join(dir, `v${i}.json`);
+      writeFileSync(f, JSON.stringify(v));
+      const r = shapes(['--vocabulary', f, ...CC]);
+      assert.deepEqual([r.code, r.out], [2, ''], `${what}: ${r.err}`);
+      assert.match(r.err, new RegExp(`^ltms shapes: '${f.replace(/[.[\]\\]/g, '\\$&')}'${cases[i][2].source}`), what);
+    });
+  } finally { rm(dir); }
+  // the vocabulary that ships, and the two sketches, pass the loader as they are
+  for (const f of [DOCS, CODEX_V, GEMINI_V]) assert.doesNotThrow(() => SH.loadVocabulary(f), f);
+  // the README gives the format: its fields are the ones the loader takes (each field the README's table names, the
+  // shipped vocabulary has; one more is refused)
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const start = readme.indexOf('#### The vocabulary file');
+  assert.ok(start > 0, 'the README has a part on the vocabulary file');
+  const part = readme.slice(start, readme.indexOf('\n#', start + 1));
+  const fields = [...part.matchAll(/^\| `([a-z]+)` \|/gm)].map((m) => m[1]);
+  assert.deepEqual(fields.slice().sort(), Object.keys(base).sort(), "the README's table names the shipped vocabulary's fields, each once");
+  assert.match(readme, /\| `--vocabulary <file>` \|[^\n]*\[The vocabulary file\]\(#the-vocabulary-file\)/, 'the --vocabulary row links the format');
+});

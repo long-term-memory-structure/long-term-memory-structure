@@ -475,9 +475,9 @@ A key the vocabulary does not hold prints as `*`, and nothing below it is read: 
 | option | meaning |
 |---|---|
 | `--supplier <name>` | the vocabulary that ships with ltms for that program: `claude-code`, the default and the only one so far |
-| `--vocabulary <file>` | a vocabulary file instead (`format` `ltms-shapes-vocabulary/0`, with `name`, `kinds`, `versions`, `paths` and `values`): its name and sha256 go in the first line |
+| `--vocabulary <file>` | a vocabulary file instead, in the format [The vocabulary file](#the-vocabulary-file) gives (`ltms-shapes-vocabulary/0`): its name and sha256 go in the first line |
 | `--floor <n>` | the files a path must be seen in to be printed: 3 unless set, 2 or more |
-| `--allow <path>` | print this key path, written like `.message.newField` or `.list[].name`, and every path above it; repeatable. Each step is a field name: ASCII letters, digits and `_ : + -`, at most 64, a leading `$` or `@` allowed |
+| `--allow <path>` | print this key path, written like `.message.newField` or `.list[].name`, and every path above it; repeatable. Each step is a name by the rule in [The vocabulary file](#the-vocabulary-file): an optional `$` or `@`, then an ASCII letter or `_`, then ASCII letters, digits and `_ : + -`, at most 64 after the `$` or `@` |
 | `--allow <path>=<value>` | print this value at this path (a value by the label rule); repeatable. At the kind path or a sub-kind's path (`.type`, `.subtype`, `.attachment.type`), the value may not hold `:`, which joins a kind and its sub-kind in a report (`system:turn_duration`): such a value is a usage error |
 | `--max-line <bytes>` | the longest line read: 64 MiB unless set; from 1024 to the longest string this Node can hold (536,870,888 on Node 26). A longer line is counted (`tooLong`) as its bytes pass, never held or read |
 | `--check <report>` | is every token of this report in its language? stderr names each line that is not, by its number and its field; exit 0 or 1. Give it the vocabulary the report was made with |
@@ -532,6 +532,27 @@ Exit status: 0 when every file was read and every line written; 1 when a file co
 - The vocabulary goes stale: a record type or a field that Claude Code adds after it was built prints as `(unlisted)` or `*` until the vocabulary names it, or you `--allow` it. It was built from ltms 0.2.2's docs and parser, and names Claude Code's records as that release knew them.
 - Under a directory, a pin directory and set-aside copies are read like any `.jsonl` file: they hold copies, so give the paths that hold each transcript once.
 - Memory: one read buffer of 1 MiB, at most `--max-line` bytes of one line and what it parses to, and the counts, which grow with the kinds and paths the vocabulary names, not with the files. Measured on one machine (Node 26): one project's 1,088 transcripts (2.6 GB, 552,545 records, its sessions' subagents and workflows among them) in 26.6 s, at a peak of 188 MiB resident; the report, 276 lines and 57,673 bytes.
+
+#### The vocabulary file
+
+A vocabulary is one JSON object, which `--vocabulary <file>` reads; `vocab/claude-code.docs.json` is the one that ships. Its fields, and no others:
+
+| field | what it holds |
+|---|---|
+| `format` | the format's name, `"ltms-shapes-vocabulary/0"` |
+| `name` | its name, a value (below); a report's first line gives it, with the first 12 hex digits of the file's sha256 and how many `paths` and `values` it lists |
+| `source` | optional: where its names come from, in words; a report never prints it |
+| `paths` | the key paths a report may print, a list of paths; a key at any other path prints as `*` |
+| `values` | optional: the values a report may print, an object whose keys are paths and whose values are lists of values; at a path with no list, a value prints only as its type and class, and at a path with one, a value it lacks prints as `(unlisted)` |
+| `kinds` | optional: `{"path": <a plain path>, "sub": {<a kind>: <a plain path>, ...}}`, the path of a record's kind and, for a kind that has one, the path of its sub-kind (`sub` is optional); with no `kinds`, every record is of the kind `(all)`, and with no list in `values` at its path, every kind that is a string prints as `(unlisted)` |
+| `versions` | optional: a list of plain paths, in order: a record's version is the value at the first of them it has; with none, every version is `(none)` |
+
+- A name, which is a step of a path: an optional `$` or `@`, then an ASCII letter or `_`, then ASCII letters, digits and `_ : + -`, at most 64 characters after the `$` or `@`.
+- A path: steps, each `.` and a name, or `[]`, the elements of an array, as in `.message.content[].type`. A plain path has no `[]` step.
+- A value, and a kind in `sub`: 1 to 64 ASCII letters, digits and `. _ : + -` (the label rule in [Privacy](#privacy)).
+- Every path that `kinds`, `versions` and `values` name must also be in `paths`.
+
+ltms refuses (a usage error, exit 2) a vocabulary with another field, at its top or in `kinds`, with a path, a name or a value that breaks these rules, or with a path in `kinds`, `versions` or `values` that `paths` does not list; its message names the entry by its field and index: `paths[3]`, `values[".type"][2]`, `kinds.sub["system"]`, `versions[0]`.
 
 ### `ltms pin <path>... --to <dir>`
 

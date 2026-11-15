@@ -2281,8 +2281,11 @@ chose), and run ltms shapes --check on it.
 --supplier <name>     the vocabulary that ships with ltms for that program:
                       claude-code (the default), built from ltms's own
                       public docs and parser
---vocabulary <file>   a vocabulary file instead (its format
-                      ltms-shapes-vocabulary/0)
+--vocabulary <file>   a vocabulary file instead (its format,
+                      ltms-shapes-vocabulary/0, is in the README's section
+                      on ltms shapes: The vocabulary file). A field it does
+                      not name, or a path in kinds, versions or values that
+                      paths does not list, is a usage error
 --floor <n>           the files a path must be seen in to be printed
                       (default 3; 2 or more)
 --allow <path>        print this key path, written like .message.newField or

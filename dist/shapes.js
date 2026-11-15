@@ -128,9 +128,26 @@ export class ShapesUsageError extends Error {
     constructor(message) { super(message); this.name = 'ShapesUsageError'; }
 }
 const usage = (m) => new ShapesUsageError(m);
+/** A vocabulary file's fields, and its kinds' (the README's section on ltms shapes, The vocabulary file, gives the
+ *  format); the loader refuses any other (S374's closure read, U4). */
+const VOCABULARY_FIELDS = ['format', 'name', 'source', 'paths', 'values', 'kinds', 'versions'];
+const KINDS_FIELDS = ['path', 'sub'];
+/** The rules, as the messages word them. */
+const NAME_RULE = 'a name being an optional $ or @, then a letter or _, then letters, digits and _ : + -, at most 64 after the $ or @';
+const PLAIN_RULE = `steps, each . and a name, ${NAME_RULE}`;
+const PATH_RULE = `steps, each . and a name, or [] (an array's elements), ${NAME_RULE}`;
+const VALUE_RULE = '1 to 64 ASCII letters, digits and . _ : + -';
+/** An entry of a vocabulary file, as a message shows it: a string quoted as JSON (its first 80 characters), any other
+ *  value by its type. */
+function shown(x) {
+    if (typeof x === 'string')
+        return x.length > 80 ? `${JSON.stringify(x.slice(0, 80))}...` : JSON.stringify(x);
+    return x === null ? 'null' : Array.isArray(x) ? 'an array' : isObj(x) ? 'an object' : `a ${typeof x}`;
+}
 /** Reads a vocabulary file (ltms-shapes-vocabulary/0). A file that cannot be read throws its own error; one that is not a
- *  vocabulary, or whose path or value breaks the rules (a path step that is not a field name, a value that fails the label
- *  rule), is a usage error. */
+ *  vocabulary, that holds a field the format does not name (at its top or in kinds), whose path, name or value breaks
+ *  the rules, or that names in kinds, versions or values a path that paths does not list, is a usage error whose
+ *  message names the entry by its field and index (paths[3], values[".type"][2], kinds.sub["system"], versions[0]). */
 export function loadVocabulary(file) {
     const bytes = readFileSync(file);
     let v;
@@ -142,57 +159,88 @@ export function loadVocabulary(file) {
     }
     if (!isObj(v) || v.format !== SHAPES_VOCABULARY_FORMAT)
         throw usage(`'${file}' is not a vocabulary (its format is not ${SHAPES_VOCABULARY_FORMAT}).`);
+    const bad = (m) => usage(`'${file}': ${m}`);
+    for (const f of Object.keys(v))
+        if (!VOCABULARY_FIELDS.includes(f))
+            throw bad(`the field ${shown(f)} is not a vocabulary's; its fields are format, name, source, paths, values, kinds and versions (the README's section on ltms shapes: The vocabulary file).`);
+    if (v.name === undefined)
+        throw bad(`name is missing: the vocabulary's name, which a report's first line gives (${VALUE_RULE}).`);
     if (typeof v.name !== 'string' || !LABEL.test(v.name))
-        throw usage(`'${file}': the vocabulary's name must pass the label rule.`);
-    const list = (x, what) => {
-        if (x === undefined)
-            return [];
-        if (!Array.isArray(x))
-            throw usage(`'${file}': ${what} is not a list.`);
-        return x;
-    };
+        throw bad(`name ${shown(v.name)} is not a value: ${VALUE_RULE}.`);
+    if (v.source !== undefined && typeof v.source !== 'string')
+        throw bad(`source is ${shown(v.source)}: it holds words on where the vocabulary's names come from, a string.`);
+    if (v.paths === undefined)
+        throw bad('paths is missing: the list of the key paths a report may print (with none, every key prints as *).');
+    if (!Array.isArray(v.paths))
+        throw bad(`paths is ${shown(v.paths)}, not a list of key paths.`);
+    const paths = v.paths;
     const V = { list: [], paths: new Set(), values: new Map(), kindPath: null, sub: new Map(), versions: [] };
-    const paths = list(v.paths, 'paths');
-    for (const p of paths) {
+    paths.forEach((p, i) => {
         if (typeof p !== 'string' || !VOCAB_PATH.test(p))
-            throw usage(`'${file}': a path does not follow the path rule; every name must pass the NAME rule.`);
+            throw bad(`paths[${i}] ${shown(p)} is not a key path: ${PATH_RULE}; as in .message.content[].type.`);
         V.paths.add(p);
-    }
+    });
+    const notListed = ' is a path that paths does not list; every path named in kinds, versions and values must be in paths.';
     let nValues = 0;
     if (v.values !== undefined && !isObj(v.values))
-        throw usage(`'${file}': values is not an object of value lists.`);
+        throw bad(`values is ${shown(v.values)}, not an object of value lists by path.`);
     for (const [p, vs] of Object.entries(v.values ?? {})) {
-        if (!VOCAB_PATH.test(p) || !Array.isArray(vs))
-            throw usage(`'${file}': a value list is not a path and an array.`);
+        const at = `values[${shown(p)}]`;
+        if (!VOCAB_PATH.test(p))
+            throw bad(`${at} names no key path: ${PATH_RULE}.`);
+        if (!V.paths.has(p))
+            throw bad(at + notListed);
+        if (!Array.isArray(vs))
+            throw bad(`${at} is ${shown(vs)}, not a list of values.`);
         let set = V.values.get(p);
         if (!set)
             V.values.set(p, (set = new Set()));
-        for (const x of vs) {
+        for (let j = 0; j < vs.length; j++) {
+            const x = vs[j];
             if (typeof x !== 'string' || !LABEL.test(x))
-                throw usage(`'${file}': a value does not pass the label rule.`);
+                throw bad(`${at}[${j}] ${shown(x)} is not a value: ${VALUE_RULE}.`);
             set.add(x);
             nValues++;
         }
     }
     if (v.kinds !== undefined) {
         const k = v.kinds;
-        if (!isObj(k) || typeof k.path !== 'string' || !PLAIN_PATH.test(k.path))
-            throw usage(`'${file}': kinds.path is not a plain path.`);
+        if (!isObj(k))
+            throw bad(`kinds is ${shown(k)}, not an object: {"path": the path of a record's kind, "sub": {a kind: the path of its sub-kind}}.`);
+        for (const f of Object.keys(k))
+            if (!KINDS_FIELDS.includes(f))
+                throw bad(`kinds holds the field ${shown(f)}; its fields are path and sub.`);
+        if (k.path === undefined)
+            throw bad(`kinds.path is missing: the path of a record's kind (${PLAIN_RULE}).`);
+        if (typeof k.path !== 'string' || !PLAIN_PATH.test(k.path))
+            throw bad(`kinds.path ${shown(k.path)} is not a plain path: ${PLAIN_RULE}.`);
+        if (!V.paths.has(k.path))
+            throw bad(`kinds.path ${shown(k.path)}${notListed}`);
         V.kindPath = k.path;
         if (k.sub !== undefined && !isObj(k.sub))
-            throw usage(`'${file}': kinds.sub is not an object.`);
+            throw bad(`kinds.sub is ${shown(k.sub)}, not an object of the paths of sub-kinds by kind.`);
         for (const [t, sp] of Object.entries(k.sub ?? {})) {
-            if (!LABEL.test(t) || typeof sp !== 'string' || !PLAIN_PATH.test(sp))
-                throw usage(`'${file}': a kinds.sub entry is malformed.`);
+            const at = `kinds.sub[${shown(t)}]`;
+            if (!LABEL.test(t))
+                throw bad(`${at}: the kind is not a value: ${VALUE_RULE}.`);
+            if (typeof sp !== 'string' || !PLAIN_PATH.test(sp))
+                throw bad(`${at} ${shown(sp)} is not a plain path: ${PLAIN_RULE}.`);
+            if (!V.paths.has(sp))
+                throw bad(`${at} ${shown(sp)}${notListed}`);
             V.sub.set(t, sp);
         }
     }
-    for (const p of list(v.versions, 'versions')) {
+    if (v.versions !== undefined && !Array.isArray(v.versions))
+        throw bad(`versions is ${shown(v.versions)}, not a list of plain paths.`);
+    const versions = (v.versions ?? []);
+    versions.forEach((p, i) => {
         if (typeof p !== 'string' || !PLAIN_PATH.test(p))
-            throw usage(`'${file}': a version path is not a plain path.`);
+            throw bad(`versions[${i}] ${shown(p)} is not a plain path: ${PLAIN_RULE}.`);
+        if (!V.paths.has(p))
+            throw bad(`versions[${i}] ${shown(p)}${notListed}`);
         if (!V.versions.includes(p))
             V.versions.push(p);
-    }
+    });
     V.list.push({ name: v.name, sha256: createHash('sha256').update(bytes).digest('hex').slice(0, 12), paths: paths.length, values: nValues });
     return V;
 }
@@ -211,7 +259,7 @@ export function applyAllow(V, specs) {
         const i = s.indexOf('=');
         const p = i < 0 ? s : s.slice(0, i), val = i < 0 ? null : s.slice(i + 1);
         if (!VOCAB_PATH.test(p))
-            throw usage(`--allow '${s}': the path must be written like .message.newField or .list[].name, each name a field name (letters, digits, _ : + -, at most 64; a leading $ or @ allowed).`);
+            throw usage(`--allow '${s}': the path must be written like .message.newField or .list[].name: ${PATH_RULE}.`);
         if (val !== null && !LABEL.test(val))
             throw usage(`--allow '${s}': the value must pass the label rule (at most 64 ASCII letters, digits and . _ : + -).`);
         if (val !== null && val.includes(':') && kp.includes(p))
