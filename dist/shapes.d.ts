@@ -208,9 +208,11 @@ export interface ShapesWritten {
     /** Bytes written. */
     bytes: number;
 }
-/** THE WRITE GUARD, and the only way a report leaves this module: each line is checked against the language just before
- *  it is written, and a line that fails is not written. A line that passes is written as JSON.stringify writes it, the
- *  very object checked. `write` is given the text in parts of at most 1,000 lines. */
+/** THE WRITE GUARD, and the only way a report leaves this module: each line is turned into the text that will be
+ *  written, that text is parsed back and checked against the language, and only that text is written: what is checked is
+ *  exactly what goes out (an object whose JSON is not its own fields, through an inherited toJSON say, cannot pass as one
+ *  line and be written as another: S374's closure read, S1). A line that fails is not written. `write` is given the text
+ *  in parts of at most 1,000 lines. */
 export declare function writeReport(lines: readonly unknown[], Lg: ShapesLanguage, write: (text: string) => void): ShapesWritten;
 /** What --check found in a report file. */
 export type ShapesCheck = {

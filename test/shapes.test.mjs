@@ -520,3 +520,17 @@ test('shapes: the independent validator read every report this file made', (t) =
   t.diagnostic(`${validated} reports, each read by test/shapes-validate.mjs`);
   assert.ok(validated >= 30, `${validated} reports were validated`);
 });
+
+// S1 (S374's closure read): the guard checks the text it writes, parsed back, not the object it was given: an object
+// whose JSON is not its own fields (an inherited toJSON) cannot pass as one line and be written as another
+test('shapes: the write guard checks the very text it writes (an inherited toJSON cannot carry a token past it)', () => {
+  const V = SH.loadVocabulary(DOCS);
+  const Lg = SH.shapesLanguage(V, [], { floor: 3, lines: 1 });
+  const evil = Object.create({ toJSON() { return { k: 'end', lines: 1, leak: 'zqCANARYtojson' }; } });
+  evil.k = 'end'; evil.lines = 1;
+  assert.equal(SH.checkLine(evil, Lg), null, 'its own fields pass the language');
+  let out = '';
+  const w = SH.writeReport([evil], Lg, (t) => { out += t; });
+  assert.deepEqual([w.written, w.refused], [0, 1]);
+  assert.doesNotMatch(out, /zqCANARY/);
+});

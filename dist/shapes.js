@@ -729,9 +729,11 @@ export function checkLine(o, Lg) {
         default: return 'unknown line kind';
     }
 }
-/** THE WRITE GUARD, and the only way a report leaves this module: each line is checked against the language just before
- *  it is written, and a line that fails is not written. A line that passes is written as JSON.stringify writes it, the
- *  very object checked. `write` is given the text in parts of at most 1,000 lines. */
+/** THE WRITE GUARD, and the only way a report leaves this module: each line is turned into the text that will be
+ *  written, that text is parsed back and checked against the language, and only that text is written: what is checked is
+ *  exactly what goes out (an object whose JSON is not its own fields, through an inherited toJSON say, cannot pass as one
+ *  line and be written as another: S374's closure read, S1). A line that fails is not written. `write` is given the text
+ *  in parts of at most 1,000 lines. */
 export function writeReport(lines, Lg, write) {
     const done = { written: 0, refused: 0, reasons: [], bytes: 0 };
     let text = '', held = 0;
@@ -740,13 +742,20 @@ export function writeReport(lines, Lg, write) {
         write(text);
     } text = ''; held = 0; };
     lines.forEach((o, i) => {
-        const why = checkLine(o, Lg);
-        if (why !== null) {
+        let s;
+        try {
+            s = JSON.stringify(o);
+        }
+        catch {
+            s = undefined;
+        }
+        const why = typeof s === 'string' ? checkLine(JSON.parse(s), Lg) : 'not JSON';
+        if (why !== null || typeof s !== 'string') {
             done.refused++;
-            done.reasons.push({ line: i + 1, why });
+            done.reasons.push({ line: i + 1, why: why ?? 'not JSON' });
             return;
         }
-        text += JSON.stringify(o) + '\n';
+        text += s + '\n';
         done.written++;
         if (++held >= 1000)
             flush();
