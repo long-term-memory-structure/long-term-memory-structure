@@ -658,3 +658,32 @@ test('shapes: a sub-kind prints (none) when the record has none there and (not a
   assert.deepEqual(validate(head([kindLine('system:(none)'), kindLine('attachment:(not a string)')]), [DOCS]), [], 'the independent validator admits the new kinds');
   assert.notDeepEqual(validate(head([kindLine('system')]), [DOCS]), [], 'the independent validator refuses a kind alone where the vocabulary names its sub-kind');
 });
+
+// U15 (S374's closure read): --allow .type=system:turn_duration made the raw type "system:turn_duration" print as the
+// kind system:turn_duration, the very token of a system record whose .subtype is turn_duration: two kinds of record
+// counted and walked as one line. ':' joins a kind and its sub-kind, so an --allow value at the kind path or at a
+// sub-kind's path may not hold it.
+test("shapes: an --allow value at the kind path or at a sub-kind's path may not hold ':' (a usage error that names it); elsewhere it may; the vocabulary that ships holds none there", () => {
+  for (const spec of ['.type=system:turn_duration', '.subtype=turn:duration', '.attachment.type=hook:success']) {
+    const r = shapes(['--allow', spec, ...CC]);
+    assert.deepEqual([r.code, r.out], [2, ''], spec);
+    const [path, value] = [spec.slice(0, spec.indexOf('=')), spec.slice(spec.indexOf('=') + 1)];
+    assert.match(r.err, new RegExp(`^ltms shapes: --allow '${spec.replace(/[.[\]]/g, '\\$&')}': a value at the kind path or at a sub-kind's path \\(\\.type, \\.subtype, \\.attachment\\.type\\) may not hold ':'`), spec);
+    assert.ok(r.err.includes(`'${value}' holds one`), `the message names the value: ${r.err}`);
+    assert.ok(r.err.includes(path));
+  }
+  for (const spec of ['.message.content[].type=zq:block', '.type=custom_thing', '.subtype=zq_sub3']) assert.equal(shapes(['--allow', spec, ...CC]).code, 0, spec);
+  const v = JSON.parse(readFileSync(DOCS, 'utf8'));
+  const kindPaths = [v.kinds.path, ...Object.values(v.kinds.sub)];
+  assert.deepEqual(kindPaths, ['.type', '.subtype', '.attachment.type']);
+  assert.deepEqual(kindPaths.flatMap((p) => (v.values[p] ?? []).filter((x) => x.includes(':'))), [], "the vocabulary that ships holds no ':' at the kind path or a sub-kind's path");
+  // the review list offers no --allow that would be refused: a value with ':' at a kind path gets allow null
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, 'a.jsonl'), [{ type: 'zq:colon' }, { type: 'system', subtype: 'zq:sub' }, { type: 'user', message: { role: 'user', content: [{ type: 'zq:block' }] } }].map((o) => JSON.stringify(o)).join('\n') + '\n');
+    const u = shapes(['--unlisted', join(dir, 'a.jsonl')]);
+    assert.equal(u.code, 0, u.err);
+    const allowOf = (at, value) => u.lines.find((o) => o.k === 'unlisted-value' && o.at === at && o.value === value)?.allow;
+    assert.deepEqual([allowOf('.type', 'zq:colon'), allowOf('.subtype', 'zq:sub'), allowOf('.message.content[].type', 'zq:block')], [null, null, '.message.content[].type=zq:block']);
+  } finally { rm(dir); }
+});

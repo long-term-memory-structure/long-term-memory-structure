@@ -41,7 +41,8 @@ export interface ShapesVocabulary {
  *  rule), is a usage error. */
 export declare function loadVocabulary(file: string): ShapesVocabulary;
 /** --allow <path> or --allow <path>=<value>: the person names a key path (and with it every path above it) or a value, to
- *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. */
+ *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. A value
+ *  at a kind path may not hold ':' (S374's closure read, U15): it would merge two kinds of record into one line. */
 export declare function applyAllow(V: ShapesVocabulary, specs: readonly string[]): string[];
 /** A path that could not be read, with its error (the command words the message). */
 export interface ShapesFailure {
@@ -238,5 +239,6 @@ export type ShapesCheck = {
 export declare function checkReport(text: string, V: ShapesVocabulary): ShapesCheck;
 /** --unlisted: NOT a report. The names and values the vocabulary lacks, read from the transcripts as written, for the
  *  person's own review before an --allow; every line says "send":false, and --check refuses the list. Exact counts. A
- *  name that cannot be a path step (a file path, say) gets "allow":null: it can never be allowed. */
-export declare function reviewLines(S: ShapesRun): ShapesLine[];
+ *  name that cannot be a path step (a file path, say), or a value --allow refuses (not a label; ':' at a kind path),
+ *  gets "allow":null: it can never be allowed. */
+export declare function reviewLines(S: ShapesRun, V: ShapesVocabulary): ShapesLine[];

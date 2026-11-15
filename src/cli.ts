@@ -2288,7 +2288,9 @@ chose), and run ltms shapes --check on it.
 --allow <path>        print this key path, written like .message.newField or
                       .list[].name, and every path above it; repeatable
 --allow <path>=<value>
-                      print this value at this path; repeatable
+                      print this value at this path; repeatable. At the kind
+                      path or a sub-kind's path, a value with no ':' (':'
+                      joins a kind and its sub-kind: system:turn_duration)
 --max-line <bytes>    the longest line read (default 67108864, 64 MiB; from
                       1024 to the longest string this Node can hold): a
                       longer one is counted, as its bytes pass, and never
@@ -2372,7 +2374,7 @@ The --unlisted list, never a report:
   n, files      exact counts
   allow         the --allow argument that would print it; null when none
                 can (a name that is not a field name, a value that is not a
-                label)
+                label or holds ':' at the kind path or a sub-kind's path)
 
 stderr holds the files and directories that could not be read, by their
 paths, and one closing line with the exact totals and the time; the report
@@ -2480,7 +2482,7 @@ function shapesRun(args: string[]): number {
 
   if (a.unlisted) {
     // NOT a report: the names and values as the transcripts write them, for the person's own review
-    const review = reviewLines(S);
+    const review = reviewLines(S, V);
     for (let i = 0; i < review.length; i += 1000) out(review.slice(i, i + 1000).map((o) => JSON.stringify(o) + '\n').join(''));
     err(`ltms shapes --unlisted: ${S.filesRead} files read (${S.filesFailed} failed), ${S.records} records; ${review.length - 1} names and values the vocabulary does not hold, as the transcripts write them; ${secs()} s. This list is for your own review, not a report: do not send it. To print a name in a report, rerun without --unlisted, with the --allow its line gives.`);
     return S.filesFailed ? 1 : 0;

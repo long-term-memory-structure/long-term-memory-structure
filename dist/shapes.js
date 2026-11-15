@@ -196,10 +196,17 @@ export function loadVocabulary(file) {
     V.list.push({ name: v.name, sha256: createHash('sha256').update(bytes).digest('hex').slice(0, 12), paths: paths.length, values: nValues });
     return V;
 }
+/** The paths a record's kind is read at: the kind path, and each sub-kind's path. A report joins a kind and its
+ *  sub-kind with ':' (kind:subkind), so a value with ':' there could print as the token of another kind. */
+function kindPaths(V) {
+    return V.kindPath === null ? [] : [...new Set([V.kindPath, ...V.sub.values()])];
+}
 /** --allow <path> or --allow <path>=<value>: the person names a key path (and with it every path above it) or a value, to
- *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. */
+ *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. A value
+ *  at a kind path may not hold ':' (S374's closure read, U15): it would merge two kinds of record into one line. */
 export function applyAllow(V, specs) {
     const allowed = [];
+    const kp = kindPaths(V);
     for (const s of specs) {
         const i = s.indexOf('=');
         const p = i < 0 ? s : s.slice(0, i), val = i < 0 ? null : s.slice(i + 1);
@@ -207,6 +214,8 @@ export function applyAllow(V, specs) {
             throw usage(`--allow '${s}': the path must be written like .message.newField or .list[].name, each name a field name (letters, digits, _ : + -, at most 64; a leading $ or @ allowed).`);
         if (val !== null && !LABEL.test(val))
             throw usage(`--allow '${s}': the value must pass the label rule (at most 64 ASCII letters, digits and . _ : + -).`);
+        if (val !== null && val.includes(':') && kp.includes(p))
+            throw usage(`--allow '${s}': a value at the kind path or at a sub-kind's path (${kp.join(', ')}) may not hold ':', which joins a kind and its sub-kind in a report (kind:subkind), so the value could print as another kind; '${val}' holds one. Such a value cannot be allowed: it prints as (unlisted).`);
         const re = /\.[^.[]+|\[\]/g;
         let m, acc = '';
         while ((m = re.exec(p)) !== null) {
@@ -829,8 +838,10 @@ export function checkReport(text, V) {
 }
 /** --unlisted: NOT a report. The names and values the vocabulary lacks, read from the transcripts as written, for the
  *  person's own review before an --allow; every line says "send":false, and --check refuses the list. Exact counts. A
- *  name that cannot be a path step (a file path, say) gets "allow":null: it can never be allowed. */
-export function reviewLines(S) {
+ *  name that cannot be a path step (a file path, say), or a value --allow refuses (not a label; ':' at a kind path),
+ *  gets "allow":null: it can never be allowed. */
+export function reviewLines(S, V) {
+    const kp = kindPaths(V);
     const out = [{ k: 'unlisted-review', send: false, note: 'names the vocabulary does not hold, for your own review: do not send this list. To print one in a report, rerun with --allow <path>.' }];
     const unl = S.unlisted ?? new Map(), vals = S.unlistedValues ?? new Map();
     for (const star of [...unl.keys()].sort(cmp)) {
@@ -846,7 +857,8 @@ export function reviewLines(S) {
         const m = vals.get(vp);
         for (const value of [...m.keys()].sort(cmp)) {
             const [n, f] = m.get(value);
-            out.push({ k: 'unlisted-value', send: false, at: vp, value, n, files: f, allow: LABEL.test(value) ? `${vp}=${value}` : null });
+            const allowable = LABEL.test(value) && !(value.includes(':') && kp.includes(vp));
+            out.push({ k: 'unlisted-value', send: false, at: vp, value, n, files: f, allow: allowable ? `${vp}=${value}` : null });
         }
     }
     return out;
