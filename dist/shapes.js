@@ -294,13 +294,14 @@ function getPlain(rec, path) {
     }
     return x;
 }
-/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; a
- *  directory met twice, by its device and inode, read once). Sorted, so a run does not depend on the order the paths were
- *  given or listed in. */
+/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
+ *  entry named .jsonl that is not a regular file counted, not read; a directory met twice, by its device and inode, read
+ *  once, so each entry is counted once). Sorted, so a run does not depend on the order the paths were given or listed
+ *  in. */
 export function collectFiles(paths) {
     const files = new Map(), dirs = new Set();
     const failed = [];
-    let symlinks = 0;
+    let symlinks = 0, special = 0;
     const addFile = (p, st) => { const id = `${st.dev}:${st.ino}`; if (!files.has(id))
         files.set(id, p); };
     // a depth-first walk with its own stack, in the order a recursive one takes: each entry in its directory's order, a
@@ -354,17 +355,20 @@ export function collectFiles(paths) {
                 symlinks++;
             else if (e.isDirectory())
                 enter(full);
-            else if (e.isFile() && e.name.endsWith('.jsonl')) {
-                try {
-                    addFile(full, statSync(full));
-                }
-                catch (x) {
-                    failed.push({ path: full, error: x });
-                }
+            else if (e.name.endsWith('.jsonl')) {
+                if (!e.isFile())
+                    special++; // a FIFO (reading it would wait), a socket, a device: counted, never opened
+                else
+                    try {
+                        addFile(full, statSync(full));
+                    }
+                    catch (x) {
+                        failed.push({ path: full, error: x });
+                    }
             }
         }
     }
-    return { files: [...files.values()].sort(), failed, symlinks };
+    return { files: [...files.values()].sort(), failed, symlinks, special };
 }
 /** One read buffer for every file. */
 const CHUNK = Buffer.allocUnsafe(1 << 20);

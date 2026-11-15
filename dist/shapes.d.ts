@@ -65,10 +65,14 @@ export interface ShapesFiles {
     failed: ShapesFailure[];
     /** The symbolic links met under the directories given: counted, not followed. */
     symlinks: number;
+    /** The entries named .jsonl under the directories given that are not regular files (a FIFO, a socket, a device):
+     *  counted, not read (S374's closure read, U13). */
+    special: number;
 }
-/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; a
- *  directory met twice, by its device and inode, read once). Sorted, so a run does not depend on the order the paths were
- *  given or listed in. */
+/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
+ *  entry named .jsonl that is not a regular file counted, not read; a directory met twice, by its device and inode, read
+ *  once, so each entry is counted once). Sorted, so a run does not depend on the order the paths were given or listed
+ *  in. */
 export declare function collectFiles(paths: readonly string[]): ShapesFiles;
 /** Calls onLine(bytes) for each line of the file, split on byte 0x0A (which never occurs inside a UTF-8 sequence; a last
  *  line without a new line is read), or onLine(null) for a line longer than maxLine bytes, whose bytes are passed over as

@@ -281,14 +281,18 @@ export interface ShapesFiles {
   failed: ShapesFailure[];
   /** The symbolic links met under the directories given: counted, not followed. */
   symlinks: number;
+  /** The entries named .jsonl under the directories given that are not regular files (a FIFO, a socket, a device):
+   *  counted, not read (S374's closure read, U13). */
+  special: number;
 }
-/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; a
- *  directory met twice, by its device and inode, read once). Sorted, so a run does not depend on the order the paths were
- *  given or listed in. */
+/** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
+ *  entry named .jsonl that is not a regular file counted, not read; a directory met twice, by its device and inode, read
+ *  once, so each entry is counted once). Sorted, so a run does not depend on the order the paths were given or listed
+ *  in. */
 export function collectFiles(paths: readonly string[]): ShapesFiles {
   const files = new Map<string, string>(), dirs = new Set<string>();
   const failed: ShapesFailure[] = [];
-  let symlinks = 0;
+  let symlinks = 0, special = 0;
   const addFile = (p: string, st: Stats): void => { const id = `${st.dev}:${st.ino}`; if (!files.has(id)) files.set(id, p); };
   // a depth-first walk with its own stack, in the order a recursive one takes: each entry in its directory's order, a
   // directory entered where it is met
@@ -314,10 +318,13 @@ export function collectFiles(paths: readonly string[]): ShapesFiles {
       const e = top.entries[top.i++], full = join(top.d, e.name);
       if (e.isSymbolicLink()) symlinks++;
       else if (e.isDirectory()) enter(full);
-      else if (e.isFile() && e.name.endsWith('.jsonl')) { try { addFile(full, statSync(full)); } catch (x) { failed.push({ path: full, error: x }); } }
+      else if (e.name.endsWith('.jsonl')) {
+        if (!e.isFile()) special++;   // a FIFO (reading it would wait), a socket, a device: counted, never opened
+        else try { addFile(full, statSync(full)); } catch (x) { failed.push({ path: full, error: x }); }
+      }
     }
   }
-  return { files: [...files.values()].sort(), failed, symlinks };
+  return { files: [...files.values()].sort(), failed, symlinks, special };
 }
 
 /** One read buffer for every file. */

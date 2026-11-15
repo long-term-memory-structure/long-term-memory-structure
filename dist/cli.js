@@ -2737,6 +2737,7 @@ transcript in it.
 Save the report outside the folder you read, under a name that does not end
 in .jsonl. A path is a transcript, or a directory: every .jsonl under it, at
 any depth. Symbolic links met under a directory are counted, not followed,
+as is an entry named .jsonl that is not a regular file (a pipe, a socket),
 and a directory met twice (the same device and inode) is read once. A file
 whose first line is a report's or an --unlisted list's is not read: a
 warning names it. Each line is read alone, as JSON.
@@ -3038,8 +3039,12 @@ function shapesRun(args) {
             : `ltms shapes: '${f.file}': stopped with an internal error (${internalError(f.error)}), so it counts as failed, and the report counts what was read of it before. This is a bug in ltms; the other files are read as usual.`);
     }
     S.filesFailed += found.failed.length;
+    // the entries named .jsonl that are not regular files, counted as search counts them (S374's closure read, U13)
+    const special = found.special === 1 ? '1 entry named .jsonl $ is not a regular file, such as a pipe or a socket, and was not read' : `${found.special} entries named .jsonl $ are not regular files, such as pipes or sockets, and were not read`;
     if (!found.files.length && !found.failed.length)
-        err(`ltms shapes: warning: no .jsonl file was found under the paths given, so the ${a.unlisted ? 'list' : 'report'} counts nothing. ${TRANSCRIPTS_HINT}`);
+        err(`ltms shapes: warning: no .jsonl file was found under the paths given${found.special ? ` (${special.replace('$', 'there')})` : ''}, so the ${a.unlisted ? 'list' : 'report'} counts nothing. ${TRANSCRIPTS_HINT}`);
+    else if (found.special)
+        err(`ltms shapes: warning: ${special.replace('$', 'under the directories given')}.`);
     if (found.symlinks)
         err(`ltms shapes: ${plural(found.symlinks, 'symbolic link', 'symbolic links')} met under the directories given ${found.symlinks === 1 ? 'was' : 'were'} not followed.`);
     if (S.skipped.length) {

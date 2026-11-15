@@ -1695,3 +1695,37 @@ test("shapes: a file whose first line is a report's or an --unlisted list's is n
   assert.doesNotMatch(help, /> \S*\.jsonl|<report\.jsonl>/, '--help names no .jsonl for a report');
   for (const args of [[], ['-', ...CC]]) assert.doesNotMatch(shapes(args).err, /> \S*\.jsonl/, `the usage message of ltms shapes ${args.join(' ')}`);
 });
+
+// U13 (S374's closure read): an entry named .jsonl under a directory that is not a regular file (a FIFO, a socket) was
+// passed over without a word, where search counts it in its warning line and the symbolic links met beside it are
+// counted; alone in its folder, the warning said only that no .jsonl file was found. Such entries are now counted in a
+// warning, each once (a folder given twice is read once), and the no-file warning gives them, as search's does.
+test("shapes: an entry named .jsonl under a directory that is not a regular file (a FIFO, a socket) is counted in a warning, as search counts it, each once, and not read; when it is all there is, the no-file warning gives it", { skip: NO_FIFOS_HERE }, async () => {
+  const dir = tmp();
+  const { createServer } = await import('node:net');
+  const server = createServer();
+  try {
+    const p = join(dir, 'p');
+    mkdirSync(join(p, 'deep'), { recursive: true });
+    copyFileSync(FX('cc-a.jsonl'), join(p, 'real.jsonl'));
+    for (const f of [join(p, 'pipe.jsonl'), join(p, 'deep', 'pipe2.jsonl'), join(p, 'pipe.txt')]) assert.equal(spawnSync('mkfifo', [f]).status, 0);
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(join(p, 'sock.jsonl'), resolve); });
+    const r = shapes([p, p]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(r.out, shapes([join(p, 'real.jsonl')]).out, 'the report of the one regular file');
+    const said = /^ltms shapes: warning: 3 entries named \.jsonl under the directories given are not regular files, such as pipes or sockets, and were not read\.$/m;
+    assert.match(r.err, said, r.err);
+    const u = shapes(['--unlisted', p]);
+    assert.match(u.err, said, u.err);
+    const s = spawnSync(process.execPath, [CLI, 'search', 'zqnothing', p], { encoding: 'utf8', timeout: 120000 });
+    assert.match(s.stderr, /3 entries named \.jsonl under the directories given are not regular files, such as pipes or sockets, and were not read/, `search counts the same: ${s.stderr}`);
+    // alone in its folder
+    const only = join(dir, 'only');
+    mkdirSync(only);
+    assert.equal(spawnSync('mkfifo', [join(only, 'pipe.jsonl')]).status, 0);
+    const o = shapes([only]);
+    assert.equal(o.code, 0, o.err);
+    assert.match(o.err, /^ltms shapes: warning: no \.jsonl file was found under the paths given \(1 entry named \.jsonl there is not a regular file, such as a pipe or a socket, and was not read\), so the report counts nothing\./m, o.err);
+    assert.doesNotMatch(o.err, /entries? named \.jsonl under the directories given/, `said once: ${o.err}`);
+  } finally { await new Promise((resolve) => server.close(resolve)); rm(dir); }
+});
