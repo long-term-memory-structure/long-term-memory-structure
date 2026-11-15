@@ -7,7 +7,9 @@
 //   (3) a JSON type, or the name of a class of strings or numbers, from the fixed lists below;
 //   (4) a key path or a value from the vocabulary (named in the first line by its name and sha256), or one the person
 //       named with --allow (listed in the first line);
-//   (5) a version of the form N.N.N, read only at a version path the vocabulary names.
+//   (5) a version by the version rule (VERSION, below: N.N.N, no part of more than one digit starting with 0), read
+//       only at a version path the vocabulary names, and printed as written: the one value of a record a report holds
+//       (it can be a date, when a program writes its version as one, 2026.11.15).
 // No key name, value, length, time, position or order from a transcript reaches a report any other way: writeReport
 // checks every line against that language (checkLine) just before it writes it, and writes no line that fails. The guard
 // is at the write, so a defect in the reading (a misparse, a wrong count) can make a count wrong but cannot put a
@@ -38,8 +40,11 @@ const LABEL = /^[\w.:+-]{1,64}$/;
 /** A key name a vocabulary or --allow may hold: a field name, with no '.' and no '[' (a path's own syntax), so a key that
  *  holds them can never be read as a path. An optional leading $ or @ (as in JSON Schema's $id, JSON-LD's @type). */
 const NAME = /^[$@]?[A-Za-z_][A-Za-z0-9_:+-]{0,63}$/;
-/** The only versions printed: three numeric parts, nothing else (no pre-release or build suffix). */
-const VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}$/;
+/** THE VERSION RULE, the only versions printed: three parts joined by '.', of 1 to 4, 1 to 4 and 1 to 6 digits, none of
+ *  more than one digit starting with 0, and nothing else (no pre-release or build suffix). Without a leading 0, each
+ *  version has one spelling, so two versions never compare equal (S374's closure read, U3). The class version is a
+ *  string that follows it too. */
+const VERSION = /^(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,5})$/;
 const TYPES = ['array', 'boolean', 'null', 'number', 'object', 'string'];
 const STRING_CLASSES = ['empty', 'uuid', 'iso8601-utc', 'iso8601-offset', 'iso8601-local', 'date', 'version', 'digits', 'hex', 'label', 'text'];
 const NUMBER_CLASSES = ['int', 'float', 'epoch-s', 'epoch-ms'];
@@ -378,10 +383,10 @@ export interface ShapesReadOptions {
 }
 
 /** Reads the files, one at a time, each line alone, and counts. Per record: the version in force (the value at the first
- *  version path the record has, if N.N.N; (withheld) for a value of another form; else the version before it in the same
- *  file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key the vocabulary
- *  holds is counted at its path and walked, any other is counted at the .* of the object it is in, and the walk stops
- *  there. A file whose reading throws counts as failed; what was read of it before is counted. */
+ *  version path the record has, if it follows the version rule; (withheld) for any other value; else the version before
+ *  it in the same file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key
+ *  the vocabulary holds is counted at its path and walked, any other is counted at the .* of the object it is in, and
+ *  the walk stops there. A file whose reading throws counts as failed; what was read of it before is counted. */
 export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: ShapesReadOptions): ShapesRun {
   const S: ShapesRun = {
     filesRead: 0, filesFailed: 0, failures: [], records: 0, blank: 0, notJson: 0, notObject: 0, tooLong: 0,
@@ -512,8 +517,9 @@ export function readShapes(V: ShapesVocabulary, files: readonly string[], opts: 
 
 // ---- the report -----------------------------------------------------------------------------------------------------
 const vkey = (v: string): number[] => v.split('.').map(Number);
-/** Numeric order; two spellings of one number (1.2.3, 01.2.3) by their text, so that no order of the files or of the
- *  records, which decides where each was met first, reaches a report (S374's closure read, S4). */
+/** Numeric order; equal numbers by their text. The version rule gives each version one spelling, so two never tie; the
+ *  text decides if a rule ever lets two spellings of one number through (1.2.3, 01.2.3), so that no order of the files
+ *  or of the records, which decides where each was met first, reaches a report (S374's closure read, S4). */
 const vcmp = (a: string, b: string): number => { const x = vkey(a), y = vkey(b); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i]; return cmp(a, b); };
 /** Versions in numeric order (equal numbers by their text), then the other tokens ((none), (withheld)) by their text. */
 const sortVersions = (vs: Iterable<string>): string[] => [...vs].sort((a, b) => {

@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // test/shapes-validate.mjs: an INDEPENDENT validator of the ltms-shapes/0 closed language, the receiver's check. It
 // shares no code with src/shapes.ts (the writer and its --check): it is the S373 prototype's validate.mjs, its code
-// unchanged below this header. It reads every string and every number in a report and asks only: is this token one
-// the language allows where it stands? The fixed words, a bucket, an N.N.N version, a vocabulary path (or one .* / []
-// step past one), a vocabulary value or kind, a name the header's allowed list holds.
+// unchanged below this header but for the changes listed here. It reads every string and every number in a report and
+// asks only: is this token one the language allows where it stands? The fixed words, a bucket, an N.N.N version, a
+// vocabulary path (or one .* / [] step past one), a vocabulary value or kind, a name the header's allowed list holds.
+//
+// Changed since the prototype, each with the rule it follows (S375, after S374's closure read):
+//   - isVersion: no part of more than one digit starts with 0 (U3).
 //   node test/shapes-validate.mjs <report.jsonl> <vocabulary.json>...     exit 0 when every token is allowed
 import { readFileSync } from 'node:fs';
 
@@ -27,7 +30,7 @@ const FIELDS = new Set(['k', 'format', 'vocabulary', 'name', 'sha256', 'paths', 
 const FIXED = new Set(['shapes', 'version', 'kind', 'path', 'rare', 'end', 'ltms-shapes/0', '(rare)', '(unlisted)', '(none)', '(withheld)', '(not a string)', '(all)', '64+',
   'array', 'boolean', 'null', 'number', 'object', 'string', 'empty', 'uuid', 'iso8601-utc', 'iso8601-offset', 'iso8601-local', 'date', 'version', 'digits', 'hex', 'label', 'text', 'int', 'float', 'epoch-s', 'epoch-ms', 'true', 'false']);
 export const isBucket = (s) => s === '0' || s === '1' || ((m) => !!m && Number(m[1]) >= 2 && Number.isInteger(Math.log2(Number(m[1]))) && Number(m[2]) === 2 * Number(m[1]) - 1)(/^(\d+)-(\d+)$/.exec(s));
-const isVersion = (s) => /^\d{1,4}\.\d{1,4}\.\d{1,6}$/.test(s);
+const isVersion = (s) => /^\d{1,4}\.\d{1,4}\.\d{1,6}$/.test(s) && !/(?:^|\.)0\d/.test(s);
 
 /** Returns the list of problems (each: the line number and the field), empty when every token is allowed. */
 export function validate(lines, vocabFiles) {

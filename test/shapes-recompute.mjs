@@ -7,6 +7,7 @@
 //
 // Changed since the prototype, each with the rule it follows (S375, after S374's closure read):
 //   - vOrder: versions equal as numbers (1.2.3, 01.2.3) are ordered by their text, not by where they were met (S4).
+//   - isVersion: no part of more than one digit starts with 0 (U3); the class version follows it, as before.
 //
 //   node test/shapes-recompute.mjs --vocabulary <v.json>... [--floor <n>] [--allow <spec>]... [--max-line <bytes>] <file>...
 //   node test/shapes-recompute.mjs --canon <report.jsonl>      the same report, each line's keys sorted (to compare with)
@@ -38,7 +39,7 @@ if (opt.canon) {
 const isPlainObject = (v) => Object.prototype.toString.call(v) === '[object Object]';
 const fieldName = (k) => /^[$@]?[A-Za-z_][A-Za-z0-9_:+-]*$/.test(k) && k.length <= 64 + (/^[$@]/.test(k) ? 1 : 0);
 const isLabel = (s) => s.length >= 1 && s.length <= 64 && /^[A-Za-z0-9_.:+-]+$/.test(s);
-const isVersion = (s) => { const p = s.split('.'); return p.length === 3 && p.every((x, i) => /^[0-9]+$/.test(x) && x.length <= [4, 4, 6][i]); };
+const isVersion = (s) => { const p = s.split('.'); return p.length === 3 && p.every((x, i) => /^[0-9]+$/.test(x) && x.length <= [4, 4, 6][i] && (x.length === 1 || x[0] !== '0')); };
 function bucketOf(n) { if (n === 0) return '0'; if (n === 1) return '1'; const k = Math.floor(Math.log2(n)); const lo = 2 ** k; return lo + '-' + (2 * lo - 1); }
 const cap = (n) => (n < 64 ? bucketOf(n) : '64+');
 function strClass(s) {

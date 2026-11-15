@@ -558,3 +558,57 @@ test('shapes: versions equal as numbers but spelled apart: the same contents und
     for (const d of [A, B]) assert.deepEqual(shapes([d]).lines.map(canon), recompute(['--vocabulary', DOCS, ...names.map((f) => join(d, `${f}.jsonl`))]), `every field equals the recompute (${d === A ? 'A' : 'B'})`);
   } finally { rm(dir); }
 });
+
+// U3 (S374's closure read), with S11's bounds: the version rule. Its digit bounds were in the code only, and a part of
+// more than one digit could start with 0 (01.2.3, 0000.0000.0), a second spelling of a version. The rule now refuses
+// such a part, and the README and --help state it: the bounds read from each text are the ones the command applies.
+test('shapes: the version rule: N.N.N, its parts of 1 to 4, 1 to 4 and 1 to 6 digits, none of more than one digit starting with 0; any other value at a version path is (withheld); the README and --help state the rule the command applies', () => {
+  const versionsOf = (values) => {
+    const dir = tmp();
+    try {
+      const files = values.map((v, i) => {
+        const f = join(dir, `v${String(i).padStart(3, '0')}.jsonl`);
+        writeFileSync(f, JSON.stringify({ type: 'user', version: v, message: { role: 'user', content: v } }) + '\n');
+        return f;
+      });
+      const r = shapes([dir]);
+      assert.equal(r.code, 0, r.err);
+      assert.deepEqual(r.lines.map(canon), recompute(['--vocabulary', DOCS, ...files]), 'every field equals the recompute (the class version follows the same rule)');
+      versionsOf.last = r.out;
+      return r.lines.filter((o) => o.k === 'version').map((o) => o.v);
+    } finally { rm(dir); }
+  };
+  const printed = ['0.0.0', '0.169.0', '1.10.100', '2.1.300', '10.0.1', '2026.11.15', '9999.9999.999999'];
+  const withheld = ['01.2.3', '1.02.3', '1.2.03', '0000.0000.0', '00.1.1', '1.01.001', '10000.1.1', '1.10000.1', '1.1.1234567', '31337.1.1',
+    '1.2', '1.2.3.4', '1.2.3-beta', 'v1.2.3', ' 1.2.3', '1.2.3\n', '', 1.5, null, [1, 2, 3]];
+  assert.deepEqual(versionsOf([...withheld, ...[...printed].reverse()]), [...printed, '(withheld)'], 'the version lines: the versions that follow the rule, in numeric order, then (withheld)');
+  // the language refuses what the rule refuses: the report, a version in it spelled with a leading 0, fails --check and
+  // the independent validator
+  const dir = tmp();
+  try {
+    const edited = versionsOf.last.replace('"v":"2.1.300"', '"v":"02.1.300"').replace('"first":"0.0.0"', '"first":"00.0.0"');
+    assert.notEqual(edited, versionsOf.last);
+    writeFileSync(join(dir, 'r.jsonl'), edited);
+    const c = shapes(['--check', join(dir, 'r.jsonl')]);
+    assert.equal(c.code, 1, c.err);
+    assert.match(c.err, /its version is not in the report's language/);
+    assert.notDeepEqual(validate(edited.split('\n').filter(Boolean).map((l) => JSON.parse(l)), [DOCS]), [], 'the independent validator refuses it too');
+  } finally { rm(dir); }
+  // the rule as each text states it, read from the text, then applied to the parts at and past each bound
+  const flat = (t) => t.replace(/\s+/g, ' ');
+  const readme = flat(readFileSync(join(root, 'README.md'), 'utf8'));
+  const help = flat(spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout);
+  const stated = [['README', readme, /three parts joined by `\.`, of 1 to (\d+), 1 to (\d+) and 1 to (\d+) digits, none of more than one digit starting with `0`/],
+    ['--help', help, /three parts joined by '\.', of 1 to (\d+), 1 to (\d+) and 1 to (\d+) digits, none of more than one digit starting with 0/]].map(([where, text, re]) => {
+    const m = re.exec(text);
+    assert.ok(m, `${where} states the version rule`);
+    return m.slice(1).map(Number);
+  });
+  assert.deepEqual(stated[0], stated[1], 'the README and --help state the same bounds');
+  const [a, b, c] = stated[0], nines = (k) => '9'.repeat(k), part = (k) => '1' + '0'.repeat(k - 1);
+  const atBounds = [`${nines(a)}.${nines(b)}.${nines(c)}`, `${part(a)}.${part(b)}.${part(c)}`];
+  const pastBounds = [`${part(a + 1)}.1.1`, `1.${part(b + 1)}.1`, `1.1.${part(c + 1)}`, '01.1.1', '1.01.1', '1.1.01'];
+  assert.deepEqual(versionsOf([...pastBounds, ...atBounds]), [atBounds[1], atBounds[0], '(withheld)'], `the bounds the texts state, ${a}, ${b} and ${c} digits, are the command's`);
+  // and the README no longer says a report holds no number from a record without naming this one
+  assert.match(readme, /a value at a version path that follows the version rule prints as written, and it can be a date, when a program writes its version as one \(`2026\.11\.15`\)/);
+});

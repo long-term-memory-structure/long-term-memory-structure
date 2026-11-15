@@ -2266,7 +2266,11 @@ Every string in a report is one of:
   - a JSON type, a class of strings or a class of numbers (below);
   - a key path or a value from the vocabulary (named in the first line, with
     the sha256 of its file), or one named with --allow (listed there too);
-  - a version of the form N.N.N, read where the vocabulary says one is.
+  - a version, by the version rule: three parts joined by '.', of 1 to 4,
+    1 to 4 and 1 to 6 digits, none of more than one digit starting with 0
+    (2.1.300; not 01.2.3, 31337.1.1 or 2.1.300-beta), read where the
+    vocabulary says one is, and printed as written: it can be a date, when
+    a program writes its version as one (2026.11.15).
 A key the vocabulary does not hold prints as *, and nothing below it is
 read; a value it does not hold prints as (unlisted). A path seen in fewer
 files than the floor is not printed (its kind's rare line counts it), and a
@@ -2310,9 +2314,9 @@ The first line, k "shapes":
                 records; tooLong: lines longer than --max-line, not read
 
 A version line, k "version", one per version in force:
-  v             N.N.N; (none): the records before their file's first
-                version; (withheld): a value at a version path that is not
-                N.N.N
+  v             a version, by the version rule above; (none): the records
+                before their file's first version; (withheld): a value at a
+                version path that does not follow the rule
   records       the records under it
   files         the files they are in
 
@@ -2335,8 +2339,8 @@ A path line, k "path", one per kind and path seen in floor files or more:
   first, last   the lowest and highest version in force where it occurs
   types         array, boolean, null, number, object, string
   strings       empty, uuid, iso8601-utc, iso8601-offset, iso8601-local,
-                date, version, digits, hex (8 or more hex digits), label (a
-                label by the label rule), text
+                date, version (by the version rule), digits, hex (8 or more
+                hex digits), label (a label by the label rule), text
   numbers       int, float, epoch-s, epoch-ms (whole seconds or milliseconds
                 between 2000 and 2100)
   booleans      true, false
@@ -2371,7 +2375,8 @@ The --unlisted list, never a report:
 
 stderr holds the files and directories that could not be read, by their
 paths, and one closing line with the exact totals and the time; the report
-holds no path, no time and no exact count.
+holds no path and no exact count, and no time but a version written as a
+date (above).
 
 Exit status: 0 when every file was read and every line written; 1 when a
 file could not be read, or a line failed the language at the write (a bug in

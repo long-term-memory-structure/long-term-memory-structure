@@ -148,10 +148,10 @@ export interface ShapesReadOptions {
     unlisted: boolean;
 }
 /** Reads the files, one at a time, each line alone, and counts. Per record: the version in force (the value at the first
- *  version path the record has, if N.N.N; (withheld) for a value of another form; else the version before it in the same
- *  file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key the vocabulary
- *  holds is counted at its path and walked, any other is counted at the .* of the object it is in, and the walk stops
- *  there. A file whose reading throws counts as failed; what was read of it before is counted. */
+ *  version path the record has, if it follows the version rule; (withheld) for any other value; else the version before
+ *  it in the same file, or (none) before the file's first); its kind; and the walk, along vocabulary paths only: a key
+ *  the vocabulary holds is counted at its path and walked, any other is counted at the .* of the object it is in, and
+ *  the walk stops there. A file whose reading throws counts as failed; what was read of it before is counted. */
 export declare function readShapes(V: ShapesVocabulary, files: readonly string[], opts: ShapesReadOptions): ShapesRun;
 /** A line of a report, as built and as written: one JSON object whose `k` names its kind. */
 export type ShapesLine = Record<string, unknown>;
