@@ -5,6 +5,7 @@
 - `ltms shapes --vocabulary`: the closing line says to read the words of the vocabulary given, naming its file as it was given, beside the report's allowed list, as the README and `--help` say; it named the allowed list alone.
 - `ltms shapes --vocabulary`: a vocabulary whose `kinds.sub` names a kind that `values` does not list at `kinds.path` is refused (exit 2), the message naming the entry (`kinds.sub["event"]`), as the README and `--help` now say; it was taken, and the entry could never apply, since such a kind prints as `(unlisted)` before its sub-kind is read.
 - README, `ltms shapes`: the order of a map's keys is stated as ltms writes it and `--check` holds it: the keys that are array indices (a whole number from 0 to 4294967294 written without leading zeros, such as a value `200` given with `--allow`) first, in numeric order, then the others by their text; it said "in ltms's order", and the code's comment "by their text". The format is unchanged (`ltms-shapes/0`).
+- `ltms shapes`: a directory met again under a path given (the same device and inode as one already entered in that path's walk, as a bind mount of a directory inside itself makes) is counted in a warning, each once, in the words `search` prints for the same case (one function writes them for both); it was passed over without a word. Each directory is now entered once per path given, as `search` enters it, and its entries are still counted once.
 
 ## 0.3.0 (2026-11-16)
 

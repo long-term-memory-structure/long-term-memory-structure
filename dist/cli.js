@@ -1517,6 +1517,12 @@ function tooLarge(wk, file, size, limit) {
     const need = Math.ceil((size * SEARCH_HEAP_SHARE) / 2 ** 30) * 1024;
     return `ltms ${wk.cmd}: '${file}' is ${bytes(size)} bytes, over the ${bytes(limit)} this Node can ${wk.cmd} in one file (a tenth of its memory limit: reading it could run out of memory, which would stop ${wk.whole} and lose ${wk.lost}), so it is skipped. To ${wk.cmd} it, give Node more memory: NODE_OPTIONS=--max-old-space-size=${need} ${wk.again([file])}`;
 }
+/** The directories met again under the directories given (the same device and inode as one already read), in the words
+ *  search's warning line and shapes' warning both give: one function, so the two commands cannot word the same case
+ *  apart (S375's known issue k15). */
+function metAgain(n) {
+    return `${plural(n, 'directory', 'directories')} met under the directories given ${n === 1 ? 'has' : 'have'} the same device and inode as one already read (a bind mount can do that), so ${n === 1 ? 'it was' : 'they were'} not read again`;
+}
 /** What the files read under the directories add up to, in the walk's one summary line; null when nothing is worth it.
  *  The files with warnings of their own come last: up to four are named, with the command that shows their warnings. */
 function walkSummary(wk, w, walk) {
@@ -1535,7 +1541,7 @@ function walkSummary(wk, w, walk) {
     if (walk.special)
         parts.push(`${plural(walk.special, 'entry', 'entries')} named .jsonl under the directories given ${walk.special === 1 ? 'is not a regular file, such as a pipe or a socket, and was' : 'are not regular files, such as pipes or sockets, and were'} not read`);
     if (walk.again)
-        parts.push(`${plural(walk.again, 'directory', 'directories')} met under the directories given ${walk.again === 1 ? 'has' : 'have'} the same device and inode as one already read (a bind mount can do that), so ${walk.again === 1 ? 'it was' : 'they were'} not read again`);
+        parts.push(metAgain(walk.again));
     const n = w.warned.length;
     if (n) {
         const named = w.warned.slice(0, 4).map((x) => `'${x.path}' (${listed(x.kinds)})`), more = n - named.length;
@@ -2743,8 +2749,10 @@ any depth. Under a directory, symbolic links are counted, not followed; an
 entry named .jsonl that is not a regular file (a pipe, a socket) is counted,
 not read; a name that is not valid UTF-8 is reported by its bytes (\\xHH) and
 counted as failed; a directory met twice (the same device and inode) is read
-once. A file whose first line is a report's or an --unlisted list's is not
-read: a warning names it. Each line is read alone, as JSON.
+once, and one met again under a path given (a bind mount of a directory
+inside itself) is counted in a warning, as search counts it. A file whose
+first line is a report's or an --unlisted list's is not read: a warning
+names it. Each line is read alone, as JSON.
 
 Every string in a report is one of:
   - the report's own field names and words, such as (unlisted) and (rare);
@@ -3065,6 +3073,9 @@ function shapesRun(args) {
         err(`ltms shapes: warning: ${notRegular('under the directories given')}.`);
     if (found.symlinks)
         err(`ltms shapes: ${plural(found.symlinks, 'symbolic link', 'symbolic links')} met under the directories given ${found.symlinks === 1 ? 'was' : 'were'} not followed.`);
+    // a directory met again (a bind mount of a directory inside itself), in search's words (S375's known issue k15)
+    if (found.again)
+        err(`ltms shapes: warning: ${metAgain(found.again)}.`);
     if (S.skipped.length) {
         // ltms shapes' own output, not transcripts: not read, counted and named (S374's closure read, U5)
         const n = S.skipped.length, named = S.skipped.slice(0, 4).map((f) => `'${f}'`), more = n - named.length;

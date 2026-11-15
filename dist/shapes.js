@@ -305,39 +305,53 @@ function getPlain(rec, path) {
 const listBytes = (d) => readdirSync(d, { withFileTypes: true, encoding: 'buffer' });
 /** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
  *  entry named .jsonl that is not a regular file counted, not read; a name that is not valid UTF-8 kept by its bytes and
- *  not read; a directory met twice, by its device and inode, read once, so each entry is counted once). Sorted, so a run
- *  does not depend on the order the paths were given or listed in. */
+ *  not read; a directory met again in a path's walk, by its device and inode, not entered again, and counted). Each
+ *  directory is entered once per path given, as search enters it, and its entries are counted the first time it is
+ *  listed, so each entry is counted once however many paths given reach it. Sorted, so a run does not depend on the
+ *  order the paths were given or listed in. */
 export function collectFiles(paths) {
-    const files = new Map(), dirs = new Set();
+    const files = new Map(), listed = new Set(), again = new Set();
     const failed = [], notUtf8 = [];
     let symlinks = 0, special = 0;
     const addFile = (p, st) => { const id = `${st.dev}:${st.ino}`; if (!files.has(id))
         files.set(id, p); };
-    // a depth-first walk with its own stack, in the order a recursive one takes: each entry in its directory's order, a
-    // directory entered where it is met
+    // a depth-first walk per path given, with its own stack, in the order a recursive one takes: each entry in its
+    // directory's order, a directory entered where it is met. `fresh`: the directory is listed for the first time in the
+    // run, and its entries are counted; one listed before, under another path given, is walked again only to meet the
+    // directories met again in this path's walk, as search meets them (S375's known issue k15)
     const stack = [];
-    const enter = (d) => {
+    /** Enters directory d in a path's walk: `entered`, the directories that walk has entered; `met`, for one met under the
+     *  path given, the directory it was met in and its name (a directory met again is counted once by them); `count`,
+     *  whether a failure to read it is one to count (not when it was counted under another path given). */
+    const enter = (d, entered, met, count) => {
         let st;
         try {
             st = lstatSync(d);
         }
         catch (e) {
-            failed.push({ path: d, error: e });
+            if (count)
+                failed.push({ path: d, error: e });
             return;
         }
         const id = `${st.dev}:${st.ino}`;
-        if (dirs.has(id))
+        if (entered.has(id)) {
+            if (met !== null)
+                again.add(met);
             return;
-        dirs.add(id);
+        }
+        entered.add(id);
+        const fresh = !listed.has(id);
+        listed.add(id);
         let entries;
         try {
             entries = listBytes(d);
         }
         catch (e) {
-            failed.push({ path: d, error: e });
+            if (fresh)
+                failed.push({ path: d, error: e });
             return;
         }
-        stack.push({ d, entries, i: 0 });
+        stack.push({ d, id, entries, i: 0, fresh });
     };
     for (const p of paths) {
         let st;
@@ -352,7 +366,8 @@ export function collectFiles(paths) {
             addFile(p, st);
             continue;
         }
-        enter(p);
+        const entered = new Set();
+        enter(p, entered, null, true);
         while (stack.length) {
             const top = stack[stack.length - 1];
             if (top.i >= top.entries.length) {
@@ -363,15 +378,17 @@ export function collectFiles(paths) {
             // a name is opened by its text only when the text gives its bytes back: decoded, any other could name another
             // entry, a twin whose valid name has U+FFFD where it has bytes that are not UTF-8 (S374's closure read, S7)
             const valid = Buffer.from(name, 'utf8').equals(e.name), full = join(top.d, name);
-            if (e.isSymbolicLink())
-                symlinks++;
+            if (e.isSymbolicLink()) {
+                if (top.fresh)
+                    symlinks++;
+            }
             else if (!valid) {
-                if (e.isDirectory() || name.endsWith('.jsonl'))
+                if (top.fresh && (e.isDirectory() || name.endsWith('.jsonl')))
                     notUtf8.push({ dir: top.d, name: e.name, isDir: e.isDirectory() });
             }
             else if (e.isDirectory())
-                enter(full);
-            else if (name.endsWith('.jsonl')) {
+                enter(full, entered, `${top.id}/${name}`, top.fresh);
+            else if (top.fresh && name.endsWith('.jsonl')) {
                 if (!e.isFile())
                     special++; // a FIFO (reading it would wait), a socket, a device: counted, never opened
                 else
@@ -384,7 +401,7 @@ export function collectFiles(paths) {
             }
         }
     }
-    return { files: [...files.values()].sort(), failed, symlinks, special, notUtf8 };
+    return { files: [...files.values()].sort(), failed, symlinks, special, again: again.size, notUtf8 };
 }
 /** One read buffer for every file. */
 const CHUNK = Buffer.allocUnsafe(1 << 20);

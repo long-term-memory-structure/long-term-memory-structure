@@ -69,6 +69,10 @@ export interface ShapesFiles {
     /** The entries named .jsonl under the directories given that are not regular files (a FIFO, a socket, a device):
      *  counted, not read (S374's closure read, U13). */
     special: number;
+    /** The directories met again under a path given: the same device and inode as one entered before in that path's walk
+     *  (a bind mount of a directory inside itself shows them), not entered again; each counted once, as search counts
+     *  them (S375's known issue k15). */
+    again: number;
     /** The entries under the directories given whose names are not valid UTF-8, a directory or a name that ends in
      *  .jsonl: its directory, its name's bytes, and whether it is a directory. Not read (ltms reads paths as text, and
      *  such a name, decoded, can name another entry), each a failure (S374's closure read, S7). */
@@ -80,8 +84,10 @@ export interface ShapesFiles {
 }
 /** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
  *  entry named .jsonl that is not a regular file counted, not read; a name that is not valid UTF-8 kept by its bytes and
- *  not read; a directory met twice, by its device and inode, read once, so each entry is counted once). Sorted, so a run
- *  does not depend on the order the paths were given or listed in. */
+ *  not read; a directory met again in a path's walk, by its device and inode, not entered again, and counted). Each
+ *  directory is entered once per path given, as search enters it, and its entries are counted the first time it is
+ *  listed, so each entry is counted once however many paths given reach it. Sorted, so a run does not depend on the
+ *  order the paths were given or listed in. */
 export declare function collectFiles(paths: readonly string[]): ShapesFiles;
 /** Calls onLine(bytes) for each line of the file, split on byte 0x0A (which never occurs inside a UTF-8 sequence; a last
  *  line without a new line is read), or onLine(null) for a line longer than maxLine bytes, whose bytes are passed over as

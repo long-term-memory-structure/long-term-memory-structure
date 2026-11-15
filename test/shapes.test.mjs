@@ -1967,3 +1967,79 @@ test("shapes (0.3.1, k11): a map's keys that are array indices come first, in nu
   const section = whole.slice(whole.indexOf('### `ltms shapes'), whole.indexOf('\n## ', whole.indexOf('### `ltms shapes'))).replace(/\s+/g, ' ');
   assert.match(section, /the keys that are array indices \(a whole number from 0 to 4294967294 written without leading zeros\) first, in numeric order, then the others by their text/, "the README's format note");
 });
+
+// k15 (S375's known issues, for 0.3.1): shapes passed over a directory met again under a path given (the same device and
+// inode as one already entered: a bind mount of a directory inside itself) without a word, where search counts it in
+// its warning line. shapes now counts each once, in a warning in search's words (one function writes them for both).
+/** A user record holding the word zqvword, which search finds and shapes reads. */
+const AGAIN_REC = (n) => JSON.stringify({ parentUuid: null, sessionId: 's', type: 'user', promptSource: 'typed', message: { role: 'user', content: 'zqvword' }, uuid: `00000000-0000-4000-8000-00000000000${n}`, timestamp: '2026-01-01T00:00:00.000Z' }) + '\n';
+const AGAIN_WORDS = (n) => `${n === 1 ? '1 directory' : `${n} directories`} met under the directories given ${n === 1 ? 'has' : 'have'} the same device and inode as one already read (a bind mount can do that), so ${n === 1 ? 'it was' : 'they were'} not read again`;
+const warningsOf = (err, cmd) => err.split('\n').filter((l) => l.startsWith(`ltms ${cmd}: warning: `));
+test('shapes (0.3.1, k15): a directory met again under a path given (the same device and inode as one entered before) is not read again, and a warning counts it, each once, in the words search prints for the same case (a stubbed stat)', () => {
+  const dir = tmp();
+  try {
+    const A = join(dir, 'A'), loop = join(A, 'loop'), loop2 = join(A, 'loop2');
+    mkdirSync(loop, { recursive: true });
+    mkdirSync(loop2);
+    writeFileSync(join(A, 's.jsonl'), AGAIN_REC(1));
+    writeFileSync(join(loop, 'x.jsonl'), AGAIN_REC(2));
+    writeFileSync(join(loop2, 'y.jsonl'), AGAIN_REC(3));
+    const stub = join(dir, 'same-inode.cjs');
+    writeFileSync(stub, [
+      "const fs = require('node:fs');",
+      '// the directories LTMS_TEST_ALIAS names (separated by commas) report the device and inode of LTMS_TEST_TARGET, as a',
+      '// bind mount of it would (with LTMS_TEST_OTHER_DEVICE set, the same inode on another device: another directory); to',
+      '// stat and lstat alike (search reads a directory by stat, shapes by lstat)',
+      "for (const name of ['statSync', 'lstatSync']) {",
+      '  const real = fs[name];',
+      '  fs[name] = function (p, o) { const s = real.apply(this, arguments); if ((process.env.LTMS_TEST_ALIAS ?? "").split(",").includes(String(p))) { const t = real.call(this, process.env.LTMS_TEST_TARGET, o); s.dev = process.env.LTMS_TEST_OTHER_DEVICE ? t.dev + (typeof t.dev === "bigint" ? 1n : 1) : t.dev; s.ino = t.ino; } return s; };',
+      '}',
+      "require('node:module').syncBuiltinESMExports();", ''].join('\n'));
+    const run = (cmd, args, alias, other = false) => spawnSync(process.execPath, ['-r', stub, CLI, cmd, ...args], { encoding: 'utf8', env: { ...process.env, LTMS_TEST_ALIAS: alias, LTMS_TEST_TARGET: A, ...(other ? { LTMS_TEST_OTHER_DEVICE: '1' } : {}) } });
+    const closing = (err) => err.split('\n').find((l) => /^ltms shapes: \d+ files? read/.test(l)) ?? '';
+    // no directory met again: three files, no warning
+    const plain = run('shapes', [A], '');
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.deepEqual([warningsOf(plain.stderr, 'shapes'), closing(plain.stderr).slice(0, 40)], [[], 'ltms shapes: 3 files read (0 failed), 3 ']);
+    // loop is A met again: not read (its file is not counted), and the warning counts it
+    const one = run('shapes', [A], loop);
+    assert.equal(one.status, 0, one.stderr);
+    assert.deepEqual(warningsOf(one.stderr, 'shapes'), [`ltms shapes: warning: ${AGAIN_WORDS(1)}.`]);
+    assert.match(closing(one.stderr), /^ltms shapes: 2 files read \(0 failed\), 2 records; /);
+    // search, on the same case: the same words
+    const s = run('search', ['zqvword', A], loop);
+    assert.equal(s.status, 0, s.stderr);
+    assert.deepEqual(warningsOf(s.stderr, 'search'), [`ltms search: warning: ${AGAIN_WORDS(1)}.`]);
+    // two directories met again: the plural; the path given twice: each counted once
+    for (const args of [[A], [A, A]]) {
+      const two = run('shapes', args, `${loop},${loop2}`);
+      assert.equal(two.status, 0, two.stderr);
+      assert.deepEqual(warningsOf(two.stderr, 'shapes'), [`ltms shapes: warning: ${AGAIN_WORDS(2)}.`], args.join(' '));
+      assert.match(closing(two.stderr), /^ltms shapes: 1 file read \(0 failed\), 1 record; /);
+    }
+    // the same inode on another device is another directory: read, no warning
+    const other = run('shapes', [A], loop, true);
+    assert.deepEqual([other.status, warningsOf(other.stderr, 'shapes')], [0, []]);
+    assert.match(closing(other.stderr), /^ltms shapes: 3 files read \(0 failed\), 3 records; /);
+  } finally { rm(dir); }
+});
+
+test('shapes (0.3.1, k15): a real bind mount of a directory inside itself, in a user namespace: shapes counts it in a warning, in the words search prints (Linux; skipped where unshare cannot make one)', (t) => {
+  const dir = tmp();
+  try {
+    const A = join(dir, 'A'), sub = join(A, 'sub');
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(A, 's.jsonl'), AGAIN_REC(1));
+    const sh = (p) => `'${p.split("'").join("'\\''")}'`;
+    const inside = (command) => spawnSync('unshare', ['-rm', 'sh', '-c', `mount --bind ${sh(A)} ${sh(sub)} && ${command}`], { encoding: 'utf8' });
+    const probe = inside(`test -e ${sh(join(sub, 's.jsonl'))}`);
+    if (probe.error || probe.status !== 0) { t.skip(`unshare -rm cannot bind-mount here: ${probe.error?.code ?? probe.stderr.trim()}`); return; }
+    const r = inside(`exec ${sh(process.execPath)} ${sh(CLI)} shapes ${sh(A)}`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(warningsOf(r.stderr, 'shapes'), [`ltms shapes: warning: ${AGAIN_WORDS(1)}.`]);
+    assert.match(r.stderr, /^ltms shapes: 1 file read \(0 failed\), 1 record; /m);
+    const s = inside(`exec ${sh(process.execPath)} ${sh(CLI)} search zqvword ${sh(A)}`);
+    assert.equal(s.status, 0, s.stderr);
+    assert.deepEqual(warningsOf(s.stderr, 'search'), [`ltms search: warning: ${AGAIN_WORDS(1)}.`]);
+  } finally { rm(dir); }
+});
