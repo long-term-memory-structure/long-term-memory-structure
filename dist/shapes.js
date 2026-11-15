@@ -138,7 +138,7 @@ const usage = (m) => new ShapesUsageError(m);
 const VOCABULARY_FIELDS = ['format', 'name', 'source', 'paths', 'values', 'kinds', 'versions'];
 const KINDS_FIELDS = ['path', 'sub'];
 /** The rules, as the messages word them. */
-const NAME_RULE = 'a name being an optional $ or @, then a letter or _, then letters, digits and _ : + -, at most 64 after the $ or @';
+const NAME_RULE = 'a name being an optional $ or @, then an ASCII letter or _, then ASCII letters, digits and _ : + -, at most 64 after the $ or @';
 const PLAIN_RULE = `steps, each . and a name, ${NAME_RULE}`;
 const PATH_RULE = `steps, each . and a name, or [] (an array's elements), ${NAME_RULE}`;
 const VALUE_RULE = '1 to 64 ASCII letters, digits and . _ : + -';

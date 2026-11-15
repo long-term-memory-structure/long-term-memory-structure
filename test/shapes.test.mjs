@@ -1272,3 +1272,40 @@ test("shapes: --check names the place a line is out of, one problem each: a seco
     }
   } finally { rm(dir); }
 });
+
+// S10 (S374's closure read): the usage message stated the rule for an --allow name as "letters, digits and _ : + -, at
+// most 64; a leading $ or @ allowed" (since U4: "a letter or _, then letters, ..."), and --help stated none; read
+// plainly, they admitted names the command refuses: a step that starts, after an optional $ or @, with a digit, - : or +
+// (.0abc, .-x, .$0x), and a letter outside ASCII. The rule NAME applies is now stated, in the same words, in --help, the
+// README and the usage message; and the names it admits are taken and those it refuses are refused, the length read from
+// the text.
+test("shapes: --allow's rule for a name, in --help, the README and the usage message, is the one the command applies: an optional $ or @, then an ASCII letter or _, then ASCII letters, digits and _ : + -, at most 64 after the $ or @", () => {
+  const RULE = 'an optional $ or @, then an ASCII letter or _, then ASCII letters, digits and _ : + -, at most (\\d+) after the $ or @';
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('\\(\\\\d\\+\\)', '(\\d+)');
+  const flat = (t) => t.replace(/\s+/g, ' ');
+  const dir = tmp();
+  try {
+    writeFileSync(join(dir, 't.jsonl'), '{"type":"user"}\n');
+    const T = join(dir, 't.jsonl');
+    const help = flat(spawnSync(process.execPath, [CLI, 'shapes', '--help'], { encoding: 'utf8' }).stdout);
+    const readme = flat(readFileSync(join(root, 'README.md'), 'utf8')).replace(/`/g, '');
+    const message = shapes(['--allow', '.0abc', T]).err;
+    const at = /--allow <path>.*?Each name: /.exec(help)?.index;
+    assert.ok(at !== undefined, '--help states a rule for a name in its --allow row');
+    const stated = [['--help', help.slice(at)], ['the README', readme.slice(readme.indexOf('| --allow <path> |'))], ['the usage message', message]].map(([where, t]) => {
+      const m = new RegExp(esc(RULE)).exec(t);
+      assert.ok(m, `${where} states the rule: ${t.slice(0, 400)}`);
+      return Number(m[1]);
+    });
+    assert.deepEqual(stated, [64, 64, 64], 'the three state one length');
+    const L = stated[0], letter = String.fromCharCode(0xe9);   // e with an acute accent: a letter, not an ASCII one
+    const admitted = ['.abc', '._u', '.$id', '.@ok', '.x0', '.x:', '.x-', '.x+', '.a.b_c', '.list[].name', '.' + 'a'.repeat(L), '.$' + 'a'.repeat(L), '.@' + '_'.repeat(L)];
+    const refused = ['.0abc', '.9', '.-x', '.:x', '.+x', '.$0x', '.@-x', '.$', '.' + letter, '.a' + letter, '.$' + letter, '.' + 'a'.repeat(L + 1), '.$' + 'a'.repeat(L + 1)];
+    for (const n of admitted) assert.equal(shapes(['--allow', n, T]).code, 0, `the rule admits --allow '${n}'`);
+    for (const n of refused) {
+      const r = shapes(['--allow', n, T]);
+      assert.equal(r.code, 2, `the rule refuses --allow '${n}'`);
+      assert.ok(r.err.includes(`--allow '${n}': the path must be written like .message.newField or .list[].name`), r.err);
+    }
+  } finally { rm(dir); }
+});

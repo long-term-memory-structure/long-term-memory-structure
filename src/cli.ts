@@ -2292,7 +2292,10 @@ too), and run ltms shapes --check on it.
                       (default ${SHAPES_FLOOR}; a whole number from ${SHAPES_MIN_FLOOR} to
                       ${Number.MAX_SAFE_INTEGER})
 --allow <path>        print this key path, written like .message.newField or
-                      .list[].name, and every path above it; repeatable
+                      .list[].name, and every path above it; repeatable.
+                      Each name: an optional $ or @, then an ASCII letter or
+                      _, then ASCII letters, digits and _ : + -, at most 64
+                      after the $ or @
 --allow <path>=<value>
                       print this value at this path; repeatable. At the kind
                       path or a sub-kind's path, a value with no ':' (':'
