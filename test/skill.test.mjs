@@ -177,3 +177,16 @@ test('SKILL.md: every field it names in its sections on index, skeleton and sear
     for (const w of named) assert.match(help, new RegExp(`(^|[\\s,(])${w}([\\s,)]|$)`, 'm'), `${head}: '${w}' is not in the command's help`);
   }
 });
+
+test('(S375, S8 and U16 of the shapes closure read) every pin to this package in the README and in the skill names the minor version package.json holds, so a release cannot ship a line that runs an older one', () => {
+  const pins = [];
+  for (const f of ['README.md', join('skills', 'ltms', 'SKILL.md')]) {
+    const text = readFileSync(join(root, f), 'utf8');
+    for (const m of text.matchAll(/long-term-memory-structure@([0-9][0-9A-Za-z.\-]*)/g)) pins.push([f, text.slice(0, m.index).split('\n').length, m[1]]);
+  }
+  assert.ok(pins.length >= 10, `only ${pins.length} pins found`);
+  const wrong = pins.filter(([, , v]) => v !== MINOR);
+  assert.deepEqual(wrong, [], `pins that do not name ${MINOR}`);
+  // the skill's own words for the version ltms --version prints
+  assert.match(readFileSync(join(root, 'skills', 'ltms', 'SKILL.md'), 'utf8'), new RegExp(`prints ${MINOR.replace('.', '\\.')}\\.x`), 'the skill says which version ltms --version prints');
+});
