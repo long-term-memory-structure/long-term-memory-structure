@@ -1874,3 +1874,30 @@ test('shapes (S375, G2\'s and G3\'s new issues): the closing lines count in the 
     }
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
+
+// k2 (S375's known issues, for 0.3.1): with --vocabulary, the closing line said to read the report's allowed list only,
+// where the README's section and --help say to read the vocabulary given too, whose words the person chose. It now names
+// that file, as it was given, beside the allowed list; with the vocabulary that ships it says what it said.
+test("shapes (0.3.1, k2): with --vocabulary, the closing line says to read the report's allowed list and the words of the vocabulary given, naming its path as given; with the one that ships, the allowed list", () => {
+  const dir = tmp();
+  try {
+    const own = join(dir, 'own.vocab.json');
+    copyFileSync(DOCS, own);
+    const closing = (err) => err.split('\n').find((l) => /^ltms shapes: \d+ files? read/.test(l)) ?? '';
+    // the shell quoting of the commands ltms prints, written here from its rule: in '', a ' or a \ as '\<it>'
+    const quote = (s) => `'${s.replace(/['\\]/g, (c) => `'\\${c}'`)}'`;
+    const r = shapes(['--vocabulary', own, ...CC]);
+    assert.equal(r.code, 0, r.err);
+    const tail = (path) => `; before you send it, read its first line's allowed list and the words of the vocabulary you gave, '${path}' (you chose them too), and check it: ltms shapes --check <the report> --vocabulary ${quote(path)}`;
+    assert.ok(closing(r.err).endsWith(tail(own)), `the closing line: ${closing(r.err)}`);
+    // a relative path is named as it was given, not resolved
+    const rel = spawnSync(process.execPath, [CLI, 'shapes', '--vocabulary', 'own.vocab.json', ...CC], { encoding: 'utf8', cwd: dir });
+    assert.equal(rel.status, 0, rel.stderr);
+    assert.ok(closing(rel.stderr).endsWith(tail('own.vocab.json')), `the closing line: ${closing(rel.stderr)}`);
+    // the vocabulary that ships (public): the allowed list, as before
+    for (const args of [[...CC], ['--supplier', 'claude-code', ...CC]]) {
+      const c = closing(shapes(args).err);
+      assert.match(c, /; before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>(?: --supplier claude-code)?$/, c);
+    }
+  } finally { rm(dir); }
+});

@@ -1,5 +1,9 @@
 # Changes
 
+## Unreleased (0.3.1)
+
+- `ltms shapes --vocabulary`: the closing line says to read the words of the vocabulary given, naming its file as it was given, beside the report's allowed list, as the README and `--help` say; it named the allowed list alone.
+
 ## 0.3.0 (2026-11-16)
 
 - **`ltms shapes <path>...`** (new): a report of what transcripts are made of, never what they say, made to be sent (to the maintainers of ltms, say). One JSON line per version in force, per kind of record, and per kind and key path seen in at least 3 files (`--floor`), with the JSON types, the classes of strings and numbers, the arrays' lengths and the values the vocabulary lists, every count a power-of-two bucket; a first line that names the vocabulary (by its sha256) and the `--allow` arguments, and an end line that counts the lines. The report is a closed language: each string in it is a word of the format, a bucket, a type or a class, a version `N.N.N`, or a key path or a value of the vocabulary or of `--allow`. A key the vocabulary lacks prints as `*` and is not walked; a value it lacks, as `(unlisted)`. The report is checked against that language whole, every line and the place of each, before any of it is written, and none of a report that fails is written (exit 1), so a defect in the reading can make a count wrong but cannot put a transcript's word in the report. `ltms shapes --check <report>` checks a report against it; `ltms shapes --unlisted <path>...` lists, for your own review, the names and values the vocabulary lacks, as the transcripts write them (`"send":false` on every line; `--check` refuses the list). The files are read one line at a time through a 1 MiB buffer; a line longer than `--max-line` (64 MiB) is counted, never held.

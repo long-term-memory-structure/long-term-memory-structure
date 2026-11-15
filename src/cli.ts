@@ -2512,6 +2512,9 @@ function shapesRun(args: string[]): number {
   const file = a.vocabulary ?? fileURLToPath(new URL(`../vocab/${SHAPES_SUPPLIERS[a.supplier ?? SHAPES_SUPPLIER]}`, import.meta.url));
   // the --check command a closing line gives: the same vocabulary, named as it was named
   const vocabularyArg = shipped ? (a.supplier === null ? '' : ` --supplier ${a.supplier}`) : ` --vocabulary ${q(file)}`;
+  // what to read before a report is sent: its allowed list, and a vocabulary given with --vocabulary, named as it was
+  // given, whose words the person chose too, as the README's section and --help say (S375's known issue k2)
+  const toRead = shipped ? "its first line's allowed list" : `its first line's allowed list and the words of the vocabulary you gave, '${file}' (you chose them too)`;
   let V: ShapesVocabulary;
   try { V = loadVocabulary(file); }
   catch (e) {
@@ -2589,7 +2592,7 @@ function shapesRun(args: string[]): number {
   // was cut instead, exit 1 (S374's closure read, U9)
   outParts(reportParts, (e, parts) => {
     if (e) { err(`${head}${shapesCut('report', e, linesIn(reportParts, parts), w.written)} A cut report fails ltms shapes --check: do not send it.`); return; }
-    err(`${head}the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. To send it, open an issue at ${SHAPES_SEND_TO} (it is public: anyone can read it), attach the report file, and write which program and version wrote the transcripts; before you send it, read its first line's allowed list, and check it: ltms shapes --check <the report>${vocabularyArg}`);
+    err(`${head}the report: ${w.written} lines, ${w.bytes} bytes; ${report.printed} of ${report.pathLines} path lines printed, ${report.belowFloor} under the floor of ${floor} files; ${secs()} s. To send it, open an issue at ${SHAPES_SEND_TO} (it is public: anyone can read it), attach the report file, and write which program and version wrote the transcripts; before you send it, read ${toRead}, and check it: ltms shapes --check <the report>${vocabularyArg}`);
   });
   return S.filesFailed ? 1 : 0;
 }
