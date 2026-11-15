@@ -2556,6 +2556,14 @@ A record, one per line of the file:
   order         its line, 1-based
   parent        the address of the record its parentUuid names (the first
                 record with a uuid and a parentUuid that carries it), or null
+  leaf          the address of the record its leafUuid names (a last-prompt
+                marker's: the session's head), or null when not in the file
+  logical_parent
+                the address of the record its logicalParentUuid names (a
+                compaction's boundary: the record before it), or null
+  calls         a tool result's: for each tool_result block, in order, the
+                address of the first assistant record holding its tool_use,
+                or null when not in the file
   parent_by     "supplied" (the record has a uuid and a parentUuid), or
                 "none" (it is outside the session's tree: last-prompt,
                 ai-title and the like, and blank and malformed lines)
@@ -2566,7 +2574,9 @@ A record, one per line of the file:
   supplier      what the transcript says of it: type; subtype (a system
                 record's subtype, an attachment's type); id (its uuid);
                 parent (its parentUuid, null for a root; a parent that is not
-                in this file shows here and not in parent); version. Each
+                in this file shows here and not in parent); version; leaf,
+                logical_parent and calls as written (one not in the file
+                shows here); session (its sessionId). Each
                 as written when it passes the label rule (at most 64 ASCII
                 letters, digits and . _ : + -), else (withheld), as is a
                 value that is not a string; so are group, time's as_written
@@ -2606,8 +2616,9 @@ written are then not a view of the file. They are of the file as it was
 opened: if its path names another file by the end, stderr says so.
 
 stderr ends with the balance line: the lines read, the records written by
-kind, the repeats, and the parent links (in the file, roots, not in this file,
-outside the tree). A warning comes before it; an error stands alone.
+kind, the repeats, the parent links (in the file, roots, not in this file,
+outside the tree), and the other links (in the file, not in this file). A
+warning comes before it; an error stands alone.
 
 Exit status: 0 when the count balances; 1 when the file cannot be read, the
 two reads differ, a line is too long for this Node to read as a string, or
@@ -2666,7 +2677,7 @@ function recordsRun(args: string[]): number {
   const B = r.balance;
   const kinds = RECORD_KINDS.filter((k) => B.byKind[k]).map((k) => `${B.byKind[k]} ${k}`).join(', ');
   const ok = B.linesRead === B.recordsWritten;
-  err(`ltms records: '${file}': ${plural(B.linesRead, 'line', 'lines')} read${r.header.source.last_line_unterminated ? ' (the last without a newline)' : ''}, ${plural(B.recordsWritten, 'record', 'records')} written${kinds ? ` (${kinds})` : ''}; ${B.dupOf} repeating an earlier record's uuid; parents: ${B.parents.resolved} in the file, ${B.parents.root} ${B.parents.root === 1 ? 'root' : 'roots'}, ${B.parents.unresolved} not in this file, ${B.parents.none} outside the tree.${ok ? '' : ' THE COUNT DOES NOT BALANCE: a bug in ltms.'}`);
+  err(`ltms records: '${file}': ${plural(B.linesRead, 'line', 'lines')} read${r.header.source.last_line_unterminated ? ' (the last without a newline)' : ''}, ${plural(B.recordsWritten, 'record', 'records')} written${kinds ? ` (${kinds})` : ''}; ${B.dupOf} repeating an earlier record's uuid; parents: ${B.parents.resolved} in the file, ${B.parents.root} ${B.parents.root === 1 ? 'root' : 'roots'}, ${B.parents.unresolved} not in this file, ${B.parents.none} outside the tree; links: ${B.links.found} in the file, ${B.links.missing} not in this file.${ok ? '' : ' THE COUNT DOES NOT BALANCE: a bug in ltms.'}`);
   return ok ? 0 : 1;
 }
 

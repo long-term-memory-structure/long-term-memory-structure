@@ -27,8 +27,16 @@ export interface RecordSupplier {
     id?: string;
     /** Its parentUuid, or null (records with the envelope). */
     parent?: string | null;
-    /** The version of the program that wrote it, when it is a string. */
+    /** The version of the program that wrote it. */
     version?: string;
+    /** Its leafUuid (a marker's: the record the session's head points to). */
+    leaf?: string;
+    /** Its logicalParentUuid (a compaction's boundary: the record before it). */
+    logical_parent?: string;
+    /** Its tool results' tool_use_ids, in block order. */
+    calls?: string[];
+    /** Its sessionId. */
+    session?: string;
 }
 /** A record's time, as the source stamped it. */
 export interface RecordTime {
@@ -53,6 +61,12 @@ export interface ViewRecord {
     parent: string | null;
     /** Where the parent link comes from: the source ("supplied"), or nowhere ("none": a record outside the tree). */
     parent_by: 'supplied' | 'none';
+    /** The address of the record its leafUuid names (a marker's: the session's head), or null when not in the file. */
+    leaf?: string | null;
+    /** The address of the record its logicalParentUuid names (a compaction's boundary), or null when not in the file. */
+    logical_parent?: string | null;
+    /** For each tool result block, in order, the address of the record that holds its call, or null when not in the file. */
+    calls?: (string | null)[];
     /** The response it belongs to (an assistant record's requestId, else its message id). */
     group?: string;
     /** The first record that carries its uuid, when it is a replay. */
@@ -109,6 +123,11 @@ export interface RecordsBalance {
         root: number;
         unresolved: number;
         none: number;
+    };
+    /** The other links (leaf, logical_parent, calls): found in the file, or not. */
+    links: {
+        found: number;
+        missing: number;
     };
 }
 /** What the command gives recordsOf. */

@@ -213,6 +213,7 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
     const at = (line) => `${o.prefix}:L${line}`;
     // the first pass: the first line that carries each uuid, and the versions
     const firstLine = new Map();
+    const firstCall = new Map();
     const versions = new Set();
     const one = scanLines(read, size, chunkBytes, (bytes, line) => {
         const p = parseLine(bytes, line);
@@ -220,6 +221,10 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
             return;
         if (hasEnvelope(p) && !firstLine.has(p.uuid))
             firstLine.set(p.uuid, line);
+        if (p.type === 'assistant')
+            for (const b of blocksOf(p.message))
+                if (b.type === 'tool_use' && typeof b.id === 'string' && !firstCall.has(b.id))
+                    firstCall.set(b.id, line);
         if ('version' in p)
             versions.add(typeof p.version === 'string' ? p.version : WITHHELD);
     });
@@ -234,6 +239,17 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
     // the second pass: each record as its line passes
     const byKind = Object.fromEntries(RECORD_KINDS.map((k) => [k, 0]));
     const parents = { resolved: 0, root: 0, unresolved: 0, none: 0 };
+    const links = { found: 0, missing: 0 };
+    /** A link the file supplies, as an address by its first carrier; null when no record in the file carries it. */
+    const linkTo = (map, v) => {
+        const l = typeof v === 'string' ? map.get(v) : undefined;
+        if (l === undefined) {
+            links.missing++;
+            return null;
+        }
+        links.found++;
+        return at(l);
+    };
     let dupOf = 0, written = 0, text = '', held = 0;
     const two = scanLines(read, size, chunkBytes, (bytes, line, offset) => {
         const src = { kind: 'line', line, offset, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
@@ -289,6 +305,25 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
             const version = valueAt(p, 'version');
             if (version !== undefined)
                 supplier.version = version;
+            // the other links the file supplies (his word, S375 22:43: O3), each as written too
+            let leaf, logicalParent, calls;
+            if ('leafUuid' in p) {
+                leaf = linkTo(firstLine, p.leafUuid);
+                supplier.leaf = valueAt(p, 'leafUuid');
+            }
+            if ('logicalParentUuid' in p) {
+                logicalParent = linkTo(firstLine, p.logicalParentUuid);
+                supplier.logical_parent = valueAt(p, 'logicalParentUuid');
+            }
+            // the block's tool_use_id as the file holds it, which need not be the string the type says
+            const results = p.type === 'user' ? blocksOf(p.message).filter((b) => b.type === 'tool_result') : [];
+            if (results.length) {
+                calls = results.map((b) => linkTo(firstCall, b.tool_use_id));
+                supplier.calls = results.map((b) => { const v = b.tool_use_id; return typeof v === 'string' ? shown(v) : WITHHELD; });
+            }
+            const session = valueAt(p, 'sessionId');
+            if (session !== undefined)
+                supplier.session = session;
             // a response is known by its requestId, or by its message's id where it has none (the parser's rule)
             const group = p.type !== 'assistant' ? undefined
                 : str(p.requestId) ?? (isObj(p.message) ? str(p.message.id) : undefined)
@@ -296,6 +331,7 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
             const time = timeOf(p);
             rec = {
                 id: at(line), kind, ...(kinds ? { kinds } : {}), order: line, parent, parent_by: parentBy,
+                ...(leaf !== undefined ? { leaf } : {}), ...(logicalParent !== undefined ? { logical_parent: logicalParent } : {}), ...(calls ? { calls } : {}),
                 ...(group !== undefined ? { group: group === WITHHELD ? WITHHELD : shown(group) } : {}), ...(dup !== undefined ? { dup_of: dup } : {}),
                 ...(Object.keys(supplier).length ? { supplier } : {}), ...(time ? { time } : {}), src,
             };
@@ -314,7 +350,7 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
     const changed = one.bytes < size || two.bytes < size
         ? `the file shrank while it was read (${size} bytes when it was opened; ${Math.min(one.bytes, two.bytes)} read)`
         : one.sha256 !== two.sha256 ? `the file changed between the two reads (its first ${size} bytes differ)` : null;
-    return { header, balance: { linesRead: two.newlines + (two.unterminated ? 1 : 0), recordsWritten: written, byKind, dupOf, parents }, changed };
+    return { header, balance: { linesRead: two.newlines + (two.unterminated ? 1 : 0), recordsWritten: written, byKind, dupOf, parents, links }, changed };
 }
 /** writeRecords over bytes in memory: the header, the records and the balance (for the tests and the library). */
 export function recordsOf(bytes, o, chunkBytes = RECORDS_CHUNK) {

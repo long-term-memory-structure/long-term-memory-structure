@@ -130,7 +130,7 @@ test('records: the kinds of section 13, the parents, the replay, the group, and 
   assert.doesNotMatch(r.stdout, /zqtext/, 'a text of the transcript in the records');
   assert.doesNotMatch(r.stderr, /zqtext/);
   // the balance line
-  assert.match(r.stderr, /: 27 lines read \(the last without a newline\), 27 records written \(6 input, 3 reply, 1 thinking, 1 tool call, 1 tool result, 3 system, 2 context, 1 summary, 1 compaction, 1 marker, 4 other, 1 blank, 2 malformed\); 1 repeating an earlier record's uuid; parents: 17 in the file, 1 root, 1 not in this file, 8 outside the tree\.$/m);
+  assert.match(r.stderr, /: 27 lines read \(the last without a newline\), 27 records written \(6 input, 3 reply, 1 thinking, 1 tool call, 1 tool result, 3 system, 2 context, 1 summary, 1 compaction, 1 marker, 4 other, 1 blank, 2 malformed\); 1 repeating an earlier record's uuid; parents: 17 in the file, 1 root, 1 not in this file, 8 outside the tree; links: 3 in the file, 0 not in this file\.$/m);
   rmSync(d, { recursive: true });
 });
 
@@ -404,7 +404,7 @@ test('records (S375, R1 O11): a value that is not a string prints (withheld), ne
   assert.deepEqual([recs[3].supplier.id, recs[3].parent_by], ['w4', 'none']);
   assert.equal(recs[4].supplier.subtype, '(withheld)');
   assert.equal(recs[5].group, 'msg_1', 'a requestId that is not a string: the message id groups, as the parser reads a response');
-  assert.match(r.stderr, /parents: 3 in the file, 1 root, 1 not in this file, 1 outside the tree\./);
+  assert.match(r.stderr, /parents: 3 in the file, 1 root, 1 not in this file, 1 outside the tree; links: 0 in the file, 0 not in this file\./);
   rmSync(d, { recursive: true });
 });
 
@@ -492,18 +492,21 @@ function peakKiB(dir, file) {
   const mod = importModule(dir, 'peak.mjs', "process.on('exit', () => process.stderr.write('PEAK ' + process.resourceUsage().maxRSS + '\\n'));");
   const outPath = file + '.records', fd = openSync(outPath, 'w');
   try {
-    const r = spawnSync(process.execPath, ['--max-old-space-size=40', '--import', mod, CLI, 'records', file], { encoding: 'utf8', stdio: ['ignore', fd, 'pipe'], timeout: 600000 });
+    // a heap held small (old space 16 MB, semi-space 1 MB) is warm at both sizes, so only memory that grows with the file
+    // shows: with the heap at 40 MB its warming up read as growth (S375: 16 MB vs 96 MB differed by 55 MiB on code that
+    // stays flat at 96, 192 MB)
+    const r = spawnSync(process.execPath, ['--max-old-space-size=16', '--max-semi-space-size=1', '--import', mod, CLI, 'records', file], { encoding: 'utf8', stdio: ['ignore', fd, 'pipe'], timeout: 600000 });
     assert.equal(r.status, 0, r.stderr.slice(0, 400));
     return Number(/PEAK (\d+)/.exec(r.stderr)?.[1]);
   } finally { closeSync(fd); rmSync(outPath, { force: true }); }
 }
 
-test('records (S375, R7): the peak resident memory does not grow with the file: 16 MB and 96 MB give peaks within 40 MiB of each other (the heap limit alone could not see a file held whole in a Buffer)', () => {
+test('records (S375, R7): the peak resident memory does not grow with the file: 16 MB and 96 MB give peaks within 16 MiB of each other under a small heap (the heap limit alone could not see a file held whole in a Buffer: that grows by the file, 81 MiB here)', () => {
   const d = tmp();
   const demo = readFileSync(join(here, 'fixtures', 'demo.jsonl'));
   const make = (name, mb) => { const f = join(d, name), fd = openSync(f, 'w'); for (let i = 0, n = Math.ceil((mb << 20) / demo.length); i < n; i++) writeSync(fd, demo); closeSync(fd); return f; };
   const small = peakKiB(d, make('small.jsonl', 16)), big = peakKiB(d, make('big.jsonl', 96));
-  assert.ok(big - small < 40 * 1024, `peak ${small} KiB for 16 MB, ${big} KiB for 96 MB: it grew by ${big - small} KiB`);
+  assert.ok(big - small < 16 * 1024, `peak ${small} KiB for 16 MB, ${big} KiB for 96 MB: it grew by ${big - small} KiB`);
   rmSync(d, { recursive: true });
 });
 
@@ -547,5 +550,37 @@ test('records (S375, O2): the folder loop is one in the README, the help and the
   assert.deepEqual(readdirSync(join(d, 'records')).sort(), ['aaaaaaaa-ok.records.jsonl']);
   assert.match(r.stderr, /failed: .*bbbbbbbb-no\.jsonl/);
   spawnSync('chmod', ['600', join(folder, 'bbbbbbbb-no.jsonl')]);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, O3, his word 22:43): the links the file supplies, as addresses by the first carrier, null when not in the file, and as written under supplier by the label rule: leaf, logical_parent, calls (in block order), session', () => {
+  const d = tmp(), f = join(d, 'ffffffff-links.jsonl');
+  const env = (uuid, parentUuid, extra) => ({ uuid, parentUuid, sessionId: 's-1', ...extra });
+  const L = [
+    env('a1', null, { type: 'user', message: { content: 'q' }, promptSource: 'typed' }),                                                        // 1
+    env('a2', 'a1', { type: 'assistant', requestId: 'r1', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }, { type: 'tool_use', id: 'tu_2', name: 'Read', input: {} }] } }),  // 2
+    env('a3', 'a2', { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_2', content: 'x' }, { type: 'tool_result', tool_use_id: 'tu_1', content: 'y' }, { type: 'tool_result', tool_use_id: 'tu_gone', content: 'z' }] }, toolUseResult: {} }),  // 3
+    env('a4', null, { type: 'system', subtype: 'compact_boundary', logicalParentUuid: 'a3' }),                                                   // 4
+    env('a5', 'a4', { type: 'system', subtype: 'compact_boundary', logicalParentUuid: 'not-here' }),                                            // 5
+    env('a6', 'a5', { type: 'assistant', requestId: 'r2', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }] } }),  // 6: a tool_use id carried again
+    { type: 'last-prompt', leafUuid: 'a3', sessionId: 's-1' },                                                                                  // 7
+    { type: 'last-prompt', leafUuid: 'nowhere', sessionId: 'zq odd session' },                                                                  // 8
+    env('a9', 'a6', { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 7, content: 'w' }] }, toolUseResult: {} }),        // 9
+  ];
+  writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [, ...recs] = lines(r.stdout);
+  const P = 'ffffffff';
+  assert.deepEqual([recs[2].calls, recs[2].supplier.calls], [[`${P}:L2`, `${P}:L2`, null], ['tu_2', 'tu_1', 'tu_gone']]);
+  assert.deepEqual([recs[3].logical_parent, recs[3].supplier.logical_parent], [`${P}:L3`, 'a3']);
+  assert.deepEqual([recs[4].logical_parent, recs[4].supplier.logical_parent], [null, 'not-here']);
+  assert.deepEqual([recs[6].leaf, recs[6].supplier.leaf], [`${P}:L3`, 'a3']);
+  assert.deepEqual([recs[7].leaf, recs[7].supplier.leaf, recs[7].supplier.session], [null, 'nowhere', '(withheld)']);
+  assert.deepEqual([recs[8].calls, recs[8].supplier.calls], [[null], ['(withheld)']]);
+  assert.equal(recs[0].supplier.session, 's-1');
+  assert.equal(recs[0].calls, undefined, 'no links where the file supplies none');
+  assert.doesNotMatch(r.stdout, /zq odd/);
+  assert.match(r.stderr, /; links: 4 in the file, 4 not in this file\./);
   rmSync(d, { recursive: true });
 });

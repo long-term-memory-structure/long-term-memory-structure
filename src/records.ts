@@ -39,6 +39,7 @@
 
 import { createHash } from 'node:crypto';
 import { blocksOf, hasEnvelope, isInputTurn, isToolResultRecord } from './parser.js';
+import type { ToolResultBlock } from './parser.js';
 
 /** The format a records file names in its header. */
 export const RECORDS_FORMAT = 'ltms-records/0';
@@ -70,8 +71,16 @@ export interface RecordSupplier {
   id?: string;
   /** Its parentUuid, or null (records with the envelope). */
   parent?: string | null;
-  /** The version of the program that wrote it, when it is a string. */
+  /** The version of the program that wrote it. */
   version?: string;
+  /** Its leafUuid (a marker's: the record the session's head points to). */
+  leaf?: string;
+  /** Its logicalParentUuid (a compaction's boundary: the record before it). */
+  logical_parent?: string;
+  /** Its tool results' tool_use_ids, in block order. */
+  calls?: string[];
+  /** Its sessionId. */
+  session?: string;
 }
 /** A record's time, as the source stamped it. */
 export interface RecordTime {
@@ -96,6 +105,12 @@ export interface ViewRecord {
   parent: string | null;
   /** Where the parent link comes from: the source ("supplied"), or nowhere ("none": a record outside the tree). */
   parent_by: 'supplied' | 'none';
+  /** The address of the record its leafUuid names (a marker's: the session's head), or null when not in the file. */
+  leaf?: string | null;
+  /** The address of the record its logicalParentUuid names (a compaction's boundary), or null when not in the file. */
+  logical_parent?: string | null;
+  /** For each tool result block, in order, the address of the record that holds its call, or null when not in the file. */
+  calls?: (string | null)[];
   /** The response it belongs to (an assistant record's requestId, else its message id). */
   group?: string;
   /** The first record that carries its uuid, when it is a replay. */
@@ -142,6 +157,8 @@ export interface RecordsBalance {
   dupOf: number;
   /** Parent links: resolved in the file; roots (parentUuid null); named but not in the file; records outside the tree. */
   parents: { resolved: number; root: number; unresolved: number; none: number };
+  /** The other links (leaf, logical_parent, calls): found in the file, or not. */
+  links: { found: number; missing: number };
 }
 /** What the command gives recordsOf. */
 export interface RecordsOptions {
@@ -322,11 +339,13 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
   const at = (line: number): string => `${o.prefix}:L${line}`;
   // the first pass: the first line that carries each uuid, and the versions
   const firstLine = new Map<string, number>();
+  const firstCall = new Map<string, number>();
   const versions = new Set<string>();
   const one = scanLines(read, size, chunkBytes, (bytes, line) => {
     const p = parseLine(bytes, line);
     if (typeof p === 'string') return;
     if (hasEnvelope(p) && !firstLine.has(p.uuid)) firstLine.set(p.uuid, line);
+    if (p.type === 'assistant') for (const b of blocksOf(p.message)) if (b.type === 'tool_use' && typeof b.id === 'string' && !firstCall.has(b.id)) firstCall.set(b.id, line);
     if ('version' in p) versions.add(typeof p.version === 'string' ? p.version : WITHHELD);
   });
   const header: RecordsHeader = {
@@ -340,6 +359,14 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
   // the second pass: each record as its line passes
   const byKind = Object.fromEntries(RECORD_KINDS.map((k) => [k, 0])) as Record<RecordKind, number>;
   const parents = { resolved: 0, root: 0, unresolved: 0, none: 0 };
+  const links = { found: 0, missing: 0 };
+  /** A link the file supplies, as an address by its first carrier; null when no record in the file carries it. */
+  const linkTo = (map: Map<string, number>, v: unknown): string | null => {
+    const l = typeof v === 'string' ? map.get(v) : undefined;
+    if (l === undefined) { links.missing++; return null; }
+    links.found++;
+    return at(l);
+  };
   let dupOf = 0, written = 0, text = '', held = 0;
   const two = scanLines(read, size, chunkBytes, (bytes, line, offset) => {
     const src: RecordSrc = { kind: 'line', line, offset, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
@@ -373,6 +400,18 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
       } else parents.none++;
       const version = valueAt(p, 'version');
       if (version !== undefined) supplier.version = version;
+      // the other links the file supplies (his word, S375 22:43: O3), each as written too
+      let leaf: string | null | undefined, logicalParent: string | null | undefined, calls: (string | null)[] | undefined;
+      if ('leafUuid' in p) { leaf = linkTo(firstLine, p.leafUuid); supplier.leaf = valueAt(p, 'leafUuid'); }
+      if ('logicalParentUuid' in p) { logicalParent = linkTo(firstLine, p.logicalParentUuid); supplier.logical_parent = valueAt(p, 'logicalParentUuid'); }
+      // the block's tool_use_id as the file holds it, which need not be the string the type says
+      const results = p.type === 'user' ? blocksOf(p.message).filter((b): b is ToolResultBlock => b.type === 'tool_result') : [];
+      if (results.length) {
+        calls = results.map((b) => linkTo(firstCall, b.tool_use_id as unknown));
+        supplier.calls = results.map((b) => { const v: unknown = b.tool_use_id; return typeof v === 'string' ? shown(v) : WITHHELD; });
+      }
+      const session = valueAt(p, 'sessionId');
+      if (session !== undefined) supplier.session = session;
       // a response is known by its requestId, or by its message's id where it has none (the parser's rule)
       const group = p.type !== 'assistant' ? undefined
         : str(p.requestId) ?? (isObj(p.message) ? str(p.message.id) : undefined)
@@ -380,6 +419,7 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
       const time = timeOf(p);
       rec = {
         id: at(line), kind, ...(kinds ? { kinds } : {}), order: line, parent, parent_by: parentBy,
+        ...(leaf !== undefined ? { leaf } : {}), ...(logicalParent !== undefined ? { logical_parent: logicalParent } : {}), ...(calls ? { calls } : {}),
         ...(group !== undefined ? { group: group === WITHHELD ? WITHHELD : shown(group) } : {}), ...(dup !== undefined ? { dup_of: dup } : {}),
         ...(Object.keys(supplier).length ? { supplier } : {}), ...(time ? { time } : {}), src,
       };
@@ -393,7 +433,7 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
   const changed = one.bytes < size || two.bytes < size
     ? `the file shrank while it was read (${size} bytes when it was opened; ${Math.min(one.bytes, two.bytes)} read)`
     : one.sha256 !== two.sha256 ? `the file changed between the two reads (its first ${size} bytes differ)` : null;
-  return { header, balance: { linesRead: two.newlines + (two.unterminated ? 1 : 0), recordsWritten: written, byKind, dupOf, parents }, changed };
+  return { header, balance: { linesRead: two.newlines + (two.unterminated ? 1 : 0), recordsWritten: written, byKind, dupOf, parents, links }, changed };
 }
 
 /** writeRecords over bytes in memory: the header, the records and the balance (for the tests and the library). */
