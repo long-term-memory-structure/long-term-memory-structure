@@ -2539,9 +2539,11 @@ function shapesRun(args: string[]): number {
   }
   S.filesFailed += found.failed.length + found.notUtf8.length;
   // the entries named .jsonl that are not regular files, counted as search counts them (S374's closure read, U13)
-  const special = found.special === 1 ? '1 entry named .jsonl $ is not a regular file, such as a pipe or a socket, and was not read' : `${found.special} entries named .jsonl $ are not regular files, such as pipes or sockets, and were not read`;
-  if (!found.files.length && !found.failed.length && !found.notUtf8.length) err(`ltms shapes: warning: no .jsonl file was found under the paths given${found.special ? ` (${special.replace('$', 'there')})` : ''}, so the ${a.unlisted ? 'list' : 'report'} counts nothing. ${TRANSCRIPTS_HINT}`);
-  else if (found.special) err(`ltms shapes: warning: ${special.replace('$', 'under the directories given')}.`);
+  const notRegular = (where: string): string => (found.special === 1
+    ? `1 entry named .jsonl ${where} is not a regular file, such as a pipe or a socket, and was not read`
+    : `${found.special} entries named .jsonl ${where} are not regular files, such as pipes or sockets, and were not read`);
+  if (!found.files.length && !found.failed.length && !found.notUtf8.length) err(`ltms shapes: warning: no .jsonl file was found under the paths given${found.special ? ` (${notRegular('there')})` : ''}, so the ${a.unlisted ? 'list' : 'report'} counts nothing. ${TRANSCRIPTS_HINT}`);
+  else if (found.special) err(`ltms shapes: warning: ${notRegular('under the directories given')}.`);
   if (found.symlinks) err(`ltms shapes: ${plural(found.symlinks, 'symbolic link', 'symbolic links')} met under the directories given ${found.symlinks === 1 ? 'was' : 'were'} not followed.`);
   if (S.skipped.length) {
     // ltms shapes' own output, not transcripts: not read, counted and named (S374's closure read, U5)
