@@ -2523,12 +2523,14 @@ const RECORDS_HELP = `ltms records <file.jsonl>
 Prints the transcript as ltms-records/0, the record protocol's format
 (version 0, a draft): a header line, then one JSON line per line of the file,
 the lines it does not understand included, so the count always balances: lines
-read = records written. Anyone can check it: wc -l on the file, and the
-output's lines after the first. A record holds no text: it gives the address
-of its bytes, and the text is read there.
+read = records written. Anyone can check it: the output's lines after the
+first are the file's wc -l, plus one when the header's last_line_unterminated
+is true. A record holds no text: it gives the address of its bytes, and the
+text is read there.
   ltms records ~/.claude/projects/-home-me-my-app/<session>.jsonl > session.records.jsonl
-One transcript at a time; for a folder, write the records outside ~/.claude:
-  mkdir -p records; for f in <folder>/*.jsonl; do ltms records "$f" > "records/$(basename "$f" .jsonl).records.jsonl"; done
+One transcript at a time; for a folder, write the records outside ~/.claude,
+keeping each only when its run succeeds (in sh, bash or zsh):
+  mkdir -p records; for f in <folder>/*.jsonl; do [ -f "$f" ] || continue; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; echo "failed: $f" >&2; fi; done
 
 The first line, the header:
   format        "ltms-records/0"
@@ -2538,8 +2540,9 @@ The first line, the header:
                 newline: what wc -l counts), last_line_unterminated (true when
                 the last line has no newline; it is a record too), read_at
                 (UTC)
-  supplier      name ("claude-code"); versions (the versions of the program
-                that wrote the records, in order)
+  supplier      name ("claude-code": the mapping records applies to every
+                file); versions (those its records name, in version order:
+                N.N.N by number, then any other value by its text)
   converter     name ("ltms"), version
   content       "by-address": no record holds text
 
@@ -2551,30 +2554,36 @@ A record, one per line of the file:
   kinds         every block's kind, when an assistant record holds several
                 (kind is the first's)
   order         its line, 1-based
-  parent        the address of the record its parentUuid names (the first in
-                the file that carries that uuid), or null
+  parent        the address of the record its parentUuid names (the first
+                record with a uuid and a parentUuid that carries it), or null
   parent_by     "supplied" (the record has a uuid and a parentUuid), or
                 "none" (it is outside the session's tree: last-prompt,
                 ai-title and the like, and blank and malformed lines)
   group         an assistant record's requestId (its message's id where it
                 has none): the records of one response share it
-  dup_of        the first record that carries its uuid, when it repeats one
+  dup_of        the first record with a uuid and a parentUuid that carries
+                its uuid, when it repeats one
   supplier      what the transcript says of it: type; subtype (a system
                 record's subtype, an attachment's type); id (its uuid);
                 parent (its parentUuid, null for a root; a parent that is not
                 in this file shows here and not in parent); version. Each
                 as written when it passes the label rule (at most 64 ASCII
-                letters, digits and . _ : + -), else (withheld); so are
-                group, time's as_written and the header's versions
-  time          as_written (its timestamp), utc (when the stamp names its
-                zone), kind ("stamped")
+                letters, digits and . _ : + -), else (withheld), as is a
+                value that is not a string; so are group, time's as_written
+                and the header's versions. A parentUuid that is not a string
+                names a parent not in this file
+  time          as_written (its timestamp), utc (the instant in UTC, when the
+                stamp is an ISO 8601 date and time with its zone that names a
+                real one, even when as_written is withheld), kind
+                ("stamped"); no time when the record has no timestamp
   src           where its bytes are: kind ("line"), line, offset (bytes from
                 the file's start), bytes (its length, without the newline),
                 sha256 (of exactly those bytes)
 
 The kinds:
   assistant     reply (a text block), thinking (thinking or redacted_thinking),
-                tool call (tool_use); system when written for an API error
+                tool call (tool_use), other (a block of another type, or no
+                block); system when written for an API error
   user          tool result; summary (a compaction's); input (a channel that
                 opens a turn, as skeleton's prompts); system (what the
                 harness wrote: meta, command output, an interrupt, a queued
@@ -2590,13 +2599,15 @@ The file is read twice, a piece at a time: once for the first record of each
 uuid and the versions (the header, written first, lists them), once for the
 records. Memory holds a piece of 1 MiB, the line that crosses it, and the
 uuids, never the whole file. Both reads stop at the size the file had when it
-was opened, so lines appended later are not read; if the two reads differ (the
-file was rewritten or cut between them), stderr says so and the exit status is
-1: the records written are then not a view of the file.
+was opened, so lines appended later are not read, and stderr says so when the
+file holds more by the end; if the two reads differ (the file was rewritten or
+cut between them), stderr says so and the exit status is 1: the records
+written are then not a view of the file. They are of the file as it was
+opened: if its path names another file by the end, stderr says so.
 
-stderr holds one line: the lines read, the records written by kind, the
-repeats, and the parent links (in the file, roots, not in this file, outside
-the tree).
+stderr ends with the balance line: the lines read, the records written by
+kind, the repeats, and the parent links (in the file, roots, not in this file,
+outside the tree). A warning comes before it; an error stands alone.
 
 Exit status: 0 when the count balances; 1 when the file cannot be read, the
 two reads differ, a line is too long for this Node to read as a string, or
@@ -2620,7 +2631,7 @@ function recordsRun(args: string[]): number {
     if (!ended && a.startsWith('-')) { err(`ltms records: unknown option '${a}'. The options are --help and --version; put -- before a path that starts with '-'.`); return 2; }
     paths.push(a);
   }
-  const FOLDER = 'mkdir -p records; for f in <folder>/*.jsonl; do ltms records "$f" > "records/$(basename "$f" .jsonl).records.jsonl"; done';
+  const FOLDER = 'mkdir -p records; for f in <folder>/*.jsonl; do [ -f "$f" ] || continue; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; echo "failed: $f" >&2; fi; done';
   if (paths.length !== 1) { err(`ltms records: give one transcript (${paths.length ? `${paths.length} were given` : 'none was given'}): a records file is one transcript's. For a folder: ${FOLDER}`); return 2; }
   const file = paths[0];
   let isDir = false;
@@ -2632,16 +2643,26 @@ function recordsRun(args: string[]): number {
   try { fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0)); }
   catch (e) { err(cannotRead('records', file, e)); return 1; }
   let r: RecordsRun;
+  const warnings: string[] = [];
   try {
     const st = fstatSync(fd);
-    if (!st.isFile()) { err(`ltms records: '${file}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Copy it to one first, e.g. cat ${q(file)} > transcript.jsonl`); return 2; }
+    if (!st.isFile()) { err(`ltms records: '${file}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Save it to one first: a FIFO with a writer, cat ${q(file)} > transcript.jsonl; a process substitution, the command's own output (<command> > transcript.jsonl); then give that file.`); return 2; }
     r = writeRecords((buf, pos) => readSync(fd, buf, 0, buf.length, pos), st.size, { prefix: prefixOf(file), path: resolve(file), readAt: new Date().toISOString(), converterVersion: readVersion() }, out);
+    // what the two reads could not see: bytes past the size it had when it was opened (it grew, or its size is not its
+    // length, as a file under /proc), and the path naming another file by now (replaced while it was read)
+    let more = false;
+    try { more = readSync(fd, Buffer.alloc(1), 0, 1, st.size) > 0; } catch { /* a read past the size that fails tells nothing more */ }
+    if (more) warnings.push(`ltms records: warning: '${file}' holds more than the ${st.size} bytes it had when it was opened (it grew while it was read, or it is a file whose size is not its length, as under /proc): the records are of its first ${st.size} bytes.`);
+    let replaced = false;
+    try { const now = statSync(file); replaced = now.dev !== st.dev || now.ino !== st.ino; } catch { replaced = true; }
+    if (replaced) warnings.push(`ltms records: warning: '${file}' now names another file than the one read (it was replaced or removed while it was read): the records are of the file as it was when it was opened.`);
   } catch (e) {
     if (e instanceof RecordsLineTooLong) { err(`ltms records: '${file}': ${e.message}, so it cannot be converted; what was written before it is incomplete.`); return 1; }
     if (typeof (e as NodeJS.ErrnoException)?.code === 'string') { err(`${cannotRead('records', file, e)} What was written before it is incomplete.`); return 1; }
     throw e;
   } finally { closeSync(fd); }
   if (r.changed) { err(`ltms records: '${file}': ${r.changed}, so the records written are not a view of it. Run it again.`); return 1; }
+  for (const w of warnings) err(w);
   const B = r.balance;
   const kinds = RECORD_KINDS.filter((k) => B.byKind[k]).map((k) => `${B.byKind[k]} ${k}`).join(', ');
   const ok = B.linesRead === B.recordsWritten;

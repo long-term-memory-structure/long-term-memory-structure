@@ -374,3 +374,178 @@ test('records (S375): the header lists versions equal as numbers but spelled apa
   assert.deepEqual(versions(b), versions(a));
   rmSync(d, { recursive: true });
 });
+
+// ---- S375, the read of records (wf_2663d245-6d9): R1, R7–R11, O8, O11, O13, O16 ----
+
+/** A module, loaded with --import before the command, that runs `body` with fs and the call count in scope. */
+function importModule(dir, name, body) {
+  const f = join(dir, name);
+  writeFileSync(f, ["import fs from 'node:fs';", "import { syncBuiltinESMExports } from 'node:module';", body, 'syncBuiltinESMExports();'].join('\n'));
+  return pathToFileURL(f).href;
+}
+
+test('records (S375, R1 O11): a value that is not a string prints (withheld), never dropped; a parentUuid that is neither a string nor null names a parent not in this file; a uuid is kept without the envelope too', () => {
+  const d = tmp(), f = join(d, 'bbbbbbbb-types.jsonl');
+  const L = [
+    { type: 5, uuid: 'w1', parentUuid: null, version: 7, timestamp: 12345 },
+    { type: 'user', uuid: 'w2', parentUuid: 42, message: { content: 'x' }, promptSource: 'typed' },
+    { type: 'system', subtype: { a: 1 }, uuid: 'w3', parentUuid: 'w2' },
+    { type: 'ai-title', uuid: 'w4' },
+    { type: 'attachment', uuid: 'w5', parentUuid: 'w3', attachment: { type: 9 } },
+    { type: 'assistant', uuid: 'w6', parentUuid: 'w3', requestId: 77, message: { id: 'msg_1', content: [{ type: 'text', text: 't' }] } },
+  ];
+  writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [, ...recs] = lines(r.stdout);
+  assert.deepEqual([recs[0].supplier.type, recs[0].supplier.version, recs[0].time], ['(withheld)', '(withheld)', { as_written: '(withheld)', kind: 'stamped' }]);
+  assert.deepEqual([recs[1].parent, recs[1].parent_by, recs[1].supplier.parent], [null, 'supplied', '(withheld)']);
+  assert.equal(recs[2].supplier.subtype, '(withheld)');
+  assert.deepEqual([recs[3].supplier.id, recs[3].parent_by], ['w4', 'none']);
+  assert.equal(recs[4].supplier.subtype, '(withheld)');
+  assert.equal(recs[5].group, 'msg_1', 'a requestId that is not a string: the message id groups, as the parser reads a response');
+  assert.match(r.stderr, /parents: 3 in the file, 1 root, 1 not in this file, 1 outside the tree\./);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, O13 R8): utc only for a stamp that is a real instant (ISO 8601 with its zone, lower case allowed), the instant even when as_written is withheld', () => {
+  const d = tmp(), f = join(d, 'cccccccc-time.jsonl');
+  const stamps = [
+    ['2026-01-01T10:00:00.000Z', '2026-01-01T10:00:00.000Z'],
+    ['2026-01-01t10:00:00z', '2026-01-01T10:00:00.000Z'],
+    ['2026-01-01T10:00:00+02:00', '2026-01-01T08:00:00.000Z'],
+    ['2026-01-01T10:00:00-0130', '2026-01-01T11:30:00.000Z'],
+    ['2026-02-30T00:00:00Z', undefined],
+    ['2026-13-01T00:00:00Z', undefined],
+    ['2026-01-01T24:00:00Z', undefined],
+    ['2026-01-01T10:00:00', undefined],
+    ['2026-01-01T10:00:00.' + '1'.repeat(60) + 'Z', '2026-01-01T10:00:00.111Z'],
+  ];
+  writeFileSync(f, stamps.map(([t], i) => JSON.stringify({ type: 'user', uuid: `t${i}`, parentUuid: null, timestamp: t, message: { content: 'x' }, promptSource: 'typed' })).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [, ...recs] = lines(r.stdout);
+  stamps.forEach(([t, utc], i) => {
+    assert.equal(recs[i].time.utc, utc, t);
+    assert.equal(recs[i].time.as_written, t.length > 64 ? '(withheld)' : t, t);
+  });
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, R9 R8): redacted_thinking is thinking; a uuid carried three times links to its first carrier, from children written before and after its replays; a message id groups where there is no requestId', () => {
+  const d = tmp(), f = join(d, 'dddddddd-carriers.jsonl');
+  const a = (uuid, parentUuid, content, extra = {}) => ({ type: 'assistant', uuid, parentUuid, message: { id: 'm_x', content }, ...extra });
+  const L = [
+    { type: 'user', uuid: 'p1', parentUuid: null, message: { content: 'q' }, promptSource: 'typed' },
+    a('x1', 'p1', [{ type: 'redacted_thinking', data: 'zz' }], { requestId: 'r1' }),
+    a('x2', 'x1', [{ type: 'redacted_thinking', data: 'zz' }, { type: 'thinking', thinking: 'y' }], { requestId: 'r1' }),
+    { type: 'user', uuid: 'c1', parentUuid: 'x2', message: { content: 'q2' }, promptSource: 'typed' },
+    a('x2', 'x1', [{ type: 'thinking', thinking: 'y' }], { requestId: 'r1' }),
+    a('x2', 'x1', [{ type: 'thinking', thinking: 'y' }], { requestId: 'r1' }),
+    { type: 'user', uuid: 'c2', parentUuid: 'x2', message: { content: 'q3' }, promptSource: 'typed' },
+    a('x3', 'c2', [{ type: 'text', text: 'r' }]),
+  ];
+  writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [, ...recs] = lines(r.stdout);
+  assert.deepEqual([recs[1].kind, recs[2].kind, recs[2].kinds], ['thinking', 'thinking', ['thinking', 'thinking']]);
+  assert.deepEqual([recs[4].dup_of, recs[5].dup_of], ['dddddddd:L3', 'dddddddd:L3']);
+  assert.deepEqual([recs[3].parent, recs[6].parent], ['dddddddd:L3', 'dddddddd:L3']);
+  assert.equal(recs[7].group, 'm_x');
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, R10): the command\'s own balance check: a splitter that loses a line makes it exit 1 and say the count does not balance', () => {
+  const d = tmp(), f = synthetic(d);
+  // the second search for a newline from the start of a piece is the second read's first: there, the first newline is skipped
+  const mod = importModule(d, 'skip.mjs', [
+    'const indexOf = Buffer.prototype.indexOf; let starts = 0;',
+    'Buffer.prototype.indexOf = function (v, from, ...rest) { if (v === 10 && (from ?? 0) === 0 && ++starts === 2) { const i = indexOf.call(this, v, 0); return i < 0 ? i : indexOf.call(this, v, i + 1); } return indexOf.call(this, v, from, ...rest); };',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, ['--import', mod, CLI, 'records', f], { encoding: 'utf8', maxBuffer: 64 << 20 });
+  assert.equal(r.status, 1, r.stderr);
+  assert.match(r.stderr, /THE COUNT DOES NOT BALANCE: a bug in ltms\./);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, R11): the header lists versions in version order; read_at is UTC; path is the argument resolved; -- ends the options', () => {
+  const d = tmp();
+  const f = join(d, 'eeeeeeee-v.jsonl'), dash = join(d, '-x.jsonl');
+  const rec = (v, u) => JSON.stringify({ type: 'user', uuid: u, parentUuid: null, version: v, message: { content: 'x' }, promptSource: 'typed' });
+  writeFileSync(f, [rec('10.0.0', 'a'), rec('2.1.300', 'b'), rec('2.1.99', 'c')].join('\n') + '\n');
+  writeFileSync(dash, rec('2.1.300', 'd') + '\n');
+  const r = spawnSync(process.execPath, [CLI, 'records', basename(f)], { encoding: 'utf8', cwd: d });
+  assert.equal(r.status, 0, r.stderr);
+  const h = lines(r.stdout)[0];
+  assert.deepEqual(h.supplier.versions, ['2.1.99', '2.1.300', '10.0.0']);
+  assert.match(h.source.read_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+  assert.equal(h.source.path, f);
+  const r2 = spawnSync(process.execPath, [CLI, 'records', '--', '-x.jsonl'], { encoding: 'utf8', cwd: d });
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.equal(lines(r2.stdout)[0].source.path, dash);
+  rmSync(d, { recursive: true });
+});
+
+/** The peak resident memory of `ltms records <file>`, from a module that reports it as the process exits. */
+function peakKiB(dir, file) {
+  const mod = importModule(dir, 'peak.mjs', "process.on('exit', () => process.stderr.write('PEAK ' + process.resourceUsage().maxRSS + '\\n'));");
+  const outPath = file + '.records', fd = openSync(outPath, 'w');
+  try {
+    const r = spawnSync(process.execPath, ['--max-old-space-size=40', '--import', mod, CLI, 'records', file], { encoding: 'utf8', stdio: ['ignore', fd, 'pipe'], timeout: 600000 });
+    assert.equal(r.status, 0, r.stderr.slice(0, 400));
+    return Number(/PEAK (\d+)/.exec(r.stderr)?.[1]);
+  } finally { closeSync(fd); rmSync(outPath, { force: true }); }
+}
+
+test('records (S375, R7): the peak resident memory does not grow with the file: 16 MB and 96 MB give peaks within 40 MiB of each other (the heap limit alone could not see a file held whole in a Buffer)', () => {
+  const d = tmp();
+  const demo = readFileSync(join(here, 'fixtures', 'demo.jsonl'));
+  const make = (name, mb) => { const f = join(d, name), fd = openSync(f, 'w'); for (let i = 0, n = Math.ceil((mb << 20) / demo.length); i < n; i++) writeSync(fd, demo); closeSync(fd); return f; };
+  const small = peakKiB(d, make('small.jsonl', 16)), big = peakKiB(d, make('big.jsonl', 96));
+  assert.ok(big - small < 40 * 1024, `peak ${small} KiB for 16 MB, ${big} KiB for 96 MB: it grew by ${big - small} KiB`);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, O16): a file that holds more than the size it had when it was opened (a file under /proc, or one that grew) is said on stderr; the records are of its first bytes', { skip: process.platform !== 'linux' && '/proc is Linux\'s' }, () => {
+  const r = run('/proc/version');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(lines(r.stdout)[0].source.bytes, 0);
+  assert.match(r.stderr, /warning: '\/proc\/version' holds more than the 0 bytes it had when it was opened .*the records are of its first 0 bytes/);
+});
+
+test('records (S375, O8): a path that names another file by the end (renamed over between the reads) is said on stderr; the records are of the file as opened', () => {
+  const d = tmp(), f = synthetic(d), other = join(d, 'other.jsonl');
+  writeFileSync(other, '{"type":"x"}\n');
+  const mod = importModule(d, 'swap.mjs', [
+    'const readSync = fs.readSync; let starts = 0;',
+    `fs.readSync = (fd, buf, off, len, pos) => { if (pos === 0 && ++starts === 2) fs.renameSync(${JSON.stringify(other)}, ${JSON.stringify(f)}); return readSync(fd, buf, off, len, pos); };`,
+  ].join('\n'));
+  const r = spawnSync(process.execPath, ['--import', mod, CLI, 'records', f], { encoding: 'utf8', maxBuffer: 64 << 20 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(lines(r.stdout).length, 28, 'the 27 records of the file as opened, and the header');
+  assert.match(r.stderr, /warning: .* now names another file than the one read/);
+  rmSync(d, { recursive: true });
+});
+
+test('records (S375, O2): the folder loop is one in the README, the help and the folder message, and run by sh it keeps the records of a run that succeeds and names the one that fails', (t) => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const pick = (text) => text.split('\n').map((l) => l.trim()).find((l) => l.startsWith('mkdir -p records; for f in'));
+  const d = tmp();
+  const fromReadme = pick(readme), fromHelp = pick(run('--help').stdout), fromMessage = pick(run(d).stderr.replace(/^.*For a folder: /s, ''));
+  assert.ok(fromReadme, 'the README has the loop');
+  assert.equal(fromHelp, fromReadme, 'the help gives the README\'s loop');
+  assert.equal(fromMessage, fromReadme.replace('<folder>', `'${d}'`), 'the folder message gives it, for the folder given');
+  if (process.getuid?.() === 0) { t.skip('as root, a file without read permission is still read'); rmSync(d, { recursive: true }); return; }
+  const folder = join(d, 'in');
+  mkdirSync(folder);
+  writeFileSync(join(folder, 'aaaaaaaa-ok.jsonl'), '{"type":"x"}\n');
+  writeFileSync(join(folder, 'bbbbbbbb-no.jsonl'), '{"type":"x"}\n');
+  spawnSync('chmod', ['000', join(folder, 'bbbbbbbb-no.jsonl')]);
+  const script = `ltms() { "${process.execPath}" "${CLI}" "$@"; }; ` + fromReadme.replace('<folder>', `'${folder}'`);
+  const r = spawnSync('sh', ['-c', script], { cwd: d, encoding: 'utf8' });
+  assert.deepEqual(readdirSync(join(d, 'records')).sort(), ['aaaaaaaa-ok.records.jsonl']);
+  assert.match(r.stderr, /failed: .*bbbbbbbb-no\.jsonl/);
+  spawnSync('chmod', ['600', join(folder, 'bbbbbbbb-no.jsonl')]);
+  rmSync(d, { recursive: true });
+});

@@ -160,13 +160,14 @@ const NL = 0x0a;
  *  file wrote prints only when it is at most 64 ASCII letters, digits and . _ : + -, else as (withheld). The links are
  *  made from the values as written; only what is printed passes the rule. */
 const LABEL = /^[\w.:+-]{1,64}$/;
-const shown = (v: string): string => (LABEL.test(v) ? v : '(withheld)');
+const WITHHELD = '(withheld)';
+const shown = (v: string): string => (LABEL.test(v) ? v : WITHHELD);
+/** A value the record holds at a key, by the label rule: a string as shown; anything else present, (withheld). */
+const valueAt = (o: Record<string, any>, k: string): string | undefined => (!(k in o) ? undefined : typeof o[k] === 'string' ? shown(o[k]) : WITHHELD);
 /** Lenient: a byte sequence that is not UTF-8 becomes U+FFFD in the text parsed; the sha256 is of the bytes. */
 const DECODER = new TextDecoder('utf-8');
 const isObj = (v: unknown): v is Record<string, any> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
-/** A stamp that names its zone: Z, or an offset. */
-const ZONED = /(?:Z|[+-]\d{2}:?\d{2})$/;
 const N3 = /^\d+\.\d+\.\d+$/;
 /** Versions N.N.N in numeric order (two spellings of one number, 01.2.3 and 1.2.3, by their text), then any other
  *  strings by their text: a total order, so the header does not depend on the order of the records. */
@@ -203,11 +204,37 @@ export function kindOf(r: Record<string, any>): { kind: RecordKind; kinds?: Reco
   }
 }
 
+/** An ISO 8601 date and time with its zone: Z (or z), or an offset of hours and minutes, with or without a colon. */
+const ISO_ZONED = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:([Zz])|([+-])(\d{2}):?(\d{2}))$/;
+/** The instant a stamp names, in UTC, when it is a real one: every field in range (no 30 February, no hour 24, no
+ *  second 60), the fraction cut at milliseconds. Else undefined: Date would roll an impossible day into the next month. */
+function instantOf(t: string): string | undefined {
+  const m = ISO_ZONED.exec(t);
+  if (!m) return undefined;
+  const [y, mo, d, h, mi, sec] = [m[1], m[2], m[3], m[4], m[5], m[6]].map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || h > 23 || mi > 59 || sec > 59) return undefined;
+  const at = new Date(0);
+  at.setUTCFullYear(y, mo - 1, d);
+  if (at.getUTCFullYear() !== y || at.getUTCMonth() !== mo - 1 || at.getUTCDate() !== d) return undefined;
+  at.setUTCHours(h, mi, sec, m[7] ? Number((m[7] + '00').slice(0, 3)) : 0);
+  let ms = at.getTime();
+  if (!m[8]) {
+    const oh = Number(m[10]), om = Number(m[11]);
+    if (oh > 23 || om > 59) return undefined;
+    ms -= (m[9] === '+' ? 1 : -1) * (oh * 60 + om) * 60_000;
+  }
+  return new Date(ms).toISOString();
+}
+
+/** A record's time: its stamp by the label rule (a stamp that is not a string, (withheld)), and the instant in UTC when
+ *  the stamp names a real one. Undefined when the record has no timestamp. */
 function timeOf(r: Record<string, any>): RecordTime | undefined {
-  const t = str(r.timestamp);
-  if (t === undefined) return undefined;
+  if (!('timestamp' in r)) return undefined;
+  const t = r.timestamp;
+  if (typeof t !== 'string') return { as_written: WITHHELD, kind: 'stamped' };
   const out: RecordTime = { as_written: shown(t), kind: 'stamped' };
-  if (ZONED.test(t)) { const d = new Date(t); if (!Number.isNaN(d.getTime())) out.utc = d.toISOString(); }
+  const utc = instantOf(t);
+  if (utc !== undefined) out.utc = utc;
   return out;
 }
 
@@ -300,8 +327,7 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
     const p = parseLine(bytes, line);
     if (typeof p === 'string') return;
     if (hasEnvelope(p) && !firstLine.has(p.uuid)) firstLine.set(p.uuid, line);
-    const version = str(p.version);
-    if (version !== undefined) versions.add(version);
+    if ('version' in p) versions.add(typeof p.version === 'string' ? p.version : WITHHELD);
   });
   const header: RecordsHeader = {
     format: RECORDS_FORMAT, kind: 'header',
@@ -324,29 +350,37 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
       rec = { id: at(line), kind: p, order: line, parent: null, parent_by: 'none', src };
     } else {
       const { kind, kinds } = kindOf(p);
+      // every value as the file wrote it, by the label rule; a value present that is not a string, (withheld)
       const supplier: RecordSupplier = {};
-      const type = str(p.type);
-      if (type !== undefined) supplier.type = shown(type);
-      const sub = p.type === 'system' ? str(p.subtype) : p.type === 'attachment' && isObj(p.attachment) ? str(p.attachment.type) : undefined;
-      if (sub !== undefined) supplier.subtype = shown(sub);
+      const type = valueAt(p, 'type');
+      if (type !== undefined) supplier.type = type;
+      const sub = p.type === 'system' ? valueAt(p, 'subtype') : p.type === 'attachment' && isObj(p.attachment) ? valueAt(p.attachment, 'type') : undefined;
+      if (sub !== undefined) supplier.subtype = sub;
+      const id = valueAt(p, 'uuid');
+      if (id !== undefined) supplier.id = id;
       let parent: string | null = null, parentBy: 'supplied' | 'none' = 'none', dup: string | undefined;
       if (hasEnvelope(p)) {
-        supplier.id = shown(p.uuid);
-        const pu = typeof p.parentUuid === 'string' ? p.parentUuid : null;
-        supplier.parent = pu === null ? null : shown(pu);
+        const pu: unknown = p.parentUuid;
         parentBy = 'supplied';
-        if (pu === null) parents.root++;
-        else { const pl = firstLine.get(pu); if (pl !== undefined) { parent = at(pl); parents.resolved++; } else parents.unresolved++; }
+        if (pu === null) { supplier.parent = null; parents.root++; }
+        else if (typeof pu === 'string') {
+          supplier.parent = shown(pu);
+          const pl = firstLine.get(pu);
+          if (pl !== undefined) { parent = at(pl); parents.resolved++; } else parents.unresolved++;
+        } else { supplier.parent = WITHHELD; parents.unresolved++; } // names a parent, by no uuid any record can carry
         const first = firstLine.get(p.uuid);
         if (first !== undefined && first !== line) { dup = at(first); dupOf++; }
       } else parents.none++;
-      const version = str(p.version);
-      if (version !== undefined) supplier.version = shown(version);
-      const group = p.type === 'assistant' ? str(p.requestId) ?? (isObj(p.message) ? str(p.message.id) : undefined) : undefined;
+      const version = valueAt(p, 'version');
+      if (version !== undefined) supplier.version = version;
+      // a response is known by its requestId, or by its message's id where it has none (the parser's rule)
+      const group = p.type !== 'assistant' ? undefined
+        : str(p.requestId) ?? (isObj(p.message) ? str(p.message.id) : undefined)
+          ?? ('requestId' in p || (isObj(p.message) && 'id' in p.message) ? WITHHELD : undefined);
       const time = timeOf(p);
       rec = {
         id: at(line), kind, ...(kinds ? { kinds } : {}), order: line, parent, parent_by: parentBy,
-        ...(group !== undefined ? { group: shown(group) } : {}), ...(dup !== undefined ? { dup_of: dup } : {}),
+        ...(group !== undefined ? { group: group === WITHHELD ? WITHHELD : shown(group) } : {}), ...(dup !== undefined ? { dup_of: dup } : {}),
         ...(Object.keys(supplier).length ? { supplier } : {}), ...(time ? { time } : {}), src,
       };
     }
