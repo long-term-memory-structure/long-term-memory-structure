@@ -565,7 +565,7 @@ test('records (S375, O3, his word 22:43): the links the file supplies, as addres
     env('a6', 'a5', { type: 'assistant', requestId: 'r2', message: { content: [{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: {} }] } }),  // 6: a tool_use id carried again
     { type: 'last-prompt', leafUuid: 'a3', sessionId: 's-1' },                                                                                  // 7
     { type: 'last-prompt', leafUuid: 'nowhere', sessionId: 'zq odd session' },                                                                  // 8
-    env('a9', 'a6', { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 7, content: 'w' }] }, toolUseResult: {} }),        // 9
+    env('a9', 'a6', { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 7, content: 'w' }, { type: 'tool_result', tool_use_id: 'zq odd call id', content: 'v' }] }, toolUseResult: {} }),  // 9
   ];
   writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
   const r = run(f);
@@ -577,10 +577,10 @@ test('records (S375, O3, his word 22:43): the links the file supplies, as addres
   assert.deepEqual([recs[4].logical_parent, recs[4].supplier.logical_parent], [null, 'not-here']);
   assert.deepEqual([recs[6].leaf, recs[6].supplier.leaf], [`${P}:L3`, 'a3']);
   assert.deepEqual([recs[7].leaf, recs[7].supplier.leaf, recs[7].supplier.session], [null, 'nowhere', '(withheld)']);
-  assert.deepEqual([recs[8].calls, recs[8].supplier.calls], [[null], ['(withheld)']]);
+  assert.deepEqual([recs[8].calls, recs[8].supplier.calls], [[null, null], ['(withheld)', '(withheld)']]);
   assert.equal(recs[0].supplier.session, 's-1');
   assert.equal(recs[0].calls, undefined, 'no links where the file supplies none');
   assert.doesNotMatch(r.stdout, /zq odd/);
-  assert.match(r.stderr, /; links: 4 in the file, 4 not in this file\./);
+  assert.match(r.stderr, /; links: 4 in the file, 5 not in this file\./);
   rmSync(d, { recursive: true });
 });
