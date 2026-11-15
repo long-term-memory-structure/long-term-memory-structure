@@ -1815,3 +1815,22 @@ test("shapes: where to send a report, in the README's section, in --help and in 
   }
   assert.match(closing, /ltms shapes --check <the report>$/, 'the closing line still ends with the check');
 });
+
+// U17 (S374's closure read): the README's example and the receiver's second check need files of the repository that the
+// package does not ship (test/ is not in files), and the section named them with no address, where the README links its
+// other repository files at the release's tag. Each is now linked so, and each linked path is a file of the repository
+// (the link rule holds a link's tag, not that its file exists).
+test("README: shapes' section links each repository file it names (the fixtures' writer, the receiver's validator, the tests) at the release's tag, as the README's other links to the repository's files are, and each file it links exists", () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const web = pkg.repository.url.replace(/^git\+/, '').replace(/\.git$/, '');
+  assert.match(web, /^https:\/\/github\.com\/[^/]+\/[^/]+$/, "package.json's repository");
+  const whole = readFileSync(join(root, 'README.md'), 'utf8');
+  const section = whole.slice(whole.indexOf('### `ltms shapes'), whole.indexOf('\n## ', whole.indexOf('### `ltms shapes')));
+  const named = [...new Set([...section.matchAll(/`(?:node )?(test\/[\w.-]+\.mjs)\b/g)].map((m) => m[1]))].sort();
+  assert.deepEqual(named, ['test/make-shapes-fixtures.mjs', 'test/shapes-validate.mjs', 'test/shapes.test.mjs'], 'the repository files the section names');
+  const links = [...section.matchAll(/\]\((https:\/\/github\.com\/[^)\s]+)\)/g)].map((m) => m[1]);
+  for (const f of named) assert.ok(links.includes(`${web}/blob/v${pkg.version}/${f}`), `the section links ${f} at the tag v${pkg.version}: ${web}/blob/v${pkg.version}/${f}`);
+  const files = links.filter((u) => u.startsWith(`${web}/blob/`)).map((u) => u.slice(`${web}/blob/`.length).replace(/^[^/]+\//, '').replace(/#.*$/, ''));
+  assert.ok(files.length >= named.length);
+  for (const f of files) assert.ok(existsSync(join(root, f)), `the section links ${f}, a file of the repository`);
+});
