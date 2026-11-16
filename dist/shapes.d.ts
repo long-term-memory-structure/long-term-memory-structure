@@ -229,7 +229,9 @@ export declare function shapesLanguage(V: ShapesVocabulary, allowed: readonly st
 }): ShapesLanguage;
 /** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words, never
  *  a part of the line: 'not an object'; 'k' (no line kind of the format); 'fields' (one missing, or one its kind does
- *  not have); or the name of the field that failed (S374's closure read, U10). */
+ *  not have); the name of the field that failed (S374's closure read, U10); or, on a path line whose fields each pass,
+ *  what it says of itself that the builder never writes: 'first without last', 'last without first', 'first after
+ *  last', 'n under files' (n's bucket below files', S375's known issue k10). */
 export declare function checkLine(o: unknown, Lg: ShapesLanguage): string | null;
 /** A problem of a report: the number of its line, and why, as one of the check's own words (checkLine's, or one of the
  *  report as a whole: CHECK_WORDS), never a part of the line. */

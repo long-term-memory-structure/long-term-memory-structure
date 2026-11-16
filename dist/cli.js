@@ -3214,6 +3214,11 @@ function shapesCheck(file, V) {
             case 'fields': return `line ${n}: its fields are not those of its line kind: one is missing, or is not one the format gives it`;
             case 'cut':
             case 'count': return `line ${n}: the last line is not an end line that counts the report's ${r.lines} lines: the report is cut, or was edited`;
+            // what a path line says of itself, which ltms always writes so (S375's known issue k10)
+            case 'first without last': return `line ${n}: it has a first version and no last: a path line has both, or neither`;
+            case 'last without first': return `line ${n}: it has a last version and no first: a path line has both, or neither`;
+            case 'first after last': return `line ${n}: its first version is later than its last, in the versions' numeric order`;
+            case 'n under files': return `line ${n}: its n, the occurrences, is in a lower bucket than its files: each file it occurs in holds one at least`;
         }
         if (n === 1 && p.why === 'vocabulary')
             return `line 1 names another vocabulary than the one given, ${named}: give the one the report was made with (--vocabulary <file>)`;

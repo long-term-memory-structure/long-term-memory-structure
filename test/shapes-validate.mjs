@@ -24,6 +24,8 @@
 // Changed for 0.3.1, after S375's known issues:
 //   - kindOk: a kind is one of the format's four words for a kind, a kind the vocabulary or the allowed list puts at the
 //     kind path, or kind:sub, and no other word of the format, at a line's kind field and as the line's own check (k4).
+//   - A path line: a first version with a last, and a last with a first; the first not later than the last; n in no
+//     lower bucket than files, since each file a path occurs in holds it once at least (k10).
 //   node test/shapes-validate.mjs <report.jsonl> <vocabulary.json>...     exit 0 when every token is allowed
 import { pathToFileURL } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -99,8 +101,9 @@ const lineOrder = (a, b) => (a.k === 'version' ? vOrder(a.v, b.v) : a.k === 'pat
 /** Keys in this order, as JavaScript lists an object's keys (whole numbers first): the order a writer's map has. */
 const asListed = (keys) => Object.keys(Object.fromEntries(keys.map((k) => [k, 0])));
 const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-/** The largest count a bucket stands for. */
+/** The largest count a bucket stands for, and the least. */
 const top = (b) => Number(b.slice(b.indexOf('-') + 1));
+const bottom = (b) => Number(b.split('-')[0]);
 
 /** Returns the list of problems (each: the line number and the field), empty when every token is allowed. */
 export function validate(lines, vocabFiles) {
@@ -167,6 +170,11 @@ export function validate(lines, vocabFiles) {
       if (o.k === 'path') {
         if (typeof o.path !== 'string' || !pathOk(o.path)) bad('path');
         for (const f of ['first', 'last']) if (Object.hasOwn(o, f) && !isVersion(o[f])) bad(f);
+        // what the line says of itself (k10): a first version with a last and a last with a first, the first not later
+        // than the last; and n no fewer than files, which the buckets decide when n's is below files'
+        if (Object.hasOwn(o, 'first') !== Object.hasOwn(o, 'last')) bad(Object.hasOwn(o, 'first') ? 'first without last' : 'last without first');
+        else if (isVersion(o.first) && isVersion(o.last) && vOrder(o.first, o.last) > 0) bad('first after last');
+        if (isBucket(o.n) && isBucket(o.files) && top(o.n) < bottom(o.files)) bad('n under files');
         for (const g of [...Object.keys(GROUP), 'values']) {
           if (!Object.hasOwn(o, g)) continue;
           const vs = g === 'values' ? L.VALUES.get(o.path) : null;

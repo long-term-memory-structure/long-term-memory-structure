@@ -353,7 +353,8 @@ test('shapes: the write guard refuses each line that holds a token outside the l
   const pl = real((o) => o.k === 'path' && o.types && o.strings && o.first), sl = real((o) => o.k === 'path' && o.path.endsWith('.*') && o.names);
   const vp = real((o) => o.k === 'path' && o.values), plain = real((o) => o.k === 'path' && !o.values && !o.names && !o.path.endsWith('[]'));
   const rl = real((o) => o.k === 'rare'), ver = Object.keys(kl.versions)[0];
-  const P = (extra) => ({ k: 'path', kind: 'user', path: '.type', n: '1', files: '4-7', ...extra });
+  // (a path line in the language but for what each case plants: since k10, its n in no lower bucket than its files)
+  const P = (extra) => ({ k: 'path', kind: 'user', path: '.type', n: '4-7', files: '4-7', ...extra });
   const withProto = (proto, own) => Object.assign(Object.create(proto), own);
   const T = new Date(0x7fffffffff);   // a time
   // [what, the line, the word the guard gives]
@@ -448,6 +449,11 @@ test('shapes: the write guard refuses each line that holds a token outside the l
     ['path: names on a [] line', P({ path: '.message.content[]', names: '1' }), 'names'],
     ['path: names exact', { ...sl, names: '17' }, 'names'],
     ['path: names a number', { ...sl, names: 17 }, 'names'],
+    // (S375's known issue k10) what a path line says of itself
+    ['path: a first and no last', P({ first: '1.2.3' }), 'first without last'],
+    ['path: a last and no first', P({ last: '1.2.3' }), 'last without first'],
+    ['path: first after last', P({ first: '10.0.0', last: '9.0.0' }), 'first after last'],
+    ['path: n in a bucket below files', P({ n: '2-3' }), 'n under files'],
     // rare lines
     ['rare: an extra field', { ...rl, x: 'zq7canary' }, 'fields'],
     ['rare: a raw kind', { k: 'rare', kind: 'zqcanarytype', paths: '1', n: '1' }, 'kind'],
@@ -490,10 +496,10 @@ test('shapes: the write guard refuses each line that holds a token outside the l
     assert.deepEqual(wrong, [], 'each planted line refused at the write, by its rule\'s word, at its line');
     assert.ok(planted.length >= 100, `${planted.length} planted lines`);
     // a String object holding a bucket is written as that bucket: the text, which the guard reads, is in the language
-    const [lines] = plant(L, P({ n: new String('2-3'), types: { string: '2-3' } }));
+    const [lines] = plant(L, P({ n: new String('4-7'), types: { string: '4-7' } }));
     let wrote = '';
     assert.equal(SH.writeReport(lines, SH.shapesLanguage(V, allowed, { floor: 3, lines: lines.length }), (s) => { wrote += s; }).written, lines.length);
-    assert.ok(wrote.includes('{"k":"path","kind":"user","path":".type","n":"2-3","files":"4-7","types":{"string":"2-3"}}\n'));
+    assert.ok(wrote.includes('{"k":"path","kind":"user","path":".type","n":"4-7","files":"4-7","types":{"string":"4-7"}}\n'));
   } finally { rm(tiny); rm(build); }
 });
 
@@ -2364,5 +2370,62 @@ test("shapes (0.3.1, k9): a kind that joins a kind to a value of another path (s
       }
     }
     assert.deepEqual(wrong, [], 'each refused, at its line, by its field kind');
+  } finally { rm(dir); }
+});
+
+// k10 (S375's known issues, for 0.3.1): neither checker held what a path line says of itself, which the writer always
+// keeps: a first version with a last, and a last with a first; the first not later than the last; and no fewer
+// occurrences than files, since each file it is in holds one at least. A path line with a first and no last, a first
+// later than its last, or n 2-3 in files 4-7 passed --check and the receiver's validator. Each is now refused, by its
+// line, in words of its own: at the write and by --check (checkLine), and by the validator. n against files is refused
+// where the buckets decide it, n's bucket below files' (every count in 2-3 is fewer than any in 4-7); in one bucket, or n
+// above, the counts can agree, and the line passes.
+test("shapes (0.3.1, k10): a path line with a first version and no last, a last and no first, a first later than its last, or n in a bucket below its files', is refused at the write, by --check and by the receiver's validator, by its line, in words of its own; n in files' bucket or above, and first at or before last, pass", () => {
+  const dir = tmp();
+  try {
+    const R = shapes([...CC]);
+    assert.equal(R.code, 0, R.err);
+    // a path line ltms made whose first and last differ
+    const i = R.lines.findIndex((o) => o.k === 'path' && o.first && o.last && o.first !== o.last);
+    assert.ok(i > 0, 'the report has a path line whose first and last differ');
+    const pl = R.lines[i], at = i + 1;
+    const V = SH.loadVocabulary(DOCS), f = join(dir, 'r.txt');
+    const withLine = (line) => R.lines.map((o, j) => (j === i ? line : o));
+    const without = (k) => { const o = { ...pl }; delete o[k]; return o; };
+    const BOTH = 'a path line has both, or neither', LATER = "in the versions' numeric order", FEWER = 'each file it occurs in holds one at least';
+    // [what, the line, the word of checkLine and of the validator, --check's message]
+    const refused = [
+      ['a first and no last', without('last'), 'first without last', `line ${at}: it has a first version and no last: ${BOTH}`],
+      ['a last and no first', without('first'), 'last without first', `line ${at}: it has a last version and no first: ${BOTH}`],
+      ['its first and last swapped', { ...pl, first: pl.last, last: pl.first }, 'first after last', `line ${at}: its first version is later than its last, ${LATER}`],
+      ['first 10.0.0, last 9.0.0 (after it in numeric order, before it as text)', { ...pl, first: '10.0.0', last: '9.0.0' }, 'first after last', `line ${at}: its first version is later than its last, ${LATER}`],
+      ['n 2-3 in files 4-7', { ...pl, n: '2-3', files: '4-7' }, 'n under files', `line ${at}: its n, the occurrences, is in a lower bucket than its files: ${FEWER}`],
+      ['n 1 in files 2-3', { ...pl, n: '1', files: '2-3' }, 'n under files', `line ${at}: its n, the occurrences, is in a lower bucket than its files: ${FEWER}`],
+      ['n 4-7 in files 32-63', { ...pl, n: '4-7', files: '32-63' }, 'n under files', `line ${at}: its n, the occurrences, is in a lower bucket than its files: ${FEWER}`],
+    ];
+    const wrong = [];
+    for (const [what, line, word, message] of refused) {
+      const lines = withLine(line), text = lines.map((o) => JSON.stringify(o)).join('\n') + '\n';
+      const Lg = SH.shapesLanguage(V, [], { floor: 3, lines: lines.length });
+      const w = SH.writeReport(lines, Lg, () => {});
+      if (w.written !== 0 || JSON.stringify(w.reasons) !== JSON.stringify([{ line: at, why: word }])) wrong.push(`${what}: the write: ${w.written} lines, ${JSON.stringify(w.reasons)}`);
+      writeFileSync(f, text);
+      const c = shapes(['--check', f]);
+      if (c.code !== 1 || c.err !== `ltms shapes --check: ${message}.\nltms shapes --check: '${f}': 1 problem; do not send it as it is.\n`) wrong.push(`${what}: --check: exit ${c.code}, ${JSON.stringify(c.err)}`);
+      const p = validateText(text, [DOCS]);
+      if (JSON.stringify(p) !== JSON.stringify([{ line: at, at: word }])) wrong.push(`${what}: the validator: ${JSON.stringify(p)}`);
+    }
+    assert.deepEqual(wrong, [], 'each refused by its line, in its words');
+    // what the writer can make passes all three: n in files' bucket or above, first at last or before it, neither
+    const passed = [['n in files\' bucket', { ...pl, n: pl.files }], ['n above files', { ...pl, n: '1024-2047' }], ['first at last', { ...pl, first: pl.last }],
+      ['first 9.0.0, last 10.0.0', { ...pl, first: '9.0.0', last: '10.0.0' }], ['neither first nor last', (() => { const o = without('first'); delete o.last; return o; })()]];
+    for (const [what, line] of passed) {
+      const lines = withLine(line), text = lines.map((o) => JSON.stringify(o)).join('\n') + '\n';
+      assert.deepEqual(SH.writeReport(lines, SH.shapesLanguage(V, [], { floor: 3, lines: lines.length }), () => {}).reasons, [], `${what}: the write`);
+      writeFileSync(f, text);
+      const c = shapes(['--check', f]);
+      assert.equal(c.code, 0, `${what}: --check: ${c.err}`);
+      assert.deepEqual(validateText(text, [DOCS]), [], `${what}: the validator`);
+    }
   } finally { rm(dir); }
 });

@@ -820,7 +820,9 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.str
 
 /** Is this line in the report's language? null when it is; otherwise why not, as one of this function's own words, never
  *  a part of the line: 'not an object'; 'k' (no line kind of the format); 'fields' (one missing, or one its kind does
- *  not have); or the name of the field that failed (S374's closure read, U10). */
+ *  not have); the name of the field that failed (S374's closure read, U10); or, on a path line whose fields each pass,
+ *  what it says of itself that the builder never writes: 'first without last', 'last without first', 'first after
+ *  last', 'n under files' (n's bucket below files', S375's known issue k10). */
 export function checkLine(o: unknown, Lg: ShapesLanguage): string | null {
   if (!isObj(o)) return 'not an object';
   switch (o.k) {
@@ -867,6 +869,14 @@ export function checkLine(o: unknown, Lg: ShapesLanguage): string | null {
         if (!vs || !bucketMap(o.values, (k) => k === RARE || k === UNLISTED || vs.has(k))) return 'values';
       }
       if (Object.hasOwn(o, 'names') && (!path.endsWith('.*') || typeof o.names !== 'string' || !CAP_LABELS.includes(o.names))) return 'names';
+      // what the line says of itself, as the builder always writes it (S375's known issue k10): a first version with a
+      // last, and a last with a first; the first not later than the last; and no fewer occurrences than files (each file
+      // it is in holds one at least), refused where the buckets decide it: n's bucket below files'
+      const hasFirst = Object.hasOwn(o, 'first'), hasLast = Object.hasOwn(o, 'last');
+      if (hasFirst && !hasLast) return 'first without last';
+      if (hasLast && !hasFirst) return 'last without first';
+      if (hasFirst && versionOrder(o.first as string, o.last as string) > 0) return 'first after last';
+      if (bucketTop(o.n as string) < bucketBottom(o.files as string)) return 'n under files';
       return null;
     }
     case 'rare':
@@ -909,6 +919,8 @@ function lineOrder(a: ShapesLine, b: ShapesLine): number {
 }
 /** The largest count a bucket stands for: 0, 1, or the top of lo-hi. */
 const bucketTop = (b: string): number => Number(b.slice(b.indexOf('-') + 1));
+/** The least count a bucket stands for: 0, 1, or the lo of lo-hi. */
+const bucketBottom = (b: string): number => Number(b.split('-')[0]);
 /** A line as the builder writes it: its fields in the format's order (LINE_FIELDS), each map's keys in the builder's
  *  order, JSON.stringify's spelling. For a line checkLine passed; anything else is taken as it is, never thrown on. */
 function canonicalText(o: ShapesLine): string {
