@@ -11,7 +11,8 @@
 // the curated vocabulary's lines on these fixtures, byte for byte after the first line (measured on the prototype).
 //
 // LTMS_DIST=<a dist directory> runs the same tests against another build (the mutation check of the write guard); that
-// build reads its vocabulary from vocab/ beside it, as an installed package reads its own.
+// build reads its vocabulary from vocab/ beside it, as an installed package reads its own, and every report here is
+// checked against that vocabulary (DOCS), never the root tree's (S375's known issue k18).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,7 +31,9 @@ const CLI = join(DIST, 'cli.js');
 const SH = await import(pathToFileURL(join(DIST, 'shapes.js')).href);
 const RECOMPUTE = join(here, 'shapes-recompute.mjs');
 const FX = (n) => join(here, 'shapes-fixtures', n);
-const DOCS = join(root, 'vocab', 'claude-code.docs.json');
+/** The vocabulary that ships, as the build under test reads it: vocab/ beside its dist/ (under LTMS_DIST, that tree's).
+ *  Every report a test validates or recomputes with the vocabulary that ships is read with this one. */
+const DOCS = join(DIST, '..', 'vocab', 'claude-code.docs.json');
 /** How a message calls an error a bug in ltms, with where to report it: package.json's bugs.url (S375's known issue k17). */
 const A_BUG_RE = `a bug in ltms (report it at ${JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).bugs?.url}; an issue there is public)`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const CODEX_V = FX('codex.sketch.json'), GEMINI_V = FX('gemini-cli.sketch.json');
@@ -2128,4 +2131,34 @@ test('shapes (0.3.1, k15): a path given through a symbolic link is known by its 
       assert.deepEqual(warningsOf(r.err, 'shapes'), ['ltms shapes: warning: 1 entry named .jsonl under the directories given is not a regular file, such as a pipe or a socket, and was not read.'], args.join(' '));
     }
   } finally { rm(d2); }
+});
+
+// k18 (S375's known issues, for 0.3.1): run through LTMS_DIST, this file checked every report against the root tree's
+// vocabulary, where the build under test reads the vocab/ beside it: a red run against a build of another vocabulary
+// failed first at the validator ("the independent validator, on the report of ltms shapes ..."), not at its finding.
+// Each report is now checked against the vocabulary beside the build: a copy of the build, beside a vocabulary of the
+// same words in other bytes (another sha256 in the first line), passes the tests that validate a report it makes with
+// it and recompute that report.
+test('shapes (0.3.1, k18): run through LTMS_DIST, each report is checked against the vocabulary beside that build (its vocab/), never the root tree\'s', () => {
+  const tree = tmp();
+  try {
+    mkdirSync(join(tree, 'dist'));
+    mkdirSync(join(tree, 'vocab'));
+    for (const f of readdirSync(DIST)) if (f.endsWith('.js')) copyFileSync(join(DIST, f), join(tree, 'dist', f));
+    copyFileSync(join(root, 'package.json'), join(tree, 'package.json'));
+    const own = JSON.stringify(JSON.parse(readFileSync(DOCS, 'utf8')), null, 1) + '\n';
+    writeFileSync(join(tree, 'vocab', 'claude-code.docs.json'), own);
+    const sha = (b) => createHash('sha256').update(b).digest('hex').slice(0, 12);
+    assert.notEqual(sha(own), sha(readFileSync(join(root, 'vocab', 'claude-code.docs.json'))), "the copy's vocabulary has other bytes than the root tree's");
+    const names = ['shapes: every token is in the closed language, by an independent validator (cc, the shipped vocabulary)', 'shapes: every field equals the independent recompute (cc, the shipped vocabulary)'];
+    const pattern = `^(?:${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})$`;
+    const env = { ...process.env, LTMS_DIST: join(tree, 'dist') };
+    delete env.NODE_TEST_CONTEXT;   // a run of its own, reporting to its own stdout
+    const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', `--test-name-pattern=${pattern}`, fileURLToPath(import.meta.url)], { encoding: 'utf8', cwd: root, env, maxBuffer: 64 << 20, timeout: 120000 });
+    const ran = names.filter((n) => r.stdout.includes(`ok 1 - ${n}`) || r.stdout.includes(`ok 2 - ${n}`));
+    assert.deepEqual(ran, names, `the two tests ran:\n${r.stdout.slice(-3000)}`);
+    assert.match(r.stdout, /^# pass 2$/m, `both pass, the reports checked against the copy's own vocabulary:\n${r.stdout.slice(0, 6000)}`);
+    assert.match(r.stdout, /^# fail 0$/m);
+    assert.equal(r.status, 0, r.stderr);
+  } finally { rm(tree); }
 });
