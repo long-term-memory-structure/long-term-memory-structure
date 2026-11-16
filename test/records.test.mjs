@@ -776,7 +776,7 @@ test('records (S376, R2 O4): the check the README and --help give, run as they g
   rmSync(d, { recursive: true });
 });
 
-test('records (S376, LT): leaf and logical_parent are the address of the first record that carries the id as its uuid, with a parentUuid or without one (a sidecar), as the draft says; the links count follows; parent and dup_of still go by the records with the envelope', () => {
+test('records (S376, LT corrected): a uuid link (parent, leaf, logical_parent) is the address of the first record with the envelope that carries the id, else of the first record without it (a sidecar) that does, null only when no record in the file carries it; the links and parents counts follow; dup_of goes by the records with the envelope', () => {
   const d = tmp(), f = join(d, 'llllllll-carriers.jsonl');
   const L = [
     { type: 'user', uuid: 'r1', parentUuid: null, message: { content: 'q' }, promptSource: 'typed' },     // 1
@@ -785,12 +785,12 @@ test('records (S376, LT): leaf and logical_parent are the address of the first r
     { type: 'system', subtype: 'compact_boundary', uuid: 'b1', parentUuid: null, logicalParentUuid: 'side-1' },  // 4 logical_parent: L2
     { type: 'ai-title', uuid: 'r2', aiTitle: 't' },                                                       // 5 r2, by a sidecar first
     { type: 'user', uuid: 'r2', parentUuid: 'r1', message: { content: 'q' }, promptSource: 'typed' },    // 6 then with the envelope
-    { type: 'last-prompt', leafUuid: 'r2' },                                                              // 7 leaf: L5, the first carrier
+    { type: 'last-prompt', leafUuid: 'r2' },                                                              // 7 leaf: L6, the envelope's (a sidecar carried it first, at L5)
     { type: 'user', uuid: 'c1', parentUuid: 'r2', message: { content: 'q' }, promptSource: 'typed' },    // 8 parent: L6, the envelope's
     { type: 'user', uuid: 'r1', parentUuid: null, message: { content: 'q' }, promptSource: 'typed' },     // 9 dup_of: L1
     { type: 'ai-title', uuid: 'r1', aiTitle: 't' },                                                       // 10 a sidecar after the envelope's
     { type: 'last-prompt', leafUuid: 'r1' },                                                              // 11 leaf: L1
-    { type: 'user', uuid: 'c2', parentUuid: 'side-1', message: { content: 'q' }, promptSource: 'typed' }, // 12 parent: none with the envelope
+    { type: 'user', uuid: 'c2', parentUuid: 'side-1', message: { content: 'q' }, promptSource: 'typed' }, // 12 parent: L2, the sidecar (none with the envelope carries it)
     { type: 'last-prompt', leafUuid: 'gone' },                                                            // 13 leaf: null
   ];
   writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
@@ -798,8 +798,9 @@ test('records (S376, LT): leaf and logical_parent are the address of the first r
   assert.equal(r.status, 0, r.stderr);
   const [, ...recs] = lines(r.stdout);
   const P = 'llllllll';
-  assert.deepEqual([recs[2].leaf, recs[3].logical_parent, recs[6].leaf, recs[10].leaf, recs[12].leaf], [`${P}:L2`, `${P}:L2`, `${P}:L5`, `${P}:L1`, null]);
-  assert.deepEqual([recs[7].parent, recs[8].dup_of, recs[11].parent, recs[11].supplier.parent], [`${P}:L6`, `${P}:L1`, null, 'side-1']);
+  assert.deepEqual([recs[2].leaf, recs[3].logical_parent, recs[6].leaf, recs[10].leaf, recs[12].leaf], [`${P}:L2`, `${P}:L2`, `${P}:L6`, `${P}:L1`, null]);
+  assert.deepEqual([recs[7].parent, recs[8].dup_of, recs[11].parent, recs[11].supplier.parent], [`${P}:L6`, `${P}:L1`, `${P}:L2`, 'side-1']);
+  assert.match(r.stderr, /parents: 3 in the file, 3 roots, 0 not in this file, 7 outside the tree/);
   assert.match(r.stderr, /; links: 4 in the file, 1 not in this file\.$/m);
   rmSync(d, { recursive: true });
 });

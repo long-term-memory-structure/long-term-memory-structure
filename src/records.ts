@@ -21,12 +21,13 @@
 //   A line of white space only is blank; one that is not a JSON object is malformed.
 //
 // The parent link: a record with a parentUuid key (with a uuid or without one) has parent_by "supplied": parent is the
-// address of the first record with the envelope (a uuid and a parentUuid key) that carries its parentUuid as its uuid,
-// or null (a root, or a parent not in this file: supplier.parent then says which). A record without a parentUuid
+// address of the record that carries its parentUuid as its uuid, the first with the envelope (a uuid and a parentUuid
+// key), else the first without it (a sidecar), or null (a root, or a parent no record in this file carries:
+// supplier.parent then says which). A record without a parentUuid
 // (Claude Code's sidecars: last-prompt, ai-title and the like) is outside the tree: parent null, parent_by "none". A
 // record with the envelope whose uuid an earlier one with the envelope carries (a replay) names that one in dup_of.
-// The other links the file supplies: leaf and logical_parent are the address of the first record that carries the id as
-// its uuid, with a parentUuid or without one (a sidecar), and calls that of the first assistant record that holds the
+// The other links the file supplies: leaf and logical_parent are the address of the record that carries the id as its
+// uuid, by parent's rule (the envelope's first, else a sidecar's), and calls that of the first assistant record that holds the
 // tool_use; each null when no record in the file does. Nothing is repaired here: a repair belongs to a view (the live
 // path), not to the records.
 //
@@ -348,8 +349,8 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
   // the first pass: the first line that carries each uuid, and the versions
   const firstLine = new Map<string, number>();
   /** Each uuid that a record without the envelope (a sidecar) carries before any record with it does, by that line: a
-   *  link's first carrier is the first record that carries the id as its uuid, with a parentUuid or without one (the
-   *  draft's 1.5; S375's known issue LT). Only such uuids are kept twice, so it stays small. */
+   *  uuid link goes to the first carrier with the envelope, else to this one (S375's known issue LT, as S376 corrected it:
+   *  a sidecar that only repeats a record's uuid never takes that record's links). Only such uuids are kept twice. */
   const firstSide = new Map<string, number>();
   const firstCall = new Map<string, number>();
   const versions = new Set<string>();
@@ -381,8 +382,9 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
     links.found++;
     return at(l);
   };
-  /** The first record that carries an id as its uuid, with the envelope or without (leaf, logical_parent). */
-  const uuidCarrier = (id: string): number | undefined => firstSide.get(id) ?? firstLine.get(id);
+  /** The record that carries an id as its uuid: the first with the envelope, else the first sidecar (parent, leaf,
+   *  logical_parent). */
+  const uuidCarrier = (id: string): number | undefined => firstLine.get(id) ?? firstSide.get(id);
   /** The first assistant record that holds a tool_use with the id (calls). */
   const callCarrier = (id: string): number | undefined => firstCall.get(id);
   let dupOf = 0, written = 0, text = '', held = 0;
@@ -412,7 +414,7 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
         if (pu === null) { supplier.parent = null; parents.root++; }
         else if (typeof pu === 'string') {
           supplier.parent = shown(pu);
-          const pl = firstLine.get(pu);
+          const pl = uuidCarrier(pu);
           if (pl !== undefined) { parent = at(pl); parents.resolved++; } else parents.unresolved++;
         } else { supplier.parent = WITHHELD; parents.unresolved++; } // names a parent, by no uuid any record can carry
       } else parents.none++;

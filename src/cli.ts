@@ -2821,12 +2821,12 @@ A record, one per line of the file:
   kinds         every block's kind, when an assistant record holds several
                 (kind is the first's)
   order         its line, 1-based
-  parent        the address of the record its parentUuid names (the first
-                record with a uuid and a parentUuid that carries it), or null
+  parent        the address of the record its parentUuid names: the first
+                record with a uuid and a parentUuid that carries it, else the
+                first record without a parentUuid (a sidecar) that does; or
+                null when no record in the file does
   leaf          the address of the record its leafUuid names (a last-prompt
-                marker's: the session's head): the first record that carries
-                it as its uuid, with a parentUuid or without one; or null
-                when no record in the file does
+                marker's: the session's head), found as parent's is; or null
   logical_parent
                 the address of the record its logicalParentUuid names (a
                 compaction's boundary: the record before it), as leaf's, or
