@@ -2426,7 +2426,7 @@ test("search (0.3.1, k14): every count of the walk is of distinct paths: a symbo
       assert.deepEqual(warnings(r, 'search'), [`ltms search: warning: '${only}' holds no .jsonl file at any depth (1 entry named .jsonl there is not a regular file, such as a pipe or a socket, and was not read), so nothing in it is searched. ${hint}`], args.join(' '));
     }
     // a directory met again (a stubbed stat and lstat: loop and loop2 report A's device and inode, as a bind mount of A
-    // would): with A given once or twice, 2 directories
+    // would): with A given once, twice, or twice spelled apart (A, then A/.), 2 directories
     const A = join(dir, 'A');
     for (const sub of ['loop', 'loop2']) mkdirSync(join(A, sub), { recursive: true });
     writeFileSync(join(A, 's.jsonl'), sessionWith([['zqk14word', 'ok']]));
@@ -2442,11 +2442,11 @@ test("search (0.3.1, k14): every count of the walk is of distinct paths: a symbo
       "require('node:module').syncBuiltinESMExports();", ''].join('\n'));
     const env = { ...process.env, LTMS_TEST_ALIAS: `${join(A, 'loop')},${join(A, 'loop2')}`, LTMS_TEST_TARGET: A };
     const again = (cmd) => `ltms ${cmd}: warning: 2 directories met under the directories given have the same device and inode as one already read (a bind mount can do that), so they were not read again.`;
-    for (const args of [[A], [A, A]]) {
+    for (const args of [[A], [A, A], [A, `${A}/.`]]) {
       for (const cmd of ['search', 'index', 'shapes']) {
         const r = ltms(cmd === 'search' ? ['search', 'zqk14word', ...args] : [cmd, ...args], { node: ['-r', stub], env });
         assert.equal(r.code, 0, `${cmd} ${args.length}: ${r.err}`);
-        assert.deepEqual(warnings(r, cmd), [again(cmd)], `${cmd}, A given ${args.length === 1 ? 'once' : 'twice'}`);
+        assert.deepEqual(warnings(r, cmd), [again(cmd)], `${cmd}, A given as ${args.map((x) => x.slice(dir.length)).join(' and ')}`);
       }
     }
   } finally { rm(dir); }
