@@ -1146,7 +1146,9 @@ interface Walker { cmd: 'search' | 'index'; done: string; whole: string; lost: s
  *  walked it, and what it holds is counted once however many paths given reach it (S375's known issue k14): a symbolic
  *  link, an entry named .jsonl that is not a regular file, a directory met again and a name that is not UTF-8, each by
  *  the directory it was met in (its device and inode) and its name, as shapes counts them, so that two names of one
- *  inode (hard links) are two. A path given that cannot be read is counted as given. */
+ *  inode (hard links) are two. The exception: index's session parts and set-aside copies are of distinct files (by
+ *  device and inode), since a file read is matched to them by that key. A path given that cannot be read is counted
+ *  as given. */
 interface SearchWalk {
   files: { path: string; named: boolean; under?: string }[]; failed: number; symlinks: number; special: number; again: number;
   /** .jsonl files under a session's own directory: counted, not read (index). */
