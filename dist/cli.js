@@ -1296,7 +1296,12 @@ const AGENT_NAME = /^agent-.*\.jsonl$/;
  *  directory, and a set-aside copy, is counted and not read; a directory holding PINS.log is not entered. */
 function walkPaths(wk, paths, classify = false) {
     const all = [];
-    let failed = 0, special = 0, again = 0;
+    let failed = 0;
+    // what is counted once however many paths given reach it (S375's known issue k14): the entries named .jsonl that are
+    // not regular files, under a path given that holds a file (`special`) and named in a no-.jsonl warning (`warnedPipes`:
+    // not counted again); the directories met again, by the directory each was met in and its name; and the names that
+    // are not UTF-8, reported once
+    const special = new Set(), warnedPipes = new Set(), again = new Set(), notUtf8 = new Set();
     // each counted entry is keyed by what it IS (lstat's device and inode), not by its name: two spellings of one file
     // (an argument that is a link) count once, and two names that differ only in bytes that are not UTF-8 count twice
     const idOf = (path, follow = false) => {
@@ -1332,12 +1337,14 @@ function walkPaths(wk, paths, classify = false) {
             all.push({ path: p, named: true });
             continue;
         }
-        // each directory with the session directory it is in (resolved), if any; a directory is entered once per argument,
-        // by its device and inode, as 0.1.2 did; the counts are of distinct entries across the arguments
-        const found = [], stack = [{ d: p, session: null }], entered = new Set();
-        let met = 0, reported = 0, pipes = 0, counted = 0;
+        // each directory with the session directory it is in (resolved), if any, and, for one met under the path given, the
+        // directory it was met in (its device and inode) and its name; a directory is entered once per argument, by its
+        // device and inode, as 0.1.2 did; the counts are of distinct entries across the arguments
+        const found = [], stack = [{ d: p, session: null, at: null }], entered = new Set();
+        const pipes = new Set();
+        let met = 0, reported = 0, counted = 0;
         while (stack.length) {
-            const { d, session } = stack.pop();
+            const { d, session, at } = stack.pop();
             const top = d === p && session === null && entered.size === 0;
             let id = null;
             try {
@@ -1347,11 +1354,13 @@ function walkPaths(wk, paths, classify = false) {
             catch { /* the listing below reports it */ }
             if (id !== null) {
                 if (entered.has(id)) {
-                    again++;
+                    if (at !== null)
+                        again.add(at);
                     continue;
                 }
                 entered.add(id);
             }
+            const here = id ?? `path:${resolve(d)}`;
             let entries;
             try {
                 entries = namedEntries(d);
@@ -1360,10 +1369,9 @@ function walkPaths(wk, paths, classify = false) {
                 if (session !== null)
                     agentFiles.set(session, null);
                 reported++;
-                const key = id ?? `path:${resolve(d)}`;
-                if (failedDirs.has(key))
+                if (failedDirs.has(here))
                     continue; // reached again through another argument: reported and counted once
-                failedDirs.add(key);
+                failedDirs.add(here);
                 const code = e?.code;
                 err(code === 'EACCES' || code === 'EPERM'
                     ? `ltms ${wk.cmd}: cannot read the directory '${d}': permission denied, so the files under it are not ${wk.done}. Check its permissions with: ls -ld${dashFor([d])} ${q(d)}`
@@ -1372,9 +1380,8 @@ function walkPaths(wk, paths, classify = false) {
                 continue;
             }
             if (classify && !top && entries.some((x) => x.valid && x.name === 'PINS.log' && x.e.isFile())) {
-                const key = id ?? `path:${resolve(d)}`;
-                if (!pinStores.has(key))
-                    pinStores.set(key, d);
+                if (!pinStores.has(here))
+                    pinStores.set(here, d);
                 counted++; // it holds files, not entered: never "holds no .jsonl file"
                 continue;
             }
@@ -1410,10 +1417,14 @@ function walkPaths(wk, paths, classify = false) {
                         counted++;
                         continue;
                     } // never read: counted, not failed
+                    reported++;
+                    const key = idOf(bytes);
+                    if (notUtf8.has(key))
+                        continue; // reached again through another argument: reported and counted once
+                    notUtf8.add(key);
                     const what = isDir ? `the directory '${join(d, escapedName(e.name))}'` : `'${join(d, escapedName(e.name))}'`;
                     err(`ltms ${wk.cmd}: cannot read ${what} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${isDir ? 'the files under it are' : 'it is'} not ${wk.done}. Give it a UTF-8 name to ${wk.cmd} it; ls -b${dashFor([d])} ${q(d)} shows the name.`);
                     failed++;
-                    reported++;
                     continue;
                 }
                 const full = join(d, name);
@@ -1433,11 +1444,11 @@ function walkPaths(wk, paths, classify = false) {
                         if (!agentFiles.has(inside))
                             agentFiles.set(inside, new Set());
                     }
-                    stack.push({ d: full, session: inside });
+                    stack.push({ d: full, session: inside, at: `${here}/${name}` });
                 }
                 else if (name.endsWith('.jsonl')) {
                     if (!e.isFile())
-                        pipes++;
+                        pipes.add(idOf(full));
                     else if (classify && session !== null) {
                         part(session, full, name);
                         counted++;
@@ -1451,15 +1462,17 @@ function walkPaths(wk, paths, classify = false) {
                 }
             }
         }
-        if (!found.length && !reported && !counted) {
+        const warned = !found.length && !reported && !counted;
+        if (warned) {
+            const n = pipes.size;
             const notes = [
                 met ? `${plural(met, 'symbolic link', 'symbolic links')} met there ${met === 1 ? 'was' : 'were'} not followed` : '',
-                pipes ? `${plural(pipes, 'entry', 'entries')} named .jsonl there ${pipes === 1 ? 'is not a regular file, such as a pipe or a socket, and was' : 'are not regular files, such as pipes or sockets, and were'} not read` : '',
+                n ? `${plural(n, 'entry', 'entries')} named .jsonl there ${n === 1 ? 'is not a regular file, such as a pipe or a socket, and was' : 'are not regular files, such as pipes or sockets, and were'} not read` : '',
             ].filter((x) => x);
             err(`ltms ${wk.cmd}: warning: '${p}' holds no .jsonl file at any depth${notes.length ? ` (${notes.join('; ')})` : ''}, so nothing in it is ${wk.done}. ${TRANSCRIPTS_HINT}`);
         }
-        else
-            special += pipes;
+        for (const x of pipes)
+            (warned ? warnedPipes : special).add(x);
         for (const f of found.sort())
             all.push({ path: f, named: false, under: p });
     }
@@ -1487,7 +1500,9 @@ function walkPaths(wk, paths, classify = false) {
     const agents = new Map();
     for (const [k, v] of agentFiles)
         agents.set(k, v === null ? null : v.size);
-    return { files, failed, symlinks: links.size, special, again, parts: parts.size, setAside: setAside.size, pinStores: [...pinStores.values()], agents, listed };
+    // an entry a no-.jsonl warning named is not counted again in the warning line, whichever path given reached it first
+    const specials = [...special].filter((x) => !warnedPipes.has(x)).length;
+    return { files, failed, symlinks: links.size, special: specials, again: again.size, parts: parts.size, setAside: setAside.size, pinStores: [...pinStores.values()], agents, listed };
 }
 /** A file too large to read within this Node's memory: skipped, with the command that gives Node enough. */
 function tooLarge(wk, file, size, limit) {

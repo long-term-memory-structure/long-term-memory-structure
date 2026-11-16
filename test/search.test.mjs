@@ -2340,3 +2340,77 @@ test("search (0.3.1, k13): beside a name that is not valid UTF-8, its twin, a va
     }
   } finally { rm(dir); }
 });
+
+// k14 (S375's known issues, for 0.3.1): the walk's comment said "every count is of distinct paths", and three counts
+// were of each argument that reached a path: an entry named .jsonl that is not a regular file (a FIFO), in the folder
+// given twice, was "2 entries" (S375's U13 refuter, out-twice), and one that a no-.jsonl warning had already named was
+// counted again in the warning line by a second argument that reached it; a directory met again (the same device and
+// inode as one entered: a bind mount) was "2 directories" with its folder given twice; and a name that is not UTF-8 was
+// reported, and counted failed, once per argument. Each is now counted once however many arguments reach it, as shapes
+// counts it: the entry by its device and inode, the directory met again by the directory it was met in and its name.
+test("search (0.3.1, k14): every count of the walk is of distinct paths: an entry named .jsonl that is not a regular file, a directory met again, and a name that is not UTF-8 are each counted once however many arguments reach them, as shapes counts them", { skip: process.platform !== 'linux' && 'FIFOs and names that are not UTF-8 are made here on Linux' }, () => {
+  const dir = tmp();
+  try {
+    const warnings = (r, cmd) => r.err.split('\n').filter((l) => l.startsWith(`ltms ${cmd}: warning: `));
+    const pipes = (cmd, n) => `ltms ${cmd}: warning: ${n === 1 ? '1 entry' : `${n} entries`} named .jsonl under the directories given ${n === 1 ? 'is not a regular file, such as a pipe or a socket, and was' : 'are not regular files, such as pipes or sockets, and were'} not read.`;
+    // three/: a transcript, two FIFOs named .jsonl, and a name that is not UTF-8; reached once, twice, and through its
+    // parent as well
+    const three = join(dir, 'p', 'three');
+    mkdirSync(three, { recursive: true });
+    writeFileSync(join(three, 'real.jsonl'), sessionWith([['zqk14word', 'ok']]));
+    for (const n of ['p1.jsonl', 'p2.jsonl']) assert.equal(spawnSync('mkfifo', [join(three, n)]).status, 0);
+    writeFileSync(Buffer.concat([Buffer.from(three + '/'), Buffer.from([0xff]), Buffer.from('.jsonl')]), sessionWith([['zqk14word', 'ok']]));
+    const bad = `'${three}/${BSL}xff.jsonl' (the bytes of its name`;
+    for (const args of [[three], [three, three], [join(dir, 'p'), three]]) {
+      const where = args.map((a) => a.slice(dir.length)).join(' ');
+      for (const cmd of ['search', 'index']) {
+        const r = ltms(cmd === 'search' ? ['search', 'zqk14word', ...args] : ['index', ...args]);
+        assert.equal(r.code, 1, `${cmd} ${where}: ${r.err}`);
+        assert.deepEqual(warnings(r, cmd), [pipes(cmd, 2)], `${cmd} ${where}`);
+        assert.equal(r.err.split(bad).length - 1, 1, `${cmd} ${where}: the name that is not UTF-8 reported once: ${r.err}`);
+        assert.deepEqual([r.lines[0].files.found, r.lines[0].files.read, r.lines[0].files.failed], [2, 1, 1], `${cmd} ${where}`);
+      }
+      const s = ltms(['shapes', ...args]);
+      assert.equal(s.code, 1, s.err);
+      assert.deepEqual(warnings(s, 'shapes'), [pipes('shapes', 2)], `shapes ${where}`);
+      assert.equal(s.err.split(bad).length - 1, 1, `shapes ${where}: ${s.err}`);
+      assert.deepEqual(s.lines[0].files, { read: '1', failed: '1' }, `shapes ${where}`);
+    }
+    // a FIFO a no-.jsonl warning names (its folder holds nothing else) is not counted again in the warning line, when
+    // another argument reaches it too, before or after
+    const hint = 'Claude Code keeps transcripts in ~/.claude/projects/<project>/<session>.jsonl.';
+    const q = join(dir, 'q'), only = join(q, 'only');
+    mkdirSync(only, { recursive: true });
+    assert.equal(spawnSync('mkfifo', [join(only, 'pipe.jsonl')]).status, 0);
+    writeFileSync(join(q, 'real.jsonl'), sessionWith([['zqk14word', 'ok']]));
+    for (const args of [[only, q], [q, only]]) {
+      const r = ltms(['search', 'zqk14word', ...args]);
+      assert.equal(r.code, 0, r.err);
+      assert.deepEqual(warnings(r, 'search'), [`ltms search: warning: '${only}' holds no .jsonl file at any depth (1 entry named .jsonl there is not a regular file, such as a pipe or a socket, and was not read), so nothing in it is searched. ${hint}`], args.join(' '));
+    }
+    // a directory met again (a stubbed stat and lstat: loop and loop2 report A's device and inode, as a bind mount of A
+    // would): with A given once or twice, 2 directories
+    const A = join(dir, 'A');
+    for (const sub of ['loop', 'loop2']) mkdirSync(join(A, sub), { recursive: true });
+    writeFileSync(join(A, 's.jsonl'), sessionWith([['zqk14word', 'ok']]));
+    writeFileSync(join(A, 'loop', 'x.jsonl'), sessionWith([['zqk14word', 'ok']]));
+    const stub = join(dir, 'same-inode.cjs');
+    writeFileSync(stub, [
+      "const fs = require('node:fs');",
+      '// the directories LTMS_TEST_ALIAS names report the device and inode of LTMS_TEST_TARGET, to stat and lstat alike',
+      "for (const name of ['statSync', 'lstatSync']) {",
+      '  const real = fs[name];',
+      '  fs[name] = function (p, o) { const s = real.apply(this, arguments); if ((process.env.LTMS_TEST_ALIAS ?? "").split(",").includes(String(p))) { const t = real.call(this, process.env.LTMS_TEST_TARGET, o); s.dev = t.dev; s.ino = t.ino; } return s; };',
+      '}',
+      "require('node:module').syncBuiltinESMExports();", ''].join('\n'));
+    const env = { ...process.env, LTMS_TEST_ALIAS: `${join(A, 'loop')},${join(A, 'loop2')}`, LTMS_TEST_TARGET: A };
+    const again = (cmd) => `ltms ${cmd}: warning: 2 directories met under the directories given have the same device and inode as one already read (a bind mount can do that), so they were not read again.`;
+    for (const args of [[A], [A, A]]) {
+      for (const cmd of ['search', 'index', 'shapes']) {
+        const r = ltms(cmd === 'search' ? ['search', 'zqk14word', ...args] : [cmd, ...args], { node: ['-r', stub], env });
+        assert.equal(r.code, 0, `${cmd} ${args.length}: ${r.err}`);
+        assert.deepEqual(warnings(r, cmd), [again(cmd)], `${cmd}, A given ${args.length === 1 ? 'once' : 'twice'}`);
+      }
+    }
+  } finally { rm(dir); }
+});
