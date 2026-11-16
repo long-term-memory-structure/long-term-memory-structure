@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, closeSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import { freemem, tmpdir } from 'node:os';
 import { constants } from 'node:buffer';
@@ -1708,4 +1708,85 @@ test("k17 (0.3.1): src/ writes package.json's bugs.url once, and the words that 
   const named = d.initializer.templateSpans.map((s) => s.expression).filter(ts.isIdentifier).map((x) => x.text);
   const [file] = constant[0].split(': ');
   assert.ok(named.some((n) => { const v = decls.get(`${file}: ${n}`)?.initializer; return v && ts.isStringLiteral(v) && v.text === url; }), `${constant[0]} names the address (${named.join(', ')})`);
+});
+
+// O9 (S375's closure read, for 0.3.1): the address prefix was a name's first 8 UTF-16 code units (for an agent's
+// transcript, agent- and the 8 after it), so a character outside the Basic Multilingual Plane at the 8th place was cut
+// in two: every id of abcdefg+emoji.jsonl held a lone \ud83d, and jq refused records' output at its header (exit 5);
+// at the 1st or the 7th place, the prefix held 7 characters. The prefix is now the name's first 8 code points (agent-
+// and the 8 after it), computed by one function, the library's addressPrefix, which every command uses.
+const EMOJI = String.fromCodePoint(0x1f600);   // two UTF-16 code units
+/** Names with a character outside the Basic Multilingual Plane at the 1st, 7th, 8th and 9th place (after agent-, for an
+ *  agent's transcript), each with its prefix written out by hand: its first 8 code points. */
+const ASTRAL_NAMES = [
+  [`${EMOJI}bcdefghij.jsonl`, `${EMOJI}bcdefgh`],
+  [`abcdef${EMOJI}hij.jsonl`, `abcdef${EMOJI}h`],
+  [`abcdefg${EMOJI}ij.jsonl`, `abcdefg${EMOJI}`],
+  [`abcdefgh${EMOJI}j.jsonl`, 'abcdefgh'],
+  [`agent-${EMOJI}bcdefghij.jsonl`, `agent-${EMOJI}bcdefgh`],
+  [`agent-abcdef${EMOJI}hij.jsonl`, `agent-abcdef${EMOJI}h`],
+  [`agent-abcdefg${EMOJI}ij.jsonl`, `agent-abcdefg${EMOJI}`],
+  [`agent-abcdefgh${EMOJI}j.jsonl`, 'agent-abcdefgh'],
+];
+/** The prefix of an address, <prefix>:L<n> or <prefix>:T<nnn>. */
+const prefixIn = (a) => a.slice(0, a.lastIndexOf(':'));
+test("O9 (0.3.1): the address prefix is a name's first 8 code points (agent- and the 8 after it), never a character cut in two: skeleton, stats, search, index and records give each name that prefix, and records' output parses in jq", () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  try {
+    const jq = spawnSync('jq', ['--version'], { encoding: 'utf8' });
+    for (const [name, prefix] of ASTRAL_NAMES) {
+      const f = join(dir, name);
+      writeFileSync(f, readFileSync(DEMO));
+      // each command's prefixes, from every address it prints
+      const got = {};
+      const sk = parsed(run('skeleton', f).out);
+      got.skeleton = [...new Set(sk.flatMap((l) => [l.a, l.ta, ...(l.r ? [l.r] : [])]).map(prefixIn))];
+      got.stats = parsed(run('stats', f).out).map((l) => l.session);
+      const se = parsed(run('search', 'npm', f).out);
+      got.search = [...new Set([...se.filter((l) => l.k === 'file').map((l) => l.p), ...se.filter((l) => l.k === 'hit').flatMap((l) => [l.ta, ...l.at.map((x) => x.a)]).map(prefixIn)])];
+      const ix = parsed(run('index', f).out).filter((l) => l.k === 'session');
+      got.index = [...new Set([...ix.map((l) => l.p), ...ix.flatMap((l) => [l.firstPrompt, l.lastPrompt, l.lastReply].filter((a) => a !== null)).map(prefixIn)])];
+      const rec = run('records', f);
+      assert.equal(rec.code, 0, `${name}: ${rec.err}`);
+      const rs = parsed(rec.out);
+      got.records = [...new Set([rs[0].source.id, ...rs.slice(1).map((r) => prefixIn(r.id))])];
+      assert.deepEqual(got, { skeleton: [prefix], stats: [prefix], search: [prefix], index: [prefix], records: [prefix] }, name);
+      assert.doesNotMatch(rec.out, /\\ud[89a-f][0-9a-f]{2}/i, `${name}: no surrogate written as an escape`);
+      // records' output parses in jq, its ids as JSON.parse reads them
+      if (!jq.error && jq.status === 0) {
+        const q = spawnSync('jq', ['-c', '.id'], { input: rec.out, encoding: 'utf8' });
+        assert.equal(q.status, 0, `${name}: jq: ${q.stderr}`);
+        assert.deepEqual(nonEmpty(q.stdout).map((l) => JSON.parse(l)), rs.map((r) => r.id ?? null), name);
+      }
+    }
+    if (jq.error || jq.status !== 0) assert.fail(`jq is not installed here (${jq.error?.code ?? jq.status}): records' output was not given to it`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("O9 (0.3.1): a name whose first 8 code points are all in the Basic Multilingual Plane keeps its prefix byte for byte, 0.3.0's first 8 UTF-16 code units: 1,000 uuid names and 1,000 agent names by the library's addressPrefix, the uuid names by ltms stats too; and addressPrefix gives each astral name its prefix", async () => {
+  const lib = await import(pathToFileURL(join(dirname(CLI), 'index.js')).href);
+  assert.equal(typeof lib.addressPrefix, 'function', 'the library exports addressPrefix');
+  // 0.3.0's rule, in UTF-16 code units
+  const old = (n) => (n.startsWith('agent-') ? `agent-${n.slice(6, 14)}` : n.slice(0, 8));
+  const hex = (i) => createHash('sha256').update(`O9 ${i}`).digest('hex');
+  const uuids = Array.from({ length: 1000 }, (_, i) => { const h = hex(i); return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}.jsonl`; });
+  const agents = Array.from({ length: 1000 }, (_, i) => `agent-a${hex(1000 + i).slice(0, 16)}.jsonl`);
+  // names in other scripts, every character in the Basic Multilingual Plane (built from code points), and short ones
+  const cp = (...c) => String.fromCodePoint(...c);
+  const others = [`${cp(0x5e9, 0x5dc, 0x5d5, 0x5dd)}-${cp(0x5e2, 0x5d5, 0x5dc, 0x5dd)}.jsonl`, `${cp(0x65e5, 0x672c, 0x8a9e, 0x306e, 0x30d5, 0x30a1, 0x30a4, 0x30eb)}.jsonl`,
+    `caf${cp(0xe9)}-cr${cp(0xe8)}me.jsonl`, `agent-${cp(0x5e9, 0x5dc, 0x5d5, 0x5dd, 0x5e2, 0x5d5, 0x5dc, 0x5dd, 0x5d0)}.jsonl`, 'a.jsonl', 'abc', '', 'agent-', 'agent-x'];
+  assert.deepEqual([...uuids, ...agents, ...others].filter((n) => lib.addressPrefix(n) !== old(n)), [], 'names whose prefix changed');
+  // an astral name: its prefix, written out by hand
+  for (const [name, prefix] of ASTRAL_NAMES) assert.equal(lib.addressPrefix(name), prefix, name);
+  // the command, over the 1,000 uuid names as files: stats gives each 0.3.0's prefix
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  try {
+    const text = [{ parentUuid: null, ...sessionEnv, type: 'user', promptSource: 'typed', message: { role: 'user', content: 'go' }, uuid: uuidOf(1) },
+      { parentUuid: uuidOf(1), ...sessionEnv, type: 'assistant', requestId: 'req_1', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, uuid: uuidOf(2) }]
+      .map((r) => JSON.stringify(r) + '\n').join('');
+    for (const n of uuids) writeFileSync(join(dir, n), text);
+    const r = spawnSync(process.execPath, [CLI, 'stats', ...uuids.map((n) => join(dir, n))], { encoding: 'utf8', timeout: 60000, maxBuffer: 1 << 26 });
+    assert.equal(r.status, 0, r.stderr.slice(0, 2000));
+    assert.deepEqual(parsed(r.stdout).map((l) => l.session), uuids.map(old));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

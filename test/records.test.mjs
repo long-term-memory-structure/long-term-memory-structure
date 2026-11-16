@@ -20,7 +20,8 @@ const DIST = process.env.LTMS_DIST || join(root, 'dist');
 const CLI = join(DIST, 'cli.js');
 const run = (...args) => spawnSync(process.execPath, [CLI, 'records', ...args], { encoding: 'utf8', maxBuffer: 256 << 20 });
 const lines = (s) => s.split('\n').filter((l) => l !== '').map((l) => JSON.parse(l));
-const prefixOf = (f) => { const n = basename(f); return n.startsWith('agent-') ? `agent-${n.slice(6, 14)}` : n.slice(0, 8); };
+// the address prefix, recomputed: the name's first 8 code points, or agent- and the 8 after it (0.3.1, O9)
+const prefixOf = (f) => { const n = basename(f); return [...n].slice(0, n.startsWith('agent-') ? 14 : 8).join(''); };
 const tmp = () => mkdtempSync(join(tmpdir(), 'ltms-records-'));
 
 /** The lines of a file by this file's own route: every newline-terminated line, and a last one without a newline. */

@@ -34,7 +34,7 @@ export interface TranscriptIndex {
 }
 /** How indexTranscript writes addresses. */
 export interface IndexOptions {
-    /** The address prefix (the CLI's prefixOf(file)). Without one, addresses are `L<n>`. */
+    /** The address prefix: ltms passes addressPrefix(<the file's name>). Without one, addresses are `L<n>`. */
     prefix?: string;
 }
 /** One transcript's index line, from its text or from a Transcript parseTranscript returned. */

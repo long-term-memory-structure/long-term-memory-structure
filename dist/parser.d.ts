@@ -354,6 +354,14 @@ export interface RecordPosition {
     offset: number;
     bytes: number;
 }
+/** The address prefix of a transcript, from its file's name (without its directory): the name's first 8 characters,
+ *  counted in code points, so that a character outside the Basic Multilingual Plane is never cut in two; for a
+ *  subagent's transcript, named agent-<id>.jsonl, whose names all start alike, agent- and the 8 code points after it.
+ *  An address is <prefix>:L<line>. ltms gives every file this prefix, in every command, and passes it to
+ *  searchTranscript and indexTranscript as `prefix`: the rule's one copy. A name whose first 8 code points (after
+ *  agent-) are all in the Basic Multilingual Plane, as a session id is, gets its first 8 UTF-16 code units, as before
+ *  0.3.1 (S375's closure read, O9). */
+export declare function addressPrefix(name: string): string;
 /** Split, parse, and REPORT. Never throws on bad input; a bad line becomes a
  *  LineProblem carrying its byte offset so the raw bytes remain reachable. */
 export declare function parseLines(text: string, opts?: ParseOptions): {

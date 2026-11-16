@@ -36,6 +36,9 @@ const FILTERS = /^--test-(?:name-pattern|skip-pattern|only|shard)(?:=|$)/;
 /** The parser's runtime exports in 0.0.5 (src/parser.ts: 12 functions and NOT_A_STRING), listed by hand, sorted. */
 const PARSER_EXPORTS = ['NOT_A_STRING', 'blocksOf', 'hasEnvelope', 'inputChannel', 'isInputTurn', 'isToolResultRecord', 'livePath',
   'parseLines', 'parseTranscript', 'pathTo', 'repairedLivePath', 'replayMask', 'turnsOf'];
+/** The parser's runtime exports added since 0.0.5: addressPrefix (0.3.1, S375's O9: the address prefix, the rule's one
+ *  copy, which every command uses). The parser's own paths export these and 0.0.5's, sorted, and nothing else. */
+const PARSER_ADDED = ['addressPrefix'];
 /** Every path 0.0.5 resolved, and the file in the package each one must name. 0.0.5 had no "exports", so every file
  *  resolved, and require also found a path without its extension (.js, then .json). The bare name is new: 0.0.5 had no
  *  main and no index.js, so it resolved nowhere. */
@@ -163,7 +166,7 @@ test('the package: the bare name, dist/parser.js and dist/parser load by import 
       const missing = PARSER_EXPORTS.filter((n) => !r.names.includes(n));
       if (missing.length) wrong.push(`${call} lacks ${missing.join(', ')}`);
       // the parser's own paths export the parser and nothing else; the bare name may export more (search's functions)
-      if (row.spec !== NAME && r.names.join() !== PARSER_EXPORTS.join()) wrong.push(`${call} exports ${r.names.join(', ')}`);
+      if (row.spec !== NAME && r.names.join() !== [...PARSER_EXPORTS, ...PARSER_ADDED].sort().join()) wrong.push(`${call} exports ${r.names.join(', ')}`);
       if (!r.same) wrong.push(`${call}: its exports are not the very functions of dist/parser.js`);
     }
   }

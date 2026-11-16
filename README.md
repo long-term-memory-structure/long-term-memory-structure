@@ -766,7 +766,7 @@ Exit status: 0 when every file was processed, 1 when a file could not be read or
 
 The parser `ltms` is built on is exported as a library: plain functions over a transcript's text, with no dependencies and no Node imports, so they run unchanged in Node and in a browser. The package is ESM: `require()` loads it on Node 20.19 or newer in Node 20, 22.12 or newer in Node 22, and any Node from 23 on. Its type declarations ship with it.
 
-- `long-term-memory-structure`: the parser (`parseTranscript`, `repairedLivePath`, `turnsOf`, and the types of what they return), the search functions that `ltms search` uses, and `indexTranscript`, the part of `ltms index`'s line that comes from a transcript.
+- `long-term-memory-structure`: the parser (`parseTranscript`, `repairedLivePath`, `turnsOf`, and the types of what they return), the search functions that `ltms search` uses, `indexTranscript`, the part of `ltms index`'s line that comes from a transcript, and `addressPrefix`, the address prefix every command gives a file, from its name.
 - `long-term-memory-structure/pin`: the file I/O of `ltms pin`, for Node only.
 - Every path that 0.0.5 resolved, such as `long-term-memory-structure/dist/parser.js`, still resolves.
 

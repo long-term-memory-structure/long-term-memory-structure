@@ -33,7 +33,8 @@ function ltms(args, opts = {}) {
 }
 const tmp = () => mkdtempSync(join(tmpdir(), 'ltms-index-'));
 const rm = (d) => rmSync(d, { recursive: true, force: true });
-const prefixOf = (f) => { const n = basename(f); return n.startsWith('agent-') ? `agent-${n.slice(6, 14)}` : n.slice(0, 8); };
+// the address prefix, recomputed: the name's first 8 code points, or agent- and the 8 after it (0.3.1, O9)
+const prefixOf = (f) => { const n = basename(f); return [...n].slice(0, n.startsWith('agent-') ? 14 : 8).join(''); };
 const uuidN = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
 /** A session of typed prompts, each answered by one assistant record (a string reply: one text block); record j is

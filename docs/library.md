@@ -31,7 +31,7 @@ for (const turn of turnsOf(t, repairedLivePath(t).path)) {
 
 ## `long-term-memory-structure`
 
-The entry point `.` (`dist/index.js`) exports 82 symbols: the parser's 47 (12 functions, a constant and 34 types), search's 31 (9 functions, 5 constants and 17 types) and the session index's 4 (a function and 3 types). Below, in five groups: the functions; what they return; the records as Claude Code writes them, which the library returns as they are; the search; and the session index.
+The entry point `.` (`dist/index.js`) exports 83 symbols: the parser's 48 (13 functions, a constant and 34 types), search's 31 (9 functions, 5 constants and 17 types) and the session index's 4 (a function and 3 types). Below, in five groups: the functions; what they return; the records as Claude Code writes them, which the library returns as they are; the search; and the session index.
 
 ### The functions
 
@@ -113,6 +113,10 @@ The entry point `.` (`dist/index.js`) exports 82 symbols: the parser's 47 (12 fu
 #### `isInputTurn(r)`
 
 `isInputTurn(r: any): boolean`: `true` when `inputChannel(r)` is a channel that does not start with `harness:`. Such a record opens a turn.
+
+#### `addressPrefix(name)`
+
+`addressPrefix(name: string): string`: the address prefix `ltms` gives a transcript, from its file's name without the directory (in Node, `path.basename(file)`): the name's first 8 characters, counted in code points, so that a character outside the Basic Multilingual Plane (an emoji) is never cut in two; for a subagent's transcript, named `agent-<id>.jsonl`, whose names all start alike, `agent-` and the 8 code points after it. An address is `<prefix>:L<line>`, the line a [`RecordPosition`](#recordposition) gives. Every command of `ltms` gives each file this prefix, and passes it to [`searchTranscript`](#searchtranscriptinput-query-options) and [`indexTranscript`](#indextranscriptinput-options) as their `prefix`: pass it there to get the addresses `ltms` prints. A name whose first 8 code points (after `agent-`) are all in the Basic Multilingual Plane, as a session id is, gets its first 8 UTF-16 code units, the prefix of 0.3.0 and before.
 
 #### `NOT_A_STRING`
 
@@ -676,7 +680,7 @@ stay whole.
 | member | meaning | when absent, null or empty |
 |---|---|---|
 | `kinds` | the kinds searched | absent: `SEARCH_DEFAULT_KINDS` |
-| `prefix` | the address prefix of `a` and `ta` (`ltms` passes the file name's first 8 characters, or `agent-` and 8) | absent or empty: addresses are `L<n>` and `T<nnn>` |
+| `prefix` | the address prefix of `a` and `ta` (`ltms` passes [`addressPrefix`](#addressprefixname) of the file's name: its first 8 characters, or `agent-` and 8, counted in code points) | absent or empty: addresses are `L<n>` and `T<nnn>` |
 
 #### `SearchResult`
 
@@ -874,7 +878,7 @@ reading of ASCII text is made of (a-z, 0-9 and the space), rounded up to whole b
 
 | member | meaning | when absent, null or empty |
 |---|---|---|
-| `prefix` | the address prefix (`ltms` passes the file name's first 8 characters, or `agent-` and 8) | absent or empty: addresses are `L<n>` |
+| `prefix` | the address prefix (`ltms` passes [`addressPrefix`](#addressprefixname) of the file's name: its first 8 characters, or `agent-` and 8, counted in code points) | absent or empty: addresses are `L<n>` |
 
 ## `long-term-memory-structure/pin`
 

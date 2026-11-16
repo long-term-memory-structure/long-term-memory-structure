@@ -22,7 +22,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { getHeapStatistics } from 'node:v8';
 import { constants as bufferConstants } from 'node:buffer';
 import { fileURLToPath } from 'node:url';
-import { parseTranscript, repairedLivePath, turnsOf, inputChannel } from './parser.js';
+import { addressPrefix, parseTranscript, repairedLivePath, turnsOf, inputChannel } from './parser.js';
 import { checkSearchSupport, parseSearchQuery, searchTranscript, sieveMayHold, sieveResult, sieveTranscript, SEARCH_DEFAULT_KINDS, SEARCH_GAP_SCRIPTS, SEARCH_KINDS } from './search.js';
 import { openSieveCache, sieveKey } from './sieve-cache.js';
 import { indexTranscript } from './session.js';
@@ -596,13 +596,10 @@ const jsonHash = (v) => {
 /** What a result's hash covers: its text, or, when it holds anything else (an image), the whole content as JSON. */
 const outHash = (c) => (Array.isArray(c) && c.some((x) => isRecord(x) && x.type !== 'text') ? jsonHash(c) : h12(flat(c)));
 const promptLen = (rec) => flat(rec?.message?.content).length;
-/** The address prefix: the file name's first 8 characters. A subagent's transcript is named
- *  agent-<id>.jsonl, and those names share their first 8 characters, so there it is agent- and the
- *  id's first 8. */
-function prefixOf(file) {
-    const name = basename(file);
-    return name.startsWith('agent-') ? `agent-${name.slice(6, 14)}` : name.slice(0, 8);
-}
+/** The address prefix of a file, as every command gives it: the library's addressPrefix of its name (its first 8 code
+ *  points; for a subagent's agent-<id>.jsonl, agent- and the 8 after it), the rule's one copy (S375's closure read,
+ *  O9). */
+const prefixOf = (file) => addressPrefix(basename(file));
 /** One line per input turn and per tool call on the live path, in path order. A call whose result
  *  was never recorded has ok, r, out and n null. */
 function skeletonOf(file, t) {

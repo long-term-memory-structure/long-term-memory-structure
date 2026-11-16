@@ -170,7 +170,7 @@ export interface RecordsBalance {
 }
 /** What the command gives recordsOf. */
 export interface RecordsOptions {
-  /** The address prefix (cli.ts's prefixOf). */
+  /** The address prefix: addressPrefix(<the file's name>), as every command gives it (parser.ts). */
   prefix: string;
   /** The file's path, as the header names it. */
   path: string;

@@ -107,7 +107,8 @@ export interface SearchQueryOptions {
 export interface SearchOptions {
   /** The kinds searched. Default SEARCH_DEFAULT_KINDS. */
   kinds?: readonly SearchKind[];
-  /** The address prefix of `a` and `ta` (the CLI's prefixOf(file)). Without one, addresses are `L<n>` and `T<nnn>`. */
+  /** The address prefix of `a` and `ta`: ltms passes addressPrefix(<the file's name>). Without one, addresses are `L<n>`
+   *  and `T<nnn>`. */
   prefix?: string;
 }
 

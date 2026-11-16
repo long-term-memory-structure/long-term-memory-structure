@@ -461,6 +461,19 @@ export interface ParseOptions {
  *  than at a copy of them. Parallel to `records`, same length, same order. */
 export interface RecordPosition { line: number; offset: number; bytes: number }
 
+/** The address prefix of a transcript, from its file's name (without its directory): the name's first 8 characters,
+ *  counted in code points, so that a character outside the Basic Multilingual Plane is never cut in two; for a
+ *  subagent's transcript, named agent-<id>.jsonl, whose names all start alike, agent- and the 8 code points after it.
+ *  An address is <prefix>:L<line>. ltms gives every file this prefix, in every command, and passes it to
+ *  searchTranscript and indexTranscript as `prefix`: the rule's one copy. A name whose first 8 code points (after
+ *  agent-) are all in the Basic Multilingual Plane, as a session id is, gets its first 8 UTF-16 code units, as before
+ *  0.3.1 (S375's closure read, O9). */
+export function addressPrefix(name: string): string {
+  let end = name.startsWith('agent-') ? 6 : 0;
+  for (let n = 0; n < 8 && end < name.length; n++) end += (name.codePointAt(end) ?? 0) > 0xffff ? 2 : 1;
+  return name.slice(0, end);
+}
+
 /** Split, parse, and REPORT. Never throws on bad input; a bad line becomes a
  *  LineProblem carrying its byte offset so the raw bytes remain reachable. */
 export function parseLines(text: string, opts: ParseOptions = {}): { records: CCRecord[]; positions: RecordPosition[]; problems: LineProblem[]; lines: number } {

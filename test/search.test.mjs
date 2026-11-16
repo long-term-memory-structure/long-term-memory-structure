@@ -1260,7 +1260,8 @@ test('command: every string an output line carries is a fixed word, a label, an 
   const r = ltms(['search', '--kind', 'all', '--substring', '--max', '0', 'e', join(here, 'fixtures')]);
   assert.equal(r.code, 0, r.err);
   const label = /^[\w.:+-]{1,64}$/, fileOf = new Map();
-  const prefixOf = (path) => { const n = path.slice(path.lastIndexOf('/') + 1); return n.startsWith('agent-') ? `agent-${n.slice(6, 14)}` : n.slice(0, 8); };
+  // the address prefix, recomputed: the name's first 8 code points, or agent- and the 8 after it (0.3.1, O9)
+  const prefixOf = (path) => { const n = path.slice(path.lastIndexOf('/') + 1); return [...n].slice(0, n.startsWith('agent-') ? 14 : 8).join(''); };
   let hits = 0, entries = 0;
   for (const l of r.lines) {
     if (l.k === 'coverage') {
@@ -1503,7 +1504,8 @@ test('command: over every fixture, the coverage adds up: files counted apart, th
   assert.equal(r.code, 0, r.err);
   const c = r.lines[0];
   const q = S.parseSearchQuery('the', { segmenter: SEG });
-  const prefixOf = (path) => { const n = path.slice(path.lastIndexOf('/') + 1); return n.startsWith('agent-') ? `agent-${n.slice(6, 14)}` : n.slice(0, 8); };
+  // the address prefix, recomputed: the name's first 8 code points, or agent- and the 8 after it (0.3.1, O9)
+  const prefixOf = (path) => { const n = path.slice(path.lastIndexOf('/') + 1); return [...n].slice(0, n.startsWith('agent-') ? 14 : 8).join(''); };
   let objects = 0, notConversation = 0;
   const sum = { turns: 0, records: 0, hitFiles: 0, hitTurns: 0, hitRecords: 0, notSearched: {}, byKind: {} };
   const byPath = new Map();
