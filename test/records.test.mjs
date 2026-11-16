@@ -664,20 +664,23 @@ test('records (S376, W5): a pipe that is full is waited on 0.1 ms at first, the 
   for (let i = 0; i < 160; i++) writeSync(fd0, demo); // about 4 MB of records: more than a pipe holds
   closeSync(fd0);
   // a module loaded first logs each write to stdout that went through (W), each that met a full pipe (E), and each wait
-  // (its milliseconds), in order
+  // (its milliseconds), in order; and says on stderr when a wait first reaches 5 ms
   const mod = importModule(d, 'waits.mjs', [
-    'const writeSync = fs.writeSync, wait = Atomics.wait; const log = [];',
+    'const writeSync = fs.writeSync, wait = Atomics.wait; const log = []; let capped = false;',
     "fs.writeSync = (fd, ...a) => { if (fd !== 1) return writeSync(fd, ...a); try { const n = writeSync(fd, ...a); log.push('W'); return n; } catch (e) { log.push(e.code === 'EAGAIN' ? 'E' : 'X'); throw e; } };",
-    'Atomics.wait = (...a) => { log.push(a[3]); return wait(...a); };',
+    "Atomics.wait = (...a) => { log.push(a[3]); if (a[3] >= 5 && !capped) { capped = true; process.stderr.write('CAPPED\\n'); } return wait(...a); };",
     "process.on('exit', () => process.stderr.write('WAITS ' + JSON.stringify(log) + '\\n'));",
   ].join('\n'));
   const child = spawn(process.execPath, ['--import', mod, CLI, 'records', f], { stdio: ['ignore', 'pipe', 'pipe'] });
-  child.stdout.pause(); // the reader waits half a second: the pipe fills, and the writes meet it full
+  child.stdout.pause(); // the reader waits: the pipe fills, and the writes meet it full
   let newlines = 0, err = '';
   child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (c) => { err += c; });
   const closed = new Promise((res) => child.on('close', res));
-  await new Promise((res) => setTimeout(res, 500));
+  // the reader starts once a wait has reached 5 ms (however long the command takes to get there), or after 20 s
+  await new Promise((res) => {
+    const late = setTimeout(res, 20000);
+    child.stderr.on('data', (c) => { err += c; if (err.includes('CAPPED\n')) { clearTimeout(late); res(); } });
+  });
   child.stdout.on('data', (c) => { for (const b of c) if (b === 10) newlines++; });
   child.stdout.resume();
   assert.equal(await closed, 0, err);
@@ -692,7 +695,7 @@ test('records (S376, W5): a pipe that is full is waited on 0.1 ms at first, the 
     waits++;
     want = Math.min(want * 2, 5);
   }
-  assert.ok(log.filter((x) => typeof x === 'number').length === waits && log.includes(5), `every wait follows a full pipe, and the half second reached the 5 ms cap: ${waits} waits`);
+  assert.ok(log.filter((x) => typeof x === 'number').length === waits && log.includes(5), `every wait follows a full pipe, and the waits reached the 5 ms cap: ${waits} waits`);
   rmSync(d, { recursive: true });
 });
 
