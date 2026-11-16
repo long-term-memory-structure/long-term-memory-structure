@@ -570,3 +570,43 @@ test('stdout closed early (| head -1): index stops quietly, exit 0', () => {
   assert.match(r.stdout, /^\{"k":"coverage"/);
   assert.ok(!/EPIPE|Error/.test(r.stderr), r.stderr);
 });
+
+// k7 (S375's known issues, for 0.3.1): --max and --skip took any run of digits, read by Number(): past 2^53 - 1 a value
+// was rounded (--skip 9007199254740993 printed "--skip 9007199254740992 passes over all"), and a longer run became 1e+23
+// or Infinity, with exit 0. They now take a whole number from 0 to 9007199254740991, as --help, the README and the
+// usage message say: the rule shapes' --floor takes (S374's U7). Past it, a usage error naming the value (exit 2).
+test('index (0.3.1, k7): --max and --skip take a whole number from 0 to 9007199254740991, as --help, the README and the usage message state; past it, a usage error naming the value (exit 2), nothing rounded', () => {
+  const dir = orderFolder();
+  try {
+    for (const opt of ['--max', '--skip']) {
+      for (const v of ['9007199254740993', '9007199254740992', '99999999999999999999', '1' + '0'.repeat(21), '9'.repeat(310)]) {
+        for (const args of [[opt, v], [`${opt}=${v}`]]) {
+          const r = ltms(['index', ...args, dir]);
+          assert.deepEqual([r.code, r.out], [2, ''], `${args.join(' ').slice(0, 40)}: ${r.err}`);
+          assert.ok(r.err.startsWith(`ltms index: ${opt} takes a whole number`) && r.err.endsWith(`'${v}' is not one.\n`), r.err);
+        }
+      }
+    }
+    // the range as each text states it, then applied at and past each end
+    const flat = (t) => t.replace(/\s+/g, ' ');
+    const help = flat(ltms(['index', '--help']).out), readme = flat(readFileSync(join(root, 'README.md'), 'utf8'));
+    const stated = [
+      ['--help, --max', help, /--max <n> the sessions printed \(default 20; 0 prints every one; a whole number from (\d+) to (\d+)\)/],
+      ['--help, --skip', help, /--skip <n> the sessions passed over before printing \(default 0; a whole number from (\d+) to (\d+)\)/],
+      ['README', readme, /`--max <n>` \(20 by default; 0 prints every one\), `--skip <n>` \(0 by default\), each a whole number from (\d+) to (\d+), and `--oldest` page the sessions/],
+      ['the usage message, --max', ltms(['index', '--max', 'x', dir]).err, /^ltms index: --max takes a whole number of sessions to print, from (\d+) to (\d+) \(0 prints every one\); 'x' is not one\.\n$/],
+      ['the usage message, --skip', ltms(['index', '--skip', 'x', dir]).err, /^ltms index: --skip takes a whole number of sessions to pass over before printing, from (\d+) to (\d+); 'x' is not one\.\n$/],
+    ].map(([where, text, re]) => { const m = re.exec(text); assert.ok(m, `${where} states the range: ${text.slice(0, 300)}`); return [where, m.slice(1)]; });
+    for (const [where, range] of stated) assert.deepEqual(range, ['0', '9007199254740991'], `${where} states the range the command applies`);
+    const hi = '9007199254740991';
+    const top = ltms(['index', '--skip', hi, '--max', hi, dir]);
+    assert.equal(top.code, 0, top.err);
+    assert.deepEqual(top.lines[0].shown, { skipped: 5, sessions: 0, order: 'newest' });
+    assert.match(top.err, new RegExp(`; 0 shown: --skip ${hi} passes over all 5\\.\\n$`), 'the closing line gives --skip digit for digit');
+    for (const opt of ['--max', '--skip']) {
+      assert.equal(ltms(['index', opt, (BigInt(hi) + 1n).toString(), dir]).code, 2, `${opt}: past the range`);
+      assert.equal(ltms(['index', opt, '0', dir]).code, 0, `${opt}: its least`);
+      assert.equal(ltms(['index', opt, '-1', dir]).code, 2, `${opt}: below the range`);
+    }
+  } finally { rm(dir); }
+});

@@ -1017,9 +1017,9 @@ test('command: usage errors exit 2 with nothing on stdout, each one echoing the 
       [['--kind=', W, dir], `ltms search: --kind '' names no kind. The kinds are ${kinds}.`],
       [['--kind', ' , ', W, dir], `ltms search: --kind ' , ' names no kind. The kinds are ${kinds}.`],
       [['--max'], 'ltms search: --max needs a number after it: the turns to print (0 prints every one).'],
-      [['--max', '-1', W, dir], "ltms search: --max takes a whole number of turns to print (0 prints every one); '-1' is not one."],
-      [['--max=2.5', W, dir], "ltms search: --max takes a whole number of turns to print (0 prints every one); '2.5' is not one."],
-      [['--max=', W, dir], "ltms search: --max takes a whole number of turns to print (0 prints every one); '' is not one."],
+      [['--max', '-1', W, dir], "ltms search: --max takes a whole number of turns to print, from 0 to 9007199254740991 (0 prints every one); '-1' is not one."],
+      [['--max=2.5', W, dir], "ltms search: --max takes a whole number of turns to print, from 0 to 9007199254740991 (0 prints every one); '2.5' is not one."],
+      [['--max=', W, dir], "ltms search: --max takes a whole number of turns to print, from 0 to 9007199254740991 (0 prints every one); '' is not one."],
       [['--count=yes', W, dir], "ltms search: --count takes no value; '--count=yes' gives it one."],
       [['--substring=1', W, dir], "ltms search: --substring takes no value; '--substring=1' gives it one."],
       [['--oldest=yes', W, dir], "ltms search: --oldest takes no value; '--oldest=yes' gives it one."],
@@ -2116,8 +2116,8 @@ test('command: --skip passes over the first matching turns; shown.skipped counts
     // usage errors, each echoing the input
     for (const [args, message] of [
       [['--skip'], 'ltms search: --skip needs a number after it: the matching turns to pass over before printing.'],
-      [['--skip', '-1', W, dir], "ltms search: --skip takes a whole number of matching turns to pass over before printing; '-1' is not one."],
-      [['--skip=x', W, dir], "ltms search: --skip takes a whole number of matching turns to pass over before printing; 'x' is not one."],
+      [['--skip', '-1', W, dir], "ltms search: --skip takes a whole number of matching turns to pass over before printing, from 0 to 9007199254740991; '-1' is not one."],
+      [['--skip=x', W, dir], "ltms search: --skip takes a whole number of matching turns to pass over before printing, from 0 to 9007199254740991; 'x' is not one."],
       [['--frobnicate', W, dir], "ltms search: unknown option '--frobnicate'. The options are --kind <list>, --substring, --max <n>, --skip <n>, --count, --oldest, --cache and --no-cache; put -- before a query or a path that starts with '-'."],
     ]) assert.deepEqual([ltms(['search', ...args]).code, ltms(['search', ...args]).err], [2, message + '\n'], args.join(' '));
   } finally { rm(dir); }
@@ -2411,6 +2411,47 @@ test("search (0.3.1, k14): every count of the walk is of distinct paths: an entr
         assert.equal(r.code, 0, `${cmd} ${args.length}: ${r.err}`);
         assert.deepEqual(warnings(r, cmd), [again(cmd)], `${cmd}, A given ${args.length === 1 ? 'once' : 'twice'}`);
       }
+    }
+  } finally { rm(dir); }
+});
+
+// k7 (S375's known issues, for 0.3.1): --max and --skip took any run of digits, read by Number(): past 2^53 - 1 a value
+// was rounded (--skip 9007199254740993 printed "--skip 9007199254740992 passes over all"), and a longer run became 1e+23
+// or Infinity, with exit 0. They now take a whole number from 0 to 9007199254740991, as --help, the README and the
+// usage message say: the rule shapes' --floor takes (S374's U7). Past it, a usage error naming the value (exit 2).
+test('search (0.3.1, k7): --max and --skip take a whole number from 0 to 9007199254740991, as --help, the README and the usage message state; past it, a usage error naming the value (exit 2), nothing rounded', () => {
+  const dir = orderFolder();
+  try {
+    for (const opt of ['--max', '--skip']) {
+      for (const v of ['9007199254740993', '9007199254740992', '99999999999999999999', '1' + '0'.repeat(21), '9'.repeat(310)]) {
+        for (const args of [[opt, v], [`${opt}=${v}`]]) {
+          const r = ltms(['search', ...args, W, dir]);
+          assert.deepEqual([r.code, r.out], [2, ''], `${args.join(' ').slice(0, 40)}: ${r.err}`);
+          assert.ok(r.err.startsWith(`ltms search: ${opt} takes a whole number`) && r.err.endsWith(`'${v}' is not one.\n`), r.err);
+        }
+      }
+    }
+    // the range as each text states it, then applied at and past each end
+    const flat = (t) => t.replace(/\s+/g, ' ');
+    const help = flat(ltms(['search', '--help']).out), readme = flat(README());
+    const stated = [
+      ['--help, --max', help, /--max <n> the turns printed \(default 20; 0 prints every one; a whole number from (\d+) to (\d+)\)/],
+      ['--help, --skip', help, /--skip <n> the matching turns passed over before printing \(default 0; a whole number from (\d+) to (\d+)\)/],
+      ['README, --max', readme, /\| `--max <n>` \| the matching turns printed: 20 unless set, every one with `0`; a whole number from (\d+) to (\d+);/],
+      ['README, --skip', readme, /\| `--skip <n>` \| the matching turns passed over before printing: 0 unless set; a whole number from (\d+) to (\d+)\./],
+      ['the usage message, --max', ltms(['search', '--max', 'x', W, dir]).err, /^ltms search: --max takes a whole number of turns to print, from (\d+) to (\d+) \(0 prints every one\); 'x' is not one\.\n$/],
+      ['the usage message, --skip', ltms(['search', '--skip', 'x', W, dir]).err, /^ltms search: --skip takes a whole number of matching turns to pass over before printing, from (\d+) to (\d+); 'x' is not one\.\n$/],
+    ].map(([where, text, re]) => { const m = re.exec(text); assert.ok(m, `${where} states the range: ${text.slice(0, 300)}`); return [where, m.slice(1)]; });
+    for (const [where, range] of stated) assert.deepEqual(range, ['0', '9007199254740991'], `${where} states the range the command applies`);
+    const hi = '9007199254740991';
+    const top = ltms(['search', '--skip', hi, '--max', hi, W, dir]);
+    assert.equal(top.code, 0, top.err);
+    assert.deepEqual(top.lines[0].shown, { skipped: 5, turns: 0, order: 'newest' });
+    assert.match(top.err, new RegExp(`; 0 shown: --skip ${hi} passes over all 5\\.\\n$`), 'the closing line gives --skip digit for digit');
+    for (const opt of ['--max', '--skip']) {
+      assert.equal(ltms(['search', opt, (BigInt(hi) + 1n).toString(), W, dir]).code, 2, `${opt}: past the range`);
+      assert.equal(ltms(['search', opt, '0', W, dir]).code, 0, `${opt}: its least`);
+      assert.equal(ltms(['search', opt, '-1', W, dir]).code, 2, `${opt}: below the range`);
     }
   } finally { rm(dir); }
 });

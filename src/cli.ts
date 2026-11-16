@@ -797,9 +797,11 @@ past the end of this field where that string is no longer than at.
                 reminders) and would match most sessions.
 --substring     find each term inside longer words too, after the same
                 folding (cat also finds concatenate)
---max <n>       the turns printed (default 20; 0 prints every one)
---skip <n>      the matching turns passed over before printing (default 0):
-                next gives it, to print the ones after those printed
+--max <n>       the turns printed (default 20; 0 prints every one; a whole
+                number from 0 to ${Number.MAX_SAFE_INTEGER})
+--skip <n>      the matching turns passed over before printing (default 0;
+                a whole number from 0 to ${Number.MAX_SAFE_INTEGER}): next gives it,
+                to print the ones after those printed
 --count         print the coverage line only
 --oldest        oldest sessions first
 --cache         keep a sieve of each file read, and answer from the sieves
@@ -1012,6 +1014,11 @@ function misorder(query: string, paths: string[]): string | null {
   return `ltms search: the query comes first, as one quoted argument, then the paths. ${given} ${intended.length ? `If the query is '${intended.join(' ')}'` : 'For example'}: ${example}`;
 }
 
+/** The value of search's and index's --max and --skip: a whole number a double holds exactly, from 0 to 2^53 - 1, else
+ *  null. Past it, Number() would round it, and the count applied and printed would not be the one given
+ *  (9007199254740993 read as 9007199254740992): the rule shapes' --floor takes (S375's known issue k7). */
+const wholeNumberOf = (v: string): number | null => (/^\d+$/.test(v) && Number.isSafeInteger(Number(v)) ? Number(v) : null);
+
 /** search's arguments, or the exit status of a usage error already reported (or of --help, --version). */
 function readSearchArgs(args: string[]): SearchSetup | number {
   const usage = (m: string): number => { err(`ltms search: ${m}`); return 2; };
@@ -1034,13 +1041,15 @@ function readSearchArgs(args: string[]): SearchSetup | number {
       else if (i + 1 < args.length) v = args[++i];
       else return usage(name === '--kind' ? `--kind needs a list of kinds after it: ${KINDS_TEXT} (e.g. --kind input,reply).` : name === '--max' ? '--max needs a number after it: the turns to print (0 prints every one).' : '--skip needs a number after it: the matching turns to pass over before printing.');
       if (name === '--max') {
-        if (!/^\d+$/.test(v)) return usage(`--max takes a whole number of turns to print (0 prints every one); '${v}' is not one.`);
-        max = Number(v);
+        const n = wholeNumberOf(v);
+        if (n === null) return usage(`--max takes a whole number of turns to print, from 0 to ${Number.MAX_SAFE_INTEGER} (0 prints every one); '${v}' is not one.`);
+        max = n;
         continue;
       }
       if (name === '--skip') {
-        if (!/^\d+$/.test(v)) return usage(`--skip takes a whole number of matching turns to pass over before printing; '${v}' is not one.`);
-        skip = Number(v);
+        const n = wholeNumberOf(v);
+        if (n === null) return usage(`--skip takes a whole number of matching turns to pass over before printing, from 0 to ${Number.MAX_SAFE_INTEGER}; '${v}' is not one.`);
+        skip = n;
         continue;
       }
       const names = v.split(',').map((x) => x.trim()).filter((x) => x !== '');
@@ -1560,9 +1569,11 @@ print twice; one deleted between them moves them up by one, so one can be
 passed over. --max 0 prints every one at once. stderr holds the warnings and
 one closing line with the totals.
 
---max <n>       the sessions printed (default 20; 0 prints every one)
---skip <n>      the sessions passed over before printing (default 0): next
-                gives it, to print the ones after those printed
+--max <n>       the sessions printed (default 20; 0 prints every one; a
+                whole number from 0 to ${Number.MAX_SAFE_INTEGER})
+--skip <n>      the sessions passed over before printing (default 0; a
+                whole number from 0 to ${Number.MAX_SAFE_INTEGER}): next gives it, to
+                print the ones after those printed
 --oldest        oldest sessions first
 
 Time: every file read is parsed whole, as search reads it, at about the same
@@ -1649,8 +1660,9 @@ function readIndexArgs(args: string[]): IndexSetup | number {
       if (eq >= 0) v = a.slice(eq + 1);
       else if (i + 1 < args.length) v = args[++i];
       else return usage(name === '--max' ? '--max needs a number after it: the sessions to print (0 prints every one).' : '--skip needs a number after it: the sessions to pass over before printing.');
-      if (!/^\d+$/.test(v)) return usage(name === '--max' ? `--max takes a whole number of sessions to print (0 prints every one); '${v}' is not one.` : `--skip takes a whole number of sessions to pass over before printing; '${v}' is not one.`);
-      if (name === '--max') max = Number(v); else skip = Number(v);
+      const n = wholeNumberOf(v);
+      if (n === null) return usage(name === '--max' ? `--max takes a whole number of sessions to print, from 0 to ${Number.MAX_SAFE_INTEGER} (0 prints every one); '${v}' is not one.` : `--skip takes a whole number of sessions to pass over before printing, from 0 to ${Number.MAX_SAFE_INTEGER}; '${v}' is not one.`);
+      if (name === '--max') max = n; else skip = n;
       continue;
     }
     if (a === '--oldest') { oldest = true; continue; }
