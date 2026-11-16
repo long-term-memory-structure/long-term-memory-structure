@@ -3304,7 +3304,7 @@ function recordsOutput() {
  *  status is 1 when a run failed, set by its last command, never by exit, which would close the interactive shell it is
  *  pasted into. In zsh, nullglob, set in the loop's own subshell, keeps a folder with no .jsonl file from stopping it
  *  ("no matches found"); in sh and bash, the pattern left unmatched is passed over. */
-const RECORDS_FOLDER_LOOP = `mkdir -p records; ( [ -z "$ZSH_VERSION" ] || setopt nullglob; n=0; for f in <folder>/*.jsonl; do [ -e "$f" ] || [ -L "$f" ] || continue; [ -f "$f" ] || { printf 'skipped, not a regular file: %s${BS}n' "$f" >&2; continue; }; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; printf 'failed: %s${BS}n' "$f" >&2; n=$((n+1)); fi; done; [ "$n" -eq 0 ] )`;
+const RECORDS_FOLDER_LOOP = `mkdir -p records; ( [ -z "\${ZSH_VERSION-}" ] || setopt nullglob; n=0; for f in <folder>/*.jsonl; do [ -e "$f" ] || [ -L "$f" ] || continue; [ -f "$f" ] || { printf 'skipped, not a regular file: %s${BS}n' "$f" >&2; continue; }; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; printf 'failed: %s${BS}n' "$f" >&2; n=$((n+1)); fi; done; [ "$n" -eq 0 ] )`;
 const RECORDS_HELP = `ltms records <file.jsonl>
 
 Prints the transcript as ltms-records/0, the record protocol's format
@@ -3489,7 +3489,7 @@ function recordsRun(args) {
         return 2;
     }
     if (isDir) {
-        err(`ltms records: '${named}' is a directory; records reads one transcript. For a folder: ${RECORDS_FOLDER_LOOP.replace('<folder>', q(named.replace(/\/+$/, '')))}`);
+        err(`ltms records: '${named}' is a directory; records reads one transcript. For a folder: ${RECORDS_FOLDER_LOOP.replace('<folder>', () => q(named.replace(/\/+$/, '')))}`);
         return 2;
     }
     // Read twice, a chunk at a time (src/records.ts says why). O_NONBLOCK: a FIFO opens at once, without waiting for a

@@ -593,6 +593,38 @@ test('records (S375 O2, S376): the folder loop is one in the README, the help an
   rmSync(d, { recursive: true });
 });
 
+// n8 and n9 (K3's closure check, S376): the loop stopped at $ZSH_VERSION under set -u in bash and sh (unbound: status 1,
+// nothing converted), and the directory message built the loop with String.prototype.replace, which reads $&, $` and $$
+// in the folder's name as patterns
+test('records (S376, n8 and n9): the folder loop runs under set -u in bash and sh, and the directory message gives a folder name holding $&, $` or $$ as written', () => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const loop = readme.split('\n').map((l) => l.trim()).find((l) => l.startsWith('mkdir -p records;'));
+  const d = tmp(), folder = join(d, 'in');
+  mkdirSync(folder);
+  writeFileSync(join(folder, 'aaaaaaaa-ok.jsonl'), '{"type":"x"}\n');
+  const env = { ...process.env }; delete env.BASH_ENV; delete env.ENV; delete env.ZSH_VERSION;
+  let ran = 0;
+  for (const sh of ['bash', 'sh']) {
+    if (spawnSync(sh, ['-c', 'true']).status !== 0) continue;
+    ran++;
+    const work = join(d, `u-${sh}`);
+    mkdirSync(work);
+    const script = `set -u; ltms() { "${process.execPath}" "${CLI}" "$@"; }; ` + loop.replace('<folder>', () => `'${folder}'`);
+    const r = spawnSync(sh, ['-c', script], { cwd: work, encoding: 'utf8', env, timeout: 60000 });
+    assert.equal(r.status, 0, `${sh} under set -u: status ${r.status}, stderr ${JSON.stringify(r.stderr)}`);
+    assert.deepEqual(readdirSync(join(work, 'records')), ['aaaaaaaa-ok.records.jsonl'], `${sh} under set -u`);
+  }
+  assert.ok(ran > 0, 'neither bash nor sh ran the loop');
+  for (const name of ['a$&b', 'a$`b', 'a$$b']) {
+    const dir = join(d, name);
+    mkdirSync(dir);
+    const r = run(dir);
+    assert.equal(r.status, 2, r.stderr);
+    assert.ok(r.stderr.includes(`for f in '${dir}'/*.jsonl`), `${name}: ${r.stderr}`);
+  }
+  rmSync(d, { recursive: true });
+});
+
 test('records (S375, O3, his word 22:43): the links the file supplies, as addresses by the first carrier, null when not in the file, and as written under supplier by the label rule: leaf, logical_parent, calls (in block order), session', () => {
   const d = tmp(), f = join(d, 'ffffffff-links.jsonl');
   const env = (uuid, parentUuid, extra) => ({ uuid, parentUuid, sessionId: 's-1', ...extra });
