@@ -651,6 +651,28 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+test('records (S376, R11): read_at is UTC, a time that ends in Z within a minute of the run\'s clock, in a zone east of UTC and in one west of it; a path given absolute, from another directory, is the header\'s path as given', () => {
+  const d = tmp(), f = join(d, 'eeeeeeee-abs.jsonl');
+  writeFileSync(f, '{"type":"x"}\n');
+  for (const TZ of ['Asia/Jerusalem', 'America/New_York']) {
+    const env = { ...process.env, TZ };
+    // the zone holds in the child: its local time is not UTC there, so a local time written with a Z would be seen
+    const offset = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(new Date().getTimezoneOffset()))'], { encoding: 'utf8', env }).stdout);
+    assert.notEqual(offset, 0, `TZ=${TZ} gives no offset from UTC here, so this test cannot see a local time`);
+    const before = Date.now();
+    const r = spawnSync(process.execPath, [CLI, 'records', f], { encoding: 'utf8', env });
+    const after = Date.now();
+    assert.equal(r.status, 0, r.stderr);
+    const at = lines(r.stdout)[0].source.read_at;
+    assert.match(at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/, `TZ=${TZ}`);
+    assert.ok(Date.parse(at) >= before - 60000 && Date.parse(at) <= after + 60000, `TZ=${TZ}: read_at ${at}, the run's clock from ${new Date(before).toISOString()} to ${new Date(after).toISOString()}`);
+  }
+  const r = spawnSync(process.execPath, [CLI, 'records', f], { encoding: 'utf8', cwd: here });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(lines(r.stdout)[0].source.path, f, 'an absolute argument, run from another directory');
+  rmSync(d, { recursive: true });
+});
+
 test('records (S376, R8): a group taken from the message id, where there is no requestId, passes the label rule: a message id that fails it prints (withheld)', () => {
   const d = tmp(), f = join(d, 'mmmmmmmm-msgid.jsonl');
   const odd = (k) => `zq odd ${k} / with a slash`;
