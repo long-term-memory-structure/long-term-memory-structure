@@ -2350,7 +2350,7 @@ test("search (0.3.1, k13): beside a name that is not valid UTF-8, its twin, a va
 // inode as one entered: a bind mount) was "2 directories" with its folder given twice; and a name that is not UTF-8 was
 // reported, and counted failed, once per argument. Each is now counted once however many arguments reach it, as shapes
 // counts it: the entry by its device and inode, the directory met again by the directory it was met in and its name.
-test("search (0.3.1, k14): every count of the walk is of distinct paths: an entry named .jsonl that is not a regular file, a directory met again, and a name that is not UTF-8 are each counted once however many arguments reach them, as shapes counts them", { skip: process.platform !== 'linux' && 'FIFOs and names that are not UTF-8 are made here on Linux' }, () => {
+test("search (0.3.1, k14): every count of the walk is of distinct paths: a symbolic link, an entry named .jsonl that is not a regular file, a directory met again, and a name that is not UTF-8 are each counted once however many arguments reach them, and two names of one inode are two, as shapes counts them", { skip: process.platform !== 'linux' && 'FIFOs and names that are not UTF-8 are made here on Linux' }, () => {
   const dir = tmp();
   try {
     const warnings = (r, cmd) => r.err.split('\n').filter((l) => l.startsWith(`ltms ${cmd}: warning: `));
@@ -2379,7 +2379,7 @@ test("search (0.3.1, k14): every count of the walk is of distinct paths: an entr
       assert.deepEqual(s.lines[0].files, { read: '1', failed: '1' }, `shapes ${where}`);
     }
     // two names of one inode (hard links) are two paths: a FIFO under both, and a file whose names are not UTF-8, each
-    // counted, and each name reported, by search and index as by shapes
+    // counted, and each name reported, by search and index as by shapes (the folder given twice, spelled apart)
     const hard = join(dir, 'hard');
     mkdirSync(hard);
     writeFileSync(join(hard, 'real.jsonl'), sessionWith([['zqk14word', 'ok']]));
@@ -2389,7 +2389,7 @@ test("search (0.3.1, k14): every count of the walk is of distinct paths: an entr
     linkSync(join(hard, 'p1.jsonl'), join(hard, 'p2.jsonl'));
     linkSync(byBytes(0xff), byBytes(0xfe));
     for (const cmd of ['search', 'index', 'shapes']) {
-      const r = ltms(cmd === 'search' ? ['search', 'zqk14word', hard, hard] : [cmd, hard, hard]);
+      const r = ltms(cmd === 'search' ? ['search', 'zqk14word', hard, `${hard}/.`] : [cmd, hard, `${hard}/.`]);
       assert.equal(r.code, 1, `${cmd}: ${r.err}`);
       assert.deepEqual(warnings(r, cmd), [pipes(cmd, 2)], `${cmd}: two names of one FIFO`);
       assert.deepEqual(notUtf8Said(r.err, cmd), [`${hard}/${BSL}xfe.jsonl`, `${hard}/${BSL}xff.jsonl`], `${cmd}: two names of one file, each reported once: ${r.err}`);
@@ -2405,7 +2405,7 @@ test("search (0.3.1, k14): every count of the walk is of distinct paths: an entr
     const [l1, l2] = ['l1.jsonl', 'l2.jsonl'].map((n) => lstatSync(join(hardLinks, n)));
     assert.ok(l2.isSymbolicLink() && l2.ino === l1.ino, 'l2 is a second name of the link l1');
     for (const cmd of ['search', 'index', 'shapes']) {
-      const r = ltms(cmd === 'search' ? ['search', 'zqk14word', hardLinks, hardLinks] : [cmd, hardLinks, hardLinks]);
+      const r = ltms(cmd === 'search' ? ['search', 'zqk14word', hardLinks, `${hardLinks}/.`] : [cmd, hardLinks, `${hardLinks}/.`]);
       assert.equal(r.code, 0, `${cmd}: ${r.err}`);
       if (cmd === 'shapes') assert.match(r.err, /^ltms shapes: 2 symbolic links met under the directories given were not followed\.$/m, r.err);
       else {
