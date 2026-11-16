@@ -651,6 +651,34 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+test('records (S376, LT): leaf and logical_parent are the address of the first record that carries the id as its uuid, with a parentUuid or without one (a sidecar), as the draft says; the links count follows; parent and dup_of still go by the records with the envelope', () => {
+  const d = tmp(), f = join(d, 'llllllll-carriers.jsonl');
+  const L = [
+    { type: 'user', uuid: 'r1', parentUuid: null, message: { content: 'q' }, promptSource: 'typed' },     // 1
+    { type: 'ai-title', uuid: 'side-1', aiTitle: 't' },                                                   // 2 side-1, carried by a sidecar alone
+    { type: 'last-prompt', leafUuid: 'side-1' },                                                          // 3 leaf: L2
+    { type: 'system', subtype: 'compact_boundary', uuid: 'b1', parentUuid: null, logicalParentUuid: 'side-1' },  // 4 logical_parent: L2
+    { type: 'ai-title', uuid: 'r2', aiTitle: 't' },                                                       // 5 r2, by a sidecar first
+    { type: 'user', uuid: 'r2', parentUuid: 'r1', message: { content: 'q' }, promptSource: 'typed' },    // 6 then with the envelope
+    { type: 'last-prompt', leafUuid: 'r2' },                                                              // 7 leaf: L5, the first carrier
+    { type: 'user', uuid: 'c1', parentUuid: 'r2', message: { content: 'q' }, promptSource: 'typed' },    // 8 parent: L6, the envelope's
+    { type: 'user', uuid: 'r1', parentUuid: null, message: { content: 'q' }, promptSource: 'typed' },     // 9 dup_of: L1
+    { type: 'ai-title', uuid: 'r1', aiTitle: 't' },                                                       // 10 a sidecar after the envelope's
+    { type: 'last-prompt', leafUuid: 'r1' },                                                              // 11 leaf: L1
+    { type: 'user', uuid: 'c2', parentUuid: 'side-1', message: { content: 'q' }, promptSource: 'typed' }, // 12 parent: none with the envelope
+    { type: 'last-prompt', leafUuid: 'gone' },                                                            // 13 leaf: null
+  ];
+  writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [, ...recs] = lines(r.stdout);
+  const P = 'llllllll';
+  assert.deepEqual([recs[2].leaf, recs[3].logical_parent, recs[6].leaf, recs[10].leaf, recs[12].leaf], [`${P}:L2`, `${P}:L2`, `${P}:L5`, `${P}:L1`, null]);
+  assert.deepEqual([recs[7].parent, recs[8].dup_of, recs[11].parent, recs[11].supplier.parent], [`${P}:L6`, `${P}:L1`, null, 'side-1']);
+  assert.match(r.stderr, /; links: 4 in the file, 1 not in this file\.$/m);
+  rmSync(d, { recursive: true });
+});
+
 test('records (S376, O11): a parentUuid on a record whose uuid is not a string, or that has none, is printed as on any record: parent, the address of the record it names or null, parent_by "supplied", and supplier.parent by the label rule; records --help and Privacy give the label rule as 1 to 64 characters', () => {
   const d = tmp(), f = join(d, 'kkkkkkkk-nouuid.jsonl');
   const L = [

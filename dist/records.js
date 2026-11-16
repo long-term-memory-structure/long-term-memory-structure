@@ -24,7 +24,10 @@
 // or null (a root, or a parent not in this file: supplier.parent then says which). A record without a parentUuid
 // (Claude Code's sidecars: last-prompt, ai-title and the like) is outside the tree: parent null, parent_by "none". A
 // record with the envelope whose uuid an earlier one with the envelope carries (a replay) names that one in dup_of.
-// Nothing is repaired here: a repair belongs to a view (the live path), not to the records.
+// The other links the file supplies: leaf and logical_parent are the address of the first record that carries the id as
+// its uuid, with a parentUuid or without one (a sidecar), and calls that of the first assistant record that holds the
+// tool_use; each null when no record in the file does. Nothing is repaired here: a repair belongs to a view (the live
+// path), not to the records.
 //
 // How it reads (S375): never the whole file. Two passes over the same bytes, a chunk at a time (1 MiB): the first finds
 // the first line that carries each uuid (a parent may be written after its child) and the versions (the header, written
@@ -214,14 +217,22 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
     const at = (line) => `${o.prefix}:L${line}`;
     // the first pass: the first line that carries each uuid, and the versions
     const firstLine = new Map();
+    /** Each uuid that a record without the envelope (a sidecar) carries before any record with it does, by that line: a
+     *  link's first carrier is the first record that carries the id as its uuid, with a parentUuid or without one (the
+     *  draft's 1.5; S375's known issue LT). Only such uuids are kept twice, so it stays small. */
+    const firstSide = new Map();
     const firstCall = new Map();
     const versions = new Set();
     const one = scanLines(read, size, chunkBytes, (bytes, line) => {
         const p = parseLine(bytes, line);
         if (typeof p === 'string')
             return;
-        if (hasEnvelope(p) && !firstLine.has(p.uuid))
-            firstLine.set(p.uuid, line);
+        if (hasEnvelope(p)) {
+            if (!firstLine.has(p.uuid))
+                firstLine.set(p.uuid, line);
+        }
+        else if (typeof p.uuid === 'string' && !firstLine.has(p.uuid) && !firstSide.has(p.uuid))
+            firstSide.set(p.uuid, line);
         if (p.type === 'assistant')
             for (const b of blocksOf(p.message))
                 if (b.type === 'tool_use' && typeof b.id === 'string' && !firstCall.has(b.id))
@@ -241,9 +252,10 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
     const byKind = Object.fromEntries(RECORD_KINDS.map((k) => [k, 0]));
     const parents = { resolved: 0, root: 0, unresolved: 0, none: 0 };
     const links = { found: 0, missing: 0 };
-    /** A link the file supplies, as an address by its first carrier; null when no record in the file carries it. */
-    const linkTo = (map, v) => {
-        const l = typeof v === 'string' ? map.get(v) : undefined;
+    /** A link the file supplies, as an address by its first carrier (`carrier` gives its line); null when no record in the
+     *  file carries it. */
+    const linkTo = (carrier, v) => {
+        const l = typeof v === 'string' ? carrier(v) : undefined;
         if (l === undefined) {
             links.missing++;
             return null;
@@ -251,6 +263,10 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
         links.found++;
         return at(l);
     };
+    /** The first record that carries an id as its uuid, with the envelope or without (leaf, logical_parent). */
+    const uuidCarrier = (id) => firstSide.get(id) ?? firstLine.get(id);
+    /** The first assistant record that holds a tool_use with the id (calls). */
+    const callCarrier = (id) => firstCall.get(id);
     let dupOf = 0, written = 0, text = '', held = 0;
     const two = scanLines(read, size, chunkBytes, (bytes, line, offset) => {
         const src = { kind: 'line', line, offset, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
@@ -313,17 +329,17 @@ export function writeRecords(read, size, o, write, chunkBytes = RECORDS_CHUNK) {
             // the other links the file supplies (his word, S375 22:43: O3), each as written too
             let leaf, logicalParent, calls;
             if ('leafUuid' in p) {
-                leaf = linkTo(firstLine, p.leafUuid);
+                leaf = linkTo(uuidCarrier, p.leafUuid);
                 supplier.leaf = valueAt(p, 'leafUuid');
             }
             if ('logicalParentUuid' in p) {
-                logicalParent = linkTo(firstLine, p.logicalParentUuid);
+                logicalParent = linkTo(uuidCarrier, p.logicalParentUuid);
                 supplier.logical_parent = valueAt(p, 'logicalParentUuid');
             }
             // the block's tool_use_id as the file holds it, which need not be the string the type says
             const results = p.type === 'user' ? blocksOf(p.message).filter((b) => b.type === 'tool_result') : [];
             if (results.length) {
-                calls = results.map((b) => linkTo(firstCall, b.tool_use_id));
+                calls = results.map((b) => linkTo(callCarrier, b.tool_use_id));
                 supplier.calls = results.map((b) => { const v = b.tool_use_id; return typeof v === 'string' ? shown(v) : WITHHELD; });
             }
             const session = valueAt(p, 'sessionId');

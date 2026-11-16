@@ -3340,10 +3340,13 @@ A record, one per line of the file:
   parent        the address of the record its parentUuid names (the first
                 record with a uuid and a parentUuid that carries it), or null
   leaf          the address of the record its leafUuid names (a last-prompt
-                marker's: the session's head), or null when not in the file
+                marker's: the session's head): the first record that carries
+                it as its uuid, with a parentUuid or without one; or null
+                when no record in the file does
   logical_parent
                 the address of the record its logicalParentUuid names (a
-                compaction's boundary: the record before it), or null
+                compaction's boundary: the record before it), as leaf's, or
+                null
   calls         a user record's that holds tool_result blocks: for each, in
                 order, the address of the first assistant record holding its
                 tool_use, or null when not in the file
