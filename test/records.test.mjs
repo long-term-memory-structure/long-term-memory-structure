@@ -621,6 +621,29 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+test('records (S376, CS): a write to stdout that fails after one line was written says so in the singular, "after 1 of their lines was written", in the words shapes shares', () => {
+  const d = tmp(), f = synthetic(d);
+  // the second write to stdout fails as a reader that stopped makes it fail: the first, the header, was written whole
+  const mod = importModule(d, 'epipe2.mjs', [
+    'const writeSync = fs.writeSync; let calls = 0;',
+    "fs.writeSync = (fd, ...a) => { if (fd === 1 && ++calls === 2) { const e = new Error('write EPIPE'); e.code = 'EPIPE'; throw e; } return writeSync(fd, ...a); };",
+  ].join('\n'));
+  const r = spawnSync(process.execPath, ['--import', mod, CLI, 'records', f], { encoding: 'utf8', maxBuffer: 64 << 20 });
+  assert.equal(r.status, 1, r.stderr);
+  assert.equal(lines(r.stdout).length, 1, 'the header was written, and nothing after it');
+  assert.match(r.stderr, /^ltms records: '.*': the records were cut: writing them to stdout failed \(EPIPE: the reader stopped before the end\) after 1 of their lines was written; the second read stopped there, so they are not a view of it\.$/m);
+  // shapes' list of one line, cut at its first write: the same words, the noun in the singular too
+  if (existsSync('/dev/full')) {
+    const one = join(d, 'one.jsonl'); writeFileSync(one, '{"type":"user"}\n');
+    const fd = openSync('/dev/full', 'w');
+    let s;
+    try { s = spawnSync(process.execPath, [CLI, 'shapes', '--unlisted', one], { stdio: ['ignore', fd, 'pipe'], encoding: 'utf8' }); } finally { closeSync(fd); }
+    assert.equal(s.status, 1, s.stderr);
+    assert.match(s.stderr, /the list was cut: writing it to stdout failed \(ENOSPC: the disk is full\) after 0 of its 1 line were written; the rest were not, or not whole\./);
+  }
+  rmSync(d, { recursive: true });
+});
+
 test('records (S375, R6 of the closure check): a FIFO is refused before it is opened, so a writer already waiting on it is not joined and ended: its data reaches a reader that comes later, whole', { skip: process.platform === 'win32' && 'no FIFOs on win32' }, async () => {
   const d = tmp(), fifo = join(d, 'waiting.fifo');
   assert.equal(spawnSync('mkfifo', [fifo]).status, 0);

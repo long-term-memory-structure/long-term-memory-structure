@@ -3142,11 +3142,14 @@ function linesIn(parts, n) {
 }
 /** What a write to stdout that failed cut: its error, and how many of the output's lines were written before it. */
 function shapesCut(what, e, wrote, of) {
-    return `the ${what} was cut: writing it to stdout failed (${writeFailure(e)}) after ${wrote} of its ${of} lines were written; the rest were not, or not whole.`;
+    return `the ${what} was cut: ${writeFailure(e, 'it', wrote, `its ${plural(of, 'line', 'lines')}`)}; the rest were not, or not whole.`;
 }
-/** Why a write to stdout failed, in the words shapes and records both print. */
-function writeFailure(e) {
-    return e.code === 'EPIPE' ? 'EPIPE: the reader stopped before the end' : e.code === 'ENOSPC' ? 'ENOSPC: the disk is full' : (e.code ?? 'an error');
+/** A write to stdout that failed, in the words shapes and records both print: what was being written (`it`, `them`), why
+ *  it failed, and how many of `ofLines` were written before it, the verb agreeing with that number ("after 1 of their
+ *  lines was written", "after 0 ... were": S375's closure check, CS). */
+function writeFailure(e, what, wrote, ofLines) {
+    const why = e.code === 'EPIPE' ? 'EPIPE: the reader stopped before the end' : e.code === 'ENOSPC' ? 'ENOSPC: the disk is full' : (e.code ?? 'an error');
+    return `writing ${what} to stdout failed (${why}) after ${wrote} of ${ofLines} ${wrote === 1 ? 'was' : 'were'} written`;
 }
 /** --check: every line of a report against its language (the vocabulary given, the report's own allowed list). Each
  *  message says what is wrong in plain words, by the line and the field that failed or the place it stands in, and
@@ -3491,7 +3494,7 @@ function recordsRun(args) {
     catch (e) {
         if (e instanceof RecordsOutputCut) {
             outCutSaid = true;
-            err(`ltms records: '${file}': the records were cut: writing them to stdout failed (${writeFailure(e.failure)}) after ${e.lines} of their lines were written; the second read stopped there, so they are not a view of it.`);
+            err(`ltms records: '${file}': the records were cut: ${writeFailure(e.failure, 'them', e.lines, 'their lines')}; the second read stopped there, so they are not a view of it.`);
             return 1;
         }
         if (e instanceof RecordsLineTooLong) {

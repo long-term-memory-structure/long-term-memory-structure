@@ -2621,11 +2621,14 @@ function linesIn(parts: readonly string[], n: number): number {
 }
 /** What a write to stdout that failed cut: its error, and how many of the output's lines were written before it. */
 function shapesCut(what: 'report' | 'list', e: NodeJS.ErrnoException, wrote: number, of: number): string {
-  return `the ${what} was cut: writing it to stdout failed (${writeFailure(e)}) after ${wrote} of its ${of} lines were written; the rest were not, or not whole.`;
+  return `the ${what} was cut: ${writeFailure(e, 'it', wrote, `its ${plural(of, 'line', 'lines')}`)}; the rest were not, or not whole.`;
 }
-/** Why a write to stdout failed, in the words shapes and records both print. */
-function writeFailure(e: NodeJS.ErrnoException): string {
-  return e.code === 'EPIPE' ? 'EPIPE: the reader stopped before the end' : e.code === 'ENOSPC' ? 'ENOSPC: the disk is full' : (e.code ?? 'an error');
+/** A write to stdout that failed, in the words shapes and records both print: what was being written (`it`, `them`), why
+ *  it failed, and how many of `ofLines` were written before it, the verb agreeing with that number ("after 1 of their
+ *  lines was written", "after 0 ... were": S375's closure check, CS). */
+function writeFailure(e: NodeJS.ErrnoException, what: 'it' | 'them', wrote: number, ofLines: string): string {
+  const why = e.code === 'EPIPE' ? 'EPIPE: the reader stopped before the end' : e.code === 'ENOSPC' ? 'ENOSPC: the disk is full' : (e.code ?? 'an error');
+  return `writing ${what} to stdout failed (${why}) after ${wrote} of ${ofLines} ${wrote === 1 ? 'was' : 'were'} written`;
 }
 
 
@@ -2894,7 +2897,7 @@ function recordsRun(args: string[]): number {
     try { const now = statSync(file); replaced = now.dev !== st.dev || now.ino !== st.ino; } catch { replaced = true; }
     if (replaced) warnings.push(`ltms records: warning: '${file}' now names another file than the one read (it was replaced or removed while it was read): the records are of the file as it was when it was opened.`);
   } catch (e) {
-    if (e instanceof RecordsOutputCut) { outCutSaid = true; err(`ltms records: '${file}': the records were cut: writing them to stdout failed (${writeFailure(e.failure)}) after ${e.lines} of their lines were written; the second read stopped there, so they are not a view of it.`); return 1; }
+    if (e instanceof RecordsOutputCut) { outCutSaid = true; err(`ltms records: '${file}': the records were cut: ${writeFailure(e.failure, 'them', e.lines, 'their lines')}; the second read stopped there, so they are not a view of it.`); return 1; }
     if (e instanceof RecordsLineTooLong) { err(`ltms records: '${file}': ${e.message}, so it cannot be converted; what was written before it is incomplete.`); return 1; }
     if (typeof (e as NodeJS.ErrnoException)?.code === 'string') { err(`${cannotRead('records', file, e)} What was written before it is incomplete.`); return 1; }
     throw e;
