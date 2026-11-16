@@ -243,6 +243,29 @@ function kindPaths(V: ShapesVocabulary): string[] {
   return V.kindPath === null ? [] : [...new Set([V.kindPath, ...V.sub.values()])];
 }
 
+/** An --allow argument, split: its path, and its value (null for a path alone). */
+function allowParts(s: string): [path: string, value: string | null] {
+  const i = s.indexOf('=');
+  return i < 0 ? [s, null] : [s.slice(0, i), s.slice(i + 1)];
+}
+/** The rule an --allow argument breaks, or null when --allow takes it: 'path', its path breaks the path rule; 'value', its
+ *  value the label rule; 'kind', its value holds ':' at a path of kp, the kind path or a sub-kind's path (kindPaths). One
+ *  function for --allow and for --check's reading of a report's allowed list (S375's known issue k1). */
+function allowRule(s: string, kp: readonly string[]): 'path' | 'value' | 'kind' | null {
+  const [p, val] = allowParts(s);
+  if (!VOCAB_PATH.test(p)) return 'path';
+  if (val !== null && !LABEL.test(val)) return 'value';
+  if (val !== null && val.includes(':') && kp.includes(p)) return 'kind';
+  return null;
+}
+/** Each rule --allow applies, as --check names the one an entry of a report's allowed list breaks: the module's own words,
+ *  which hold no part of the entry (the kind paths are the vocabulary's). */
+const ALLOW_RULE_WORDS = {
+  path: (): string => `its path is not written like .message.newField or .list[].name: ${PATH_RULE}`,
+  value: (): string => `its value is not one by the label rule: ${VALUE_RULE}`,
+  kind: (kp: readonly string[]): string => `its value holds ':' at the kind path or at a sub-kind's path (${kp.join(', ')}), where ':' joins a kind and its sub-kind in a report (kind:subkind)`,
+};
+
 /** --allow <path> or --allow <path>=<value>: the person names a key path (and with it every path above it) or a value, to
  *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. A value
  *  at a kind path may not hold ':' (S374's closure read, U15): it would merge two kinds of record into one line. */
@@ -250,11 +273,11 @@ export function applyAllow(V: ShapesVocabulary, specs: readonly string[]): strin
   const allowed: string[] = [];
   const kp = kindPaths(V);
   for (const s of specs) {
-    const i = s.indexOf('=');
-    const p = i < 0 ? s : s.slice(0, i), val = i < 0 ? null : s.slice(i + 1);
-    if (!VOCAB_PATH.test(p)) throw usage(`--allow '${s}': the path must be written like .message.newField or .list[].name: ${PATH_RULE}.`);
-    if (val !== null && !LABEL.test(val)) throw usage(`--allow '${s}': the value must pass the label rule (at most 64 ASCII letters, digits and . _ : + -).`);
-    if (val !== null && val.includes(':') && kp.includes(p)) throw usage(`--allow '${s}': a value at the kind path or at a sub-kind's path (${kp.join(', ')}) may not hold ':', which joins a kind and its sub-kind in a report (kind:subkind), so the value could print as another kind; '${val}' holds one. Such a value cannot be allowed: it prints as (unlisted).`);
+    const [p, val] = allowParts(s);
+    const rule = allowRule(s, kp);
+    if (rule === 'path') throw usage(`--allow '${s}': the path must be written like .message.newField or .list[].name: ${PATH_RULE}.`);
+    if (rule === 'value') throw usage(`--allow '${s}': the value must pass the label rule (at most 64 ASCII letters, digits and . _ : + -).`);
+    if (rule === 'kind') throw usage(`--allow '${s}': a value at the kind path or at a sub-kind's path (${kp.join(', ')}) may not hold ':', which joins a kind and its sub-kind in a report (kind:subkind), so the value could print as another kind; '${val}' holds one. Such a value cannot be allowed: it prints as (unlisted).`);
     const re = /\.[^.[]+|\[\]/g;
     let m: RegExpExecArray | null, acc = '';
     while ((m = re.exec(p)) !== null) { acc += m[0]; V.paths.add(acc); }
@@ -983,7 +1006,12 @@ export type ShapesCheck =
      *  (its first line's k is unlisted-review); or its first line is no report's first line. */
     why: 'empty' | 'blank' | 'not JSON' | 'not an object' | 'unlisted' | 'not a first line';
   }
-  | { k: 'bad-allowed' }
+  | {
+    k: 'bad-allowed';
+    /** Each string of the first line's allowed list that --allow refuses: its index in the list, from 0, and the rule it
+     *  breaks, in the module's words, which hold no part of it (S375's known issue k1). Nothing else is checked. */
+    refused: { index: number; rule: string }[];
+  }
   | {
     k: 'checked';
     /** The report's lines, checked: the file's lines but the blank lines at its end. */
@@ -997,12 +1025,13 @@ export type ShapesCheck =
     allowed: string[];
   };
 /** --check: is this report, every token of it and every line in its place, in its language? The language is the
- *  vocabulary given and the report's own allowed list (its first line); the report is checked whole as the writer checks
- *  it (checkRows), its floor the one its first line states. It cannot tell whether ltms wrote it, nor whether its counts
- *  are true. What ltms never writes, and an editor or a shell can add (S374's closure read, U10), is named for what it
- *  is: a byte-order mark before line 1, a carriage return at the end of a line (CR LF), blank lines after the last line;
- *  each is a problem, and is taken off for the rest of the check, so that the lines are checked as they would be without
- *  it. */
+ *  vocabulary given and the report's own allowed list (its first line), each of whose strings --allow must take: one it
+ *  refuses is named (bad-allowed), by its index and the rule it breaks, and nothing else is checked. The report is
+ *  checked whole as the writer checks it (checkRows), its floor the one its first line states. It cannot tell whether
+ *  ltms wrote it, nor whether its counts are true. What ltms never writes, and an editor or a shell can add (S374's
+ *  closure read, U10), is named for what it is: a byte-order mark before line 1, a carriage return at the end of a line
+ *  (CR LF), blank lines after the last line; each is a problem, and is taken off for the rest of the check, so that the
+ *  lines are checked as they would be without it. */
 export function checkReport(text: string, V: ShapesVocabulary): ShapesCheck {
   const own: ShapesProblem[] = [];
   if (text.charCodeAt(0) === 0xfeff) { own.push({ line: 1, why: 'byte-order mark' }); text = text.slice(1); }
@@ -1023,9 +1052,15 @@ export function checkReport(text: string, V: ShapesVocabulary): ShapesCheck {
   if (!isObj(header)) return { k: 'not-a-report', why: 'not an object' };
   if (header.k === 'unlisted-review') return { k: 'not-a-report', why: 'unlisted' };
   if (header.k !== 'shapes' || !Array.isArray(header.allowed)) return { k: 'not-a-report', why: 'not a first line' };
-  let allowed: string[];
-  try { allowed = applyAllow(V, header.allowed.filter((s): s is string => typeof s === 'string')); }
-  catch (e) { if (e instanceof ShapesUsageError) return { k: 'bad-allowed' }; throw e; }
+  // the report's language is made of its allowed list: each string --allow refuses is named, by its index and the rule it
+  // breaks, and the report is not checked further (an entry that is not a string fails the first line's 'allowed')
+  const kp = kindPaths(V), refused: { index: number; rule: string }[] = [];
+  header.allowed.forEach((s: unknown, index: number) => {
+    const rule = typeof s === 'string' ? allowRule(s, kp) : null;
+    if (rule !== null) refused.push({ index, rule: ALLOW_RULE_WORDS[rule](kp) });
+  });
+  if (refused.length) return { k: 'bad-allowed', refused };
+  const allowed = applyAllow(V, header.allowed.filter((s): s is string => typeof s === 'string'));
   const problems = [...own, ...checkRows(rows, shapesLanguage(V, allowed))].sort((a, b) => a.line - b.line);
   return { k: 'checked', lines: n, rows: all, problems, allowed };
 }

@@ -259,6 +259,31 @@ export function loadVocabulary(file) {
 function kindPaths(V) {
     return V.kindPath === null ? [] : [...new Set([V.kindPath, ...V.sub.values()])];
 }
+/** An --allow argument, split: its path, and its value (null for a path alone). */
+function allowParts(s) {
+    const i = s.indexOf('=');
+    return i < 0 ? [s, null] : [s.slice(0, i), s.slice(i + 1)];
+}
+/** The rule an --allow argument breaks, or null when --allow takes it: 'path', its path breaks the path rule; 'value', its
+ *  value the label rule; 'kind', its value holds ':' at a path of kp, the kind path or a sub-kind's path (kindPaths). One
+ *  function for --allow and for --check's reading of a report's allowed list (S375's known issue k1). */
+function allowRule(s, kp) {
+    const [p, val] = allowParts(s);
+    if (!VOCAB_PATH.test(p))
+        return 'path';
+    if (val !== null && !LABEL.test(val))
+        return 'value';
+    if (val !== null && val.includes(':') && kp.includes(p))
+        return 'kind';
+    return null;
+}
+/** Each rule --allow applies, as --check names the one an entry of a report's allowed list breaks: the module's own words,
+ *  which hold no part of the entry (the kind paths are the vocabulary's). */
+const ALLOW_RULE_WORDS = {
+    path: () => `its path is not written like .message.newField or .list[].name: ${PATH_RULE}`,
+    value: () => `its value is not one by the label rule: ${VALUE_RULE}`,
+    kind: (kp) => `its value holds ':' at the kind path or at a sub-kind's path (${kp.join(', ')}), where ':' joins a kind and its sub-kind in a report (kind:subkind)`,
+};
 /** --allow <path> or --allow <path>=<value>: the person names a key path (and with it every path above it) or a value, to
  *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. A value
  *  at a kind path may not hold ':' (S374's closure read, U15): it would merge two kinds of record into one line. */
@@ -266,13 +291,13 @@ export function applyAllow(V, specs) {
     const allowed = [];
     const kp = kindPaths(V);
     for (const s of specs) {
-        const i = s.indexOf('=');
-        const p = i < 0 ? s : s.slice(0, i), val = i < 0 ? null : s.slice(i + 1);
-        if (!VOCAB_PATH.test(p))
+        const [p, val] = allowParts(s);
+        const rule = allowRule(s, kp);
+        if (rule === 'path')
             throw usage(`--allow '${s}': the path must be written like .message.newField or .list[].name: ${PATH_RULE}.`);
-        if (val !== null && !LABEL.test(val))
+        if (rule === 'value')
             throw usage(`--allow '${s}': the value must pass the label rule (at most 64 ASCII letters, digits and . _ : + -).`);
-        if (val !== null && val.includes(':') && kp.includes(p))
+        if (rule === 'kind')
             throw usage(`--allow '${s}': a value at the kind path or at a sub-kind's path (${kp.join(', ')}) may not hold ':', which joins a kind and its sub-kind in a report (kind:subkind), so the value could print as another kind; '${val}' holds one. Such a value cannot be allowed: it prints as (unlisted).`);
         const re = /\.[^.[]+|\[\]/g;
         let m, acc = '';
@@ -1097,12 +1122,13 @@ export function writeReport(lines, Lg, write) {
     return done;
 }
 /** --check: is this report, every token of it and every line in its place, in its language? The language is the
- *  vocabulary given and the report's own allowed list (its first line); the report is checked whole as the writer checks
- *  it (checkRows), its floor the one its first line states. It cannot tell whether ltms wrote it, nor whether its counts
- *  are true. What ltms never writes, and an editor or a shell can add (S374's closure read, U10), is named for what it
- *  is: a byte-order mark before line 1, a carriage return at the end of a line (CR LF), blank lines after the last line;
- *  each is a problem, and is taken off for the rest of the check, so that the lines are checked as they would be without
- *  it. */
+ *  vocabulary given and the report's own allowed list (its first line), each of whose strings --allow must take: one it
+ *  refuses is named (bad-allowed), by its index and the rule it breaks, and nothing else is checked. The report is
+ *  checked whole as the writer checks it (checkRows), its floor the one its first line states. It cannot tell whether
+ *  ltms wrote it, nor whether its counts are true. What ltms never writes, and an editor or a shell can add (S374's
+ *  closure read, U10), is named for what it is: a byte-order mark before line 1, a carriage return at the end of a line
+ *  (CR LF), blank lines after the last line; each is a problem, and is taken off for the rest of the check, so that the
+ *  lines are checked as they would be without it. */
 export function checkReport(text, V) {
     const own = [];
     if (text.charCodeAt(0) === 0xfeff) {
@@ -1144,15 +1170,17 @@ export function checkReport(text, V) {
         return { k: 'not-a-report', why: 'unlisted' };
     if (header.k !== 'shapes' || !Array.isArray(header.allowed))
         return { k: 'not-a-report', why: 'not a first line' };
-    let allowed;
-    try {
-        allowed = applyAllow(V, header.allowed.filter((s) => typeof s === 'string'));
-    }
-    catch (e) {
-        if (e instanceof ShapesUsageError)
-            return { k: 'bad-allowed' };
-        throw e;
-    }
+    // the report's language is made of its allowed list: each string --allow refuses is named, by its index and the rule it
+    // breaks, and the report is not checked further (an entry that is not a string fails the first line's 'allowed')
+    const kp = kindPaths(V), refused = [];
+    header.allowed.forEach((s, index) => {
+        const rule = typeof s === 'string' ? allowRule(s, kp) : null;
+        if (rule !== null)
+            refused.push({ index, rule: ALLOW_RULE_WORDS[rule](kp) });
+    });
+    if (refused.length)
+        return { k: 'bad-allowed', refused };
+    const allowed = applyAllow(V, header.allowed.filter((s) => typeof s === 'string'));
     const problems = [...own, ...checkRows(rows, shapesLanguage(V, allowed))].sort((a, b) => a.line - b.line);
     return { k: 'checked', lines: n, rows: all, problems, allowed };
 }

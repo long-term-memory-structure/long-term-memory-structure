@@ -282,6 +282,12 @@ export type ShapesCheck = {
     why: 'empty' | 'blank' | 'not JSON' | 'not an object' | 'unlisted' | 'not a first line';
 } | {
     k: 'bad-allowed';
+    /** Each string of the first line's allowed list that --allow refuses: its index in the list, from 0, and the rule it
+     *  breaks, in the module's words, which hold no part of it (S375's known issue k1). Nothing else is checked. */
+    refused: {
+        index: number;
+        rule: string;
+    }[];
 } | {
     k: 'checked';
     /** The report's lines, checked: the file's lines but the blank lines at its end. */
@@ -295,12 +301,13 @@ export type ShapesCheck = {
     allowed: string[];
 };
 /** --check: is this report, every token of it and every line in its place, in its language? The language is the
- *  vocabulary given and the report's own allowed list (its first line); the report is checked whole as the writer checks
- *  it (checkRows), its floor the one its first line states. It cannot tell whether ltms wrote it, nor whether its counts
- *  are true. What ltms never writes, and an editor or a shell can add (S374's closure read, U10), is named for what it
- *  is: a byte-order mark before line 1, a carriage return at the end of a line (CR LF), blank lines after the last line;
- *  each is a problem, and is taken off for the rest of the check, so that the lines are checked as they would be without
- *  it. */
+ *  vocabulary given and the report's own allowed list (its first line), each of whose strings --allow must take: one it
+ *  refuses is named (bad-allowed), by its index and the rule it breaks, and nothing else is checked. The report is
+ *  checked whole as the writer checks it (checkRows), its floor the one its first line states. It cannot tell whether
+ *  ltms wrote it, nor whether its counts are true. What ltms never writes, and an editor or a shell can add (S374's
+ *  closure read, U10), is named for what it is: a byte-order mark before line 1, a carriage return at the end of a line
+ *  (CR LF), blank lines after the last line; each is a problem, and is taken off for the rest of the check, so that the
+ *  lines are checked as they would be without it. */
 export declare function checkReport(text: string, V: ShapesVocabulary): ShapesCheck;
 /** --unlisted: NOT a report. The names and values the vocabulary lacks, read from the transcripts as written, for the
  *  person's own review before an --allow; every line says "send":false, and --check refuses the list. Exact counts. A

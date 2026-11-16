@@ -673,7 +673,7 @@ test("shapes: --check also refuses a report made with another vocabulary, a firs
     assert.equal(f('twice.jsonl', head((l) => l.replace('"allowed":[".zqa",".zqb"]', '"allowed":[".zqa",".zqa",".zqb"]'))).code, 1, 'repeated');
     const bad = f('bad-allow.jsonl', head((l) => l.replace('"allowed":[".zqa",".zqb"]', '"allowed":["zq7canary words"]')));
     assert.equal(bad.code, 1);
-    assert.match(bad.err, /its first line's allowed list holds an entry that is not an --allow argument/);
+    assert.match(bad.err, /^ltms shapes --check: line 1: allowed\[0\], an entry of its allowed list, is not an --allow argument: its path is not written like \.message\.newField/m);
     const kinds = [...ls.slice(0, -1), '{"k":"zq7canary"}', JSON.stringify({ k: 'end', lines: ls.length + 1 })];
     const k = f('kind.jsonl', kinds);
     assert.equal(k.code, 1);
@@ -2161,4 +2161,45 @@ test('shapes (0.3.1, k18): run through LTMS_DIST, each report is checked against
     assert.match(r.stdout, /^# fail 0$/m);
     assert.equal(r.status, 0, r.stderr);
   } finally { rm(tree); }
+});
+
+// k1 (S375's known issues, for 0.3.1): --check refused a report whose first line's allowed list holds an entry that
+// --allow refuses (a path that breaks the rule for a name, a value that breaks the label rule, a value with ':' at the
+// kind path or at a sub-kind's path) with one message for any such entry, naming neither the entry nor the rule. It now
+// names each such entry by its index in the list and the rule it breaks, in its own words, never the entry's text. The
+// receiver's validator refuses the same lists, by its own copy of --allow's rules (isAllowArg, since 12986c8).
+test("shapes (0.3.1, k1): --check names each entry of a report's allowed list that --allow refuses, by its index and the rule it breaks, never by its text; --allow refuses each, and the receiver's validator refuses the list", () => {
+  const dir = tmp();
+  try {
+    const R = shapes([...CC]).out.slice(0, -1).split('\n');
+    const withAllowed = (allowed) => [JSON.stringify({ ...JSON.parse(R[0]), allowed }), ...R.slice(1)].join('\n') + '\n';
+    const PATH = "its path is not written like .message.newField or .list[].name: steps, each . and a name, or [] (an array's elements), a name being an optional $ or @, then an ASCII letter or _, then ASCII letters, digits and _ : + -, at most 64 after the $ or @";
+    const VALUE = 'its value is not one by the label rule: 1 to 64 ASCII letters, digits and . _ : + -';
+    const KIND = "its value holds ':' at the kind path or at a sub-kind's path (.type, .subtype, .attachment.type), where ':' joins a kind and its sub-kind in a report (kind:subkind)";
+    // [the allowed list, each entry --allow refuses: its index and the rule]
+    const cases = [
+      [['.type=system:turn_duration'], [[0, KIND]]],
+      [['.subtype=turn:duration'], [[0, KIND]]],
+      [['.attachment.type=zq7:att'], [[0, KIND]]],
+      [['.0abc'], [[0, PATH]]],
+      [['zq7canary words'], [[0, PATH]]],
+      [['.x=zq7canary has space'], [[0, VALUE]]],
+      [['.zqa', '.type=zq7:canary'], [[1, KIND]]],
+      [['.a b', '.type=x:y', '.zqa', '.zqb=zq7 canary'], [[0, PATH], [1, KIND], [3, VALUE]]],
+    ];
+    const f = join(dir, 'r.txt');
+    for (const [allowed, refused] of cases) {
+      writeFileSync(f, withAllowed(allowed));
+      const r = shapes(['--check', f]);
+      const said = [...refused.map(([i, rule]) => `ltms shapes --check: line 1: allowed[${i}], an entry of its allowed list, is not an --allow argument: ${rule}.`),
+        `ltms shapes --check: '${f}': its first line's allowed list holds ${refused.length === 1 ? '1 entry' : `${refused.length} entries`} that --allow refuses, so the report's language cannot be made of it and nothing else in it was checked; do not send it as it is.`];
+      assert.deepEqual([r.code, r.out, r.err], [1, '', said.join('\n') + '\n'], JSON.stringify(allowed));
+      assert.ok(!/zq7|canary/.test(r.err.replaceAll(f, '')), `no text of an entry in the messages: ${r.err}`);
+      // --allow refuses each entry named, and takes the others
+      for (const [i, s] of allowed.entries()) assert.equal(shapes(['--allow', s, ...CC]).code, refused.some(([j]) => j === i) ? 2 : 0, `--allow '${s}'`);
+      // the receiver's validator refuses the list, at line 1's allowed field
+      const v = spawnSync(process.execPath, [join(here, 'shapes-validate.mjs'), f, DOCS], { encoding: 'utf8' });
+      assert.deepEqual([v.status, /first at line 1 \(allowed\)/.test(v.stderr)], [1, true], `${JSON.stringify(allowed)}: the validator: ${v.stderr}`);
+    }
+  } finally { rm(dir); }
 });

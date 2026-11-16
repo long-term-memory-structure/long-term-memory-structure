@@ -2656,7 +2656,12 @@ function shapesCheck(file: string, V: ShapesVocabulary): number {
     err(`${at}: ${what[r.why]}.`);
     return 1;
   }
-  if (r.k === 'bad-allowed') { err(`${at}: its first line's allowed list holds an entry that is not an --allow argument (a path, or a path and a value, by the rules --allow takes).`); return 1; }
+  if (r.k === 'bad-allowed') {
+    // each entry by its index and the rule it breaks, never by its text (S375's known issue k1)
+    for (const e of r.refused) err(`ltms shapes --check: line 1: allowed[${e.index}], an entry of its allowed list, is not an --allow argument: ${e.rule}.`);
+    err(`${at}: its first line's allowed list holds ${plural(r.refused.length, 'entry', 'entries')} that --allow refuses, so the report's language cannot be made of it and nothing else in it was checked; do not send it as it is.`);
+    return 1;
+  }
   const named = V.list.map((v) => `${v.name}@${v.sha256}`).join(', ');
   // a line in the language alone, but not in its place, or not written as ltms writes it (S374's closure read, S3 and U6)
   const place: Readonly<Record<string, string>> = {
