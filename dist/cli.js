@@ -3347,9 +3347,10 @@ A record, one per line of the file:
   calls         a user record's that holds tool_result blocks: for each, in
                 order, the address of the first assistant record holding its
                 tool_use, or null when not in the file
-  parent_by     "supplied" (the record has a uuid and a parentUuid), or
-                "none" (it is outside the session's tree: last-prompt,
-                ai-title and the like, and blank and malformed lines)
+  parent_by     "supplied" (the record has a parentUuid, with a uuid or
+                without one), or "none" (it is outside the session's tree:
+                last-prompt, ai-title and the like, and blank and malformed
+                lines)
   group         an assistant record's requestId (its message's id where it
                 has none): the records of one response share it
   dup_of        the first record with a uuid and a parentUuid that carries
@@ -3360,7 +3361,7 @@ A record, one per line of the file:
                 in this file shows here and not in parent); version; leaf,
                 logical_parent and calls as written (one not in the file
                 shows here); session (its sessionId). Each
-                as written when it passes the label rule (at most 64 ASCII
+                as written when it passes the label rule (1 to 64 ASCII
                 letters, digits and . _ : + -), else (withheld), as is a
                 value that is not a string; so are group, time's as_written
                 and the header's versions. A parentUuid that is not a string

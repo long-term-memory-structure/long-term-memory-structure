@@ -651,6 +651,39 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+test('records (S376, O11): a parentUuid on a record whose uuid is not a string, or that has none, is printed as on any record: parent, the address of the record it names or null, parent_by "supplied", and supplier.parent by the label rule; records --help and Privacy give the label rule as 1 to 64 characters', () => {
+  const d = tmp(), f = join(d, 'kkkkkkkk-nouuid.jsonl');
+  const L = [
+    { type: 'user', uuid: 'a1', parentUuid: null, message: { content: 'q' }, promptSource: 'typed' },                // 1 a root
+    { type: 'user', parentUuid: 'a1', message: { content: 'q' } },                                                 // 2 no uuid: its parent is L1
+    { type: 'user', uuid: 12345, parentUuid: 'a1', message: { content: 'q' } },                                    // 3 a uuid that is a number
+    { type: 'user', parentUuid: 'nowhere', message: { content: 'q' } },                                            // 4 a parent not in the file
+    { type: 'user', parentUuid: null, message: { content: 'q' } },                                                 // 5 a root without a uuid
+    { type: 'user', uuid: ['zq'], parentUuid: 'zq odd parent / with a slash', message: { content: 'q' } },         // 6 a parent that fails the rule
+    { type: 'user', parentUuid: 7, message: { content: 'q' } },                                                    // 7 a parentUuid that is a number
+    { type: 'ai-title', uuid: 'a9', aiTitle: 't' },                                                                // 8 no parentUuid: outside the tree
+  ];
+  writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [, ...recs] = lines(r.stdout);
+  const P = 'kkkkkkkk';
+  assert.deepEqual(recs.map((x) => [x.parent, x.parent_by, x.supplier?.parent]), [
+    [null, 'supplied', null], [`${P}:L1`, 'supplied', 'a1'], [`${P}:L1`, 'supplied', 'a1'], [null, 'supplied', 'nowhere'],
+    [null, 'supplied', null], [null, 'supplied', '(withheld)'], [null, 'supplied', '(withheld)'], [null, 'none', undefined],
+  ]);
+  assert.deepEqual([recs[1].supplier.id, recs[2].supplier.id, recs[5].supplier.id], [undefined, '(withheld)', '(withheld)']);
+  assert.doesNotMatch(r.stdout, /zq/);
+  assert.match(r.stderr, /; parents: 2 in the file, 2 roots, 3 not in this file, 1 outside the tree; /);
+  // the label rule's length, as the code holds it, in the words records --help and the README's Privacy give
+  const [, lo, hi] = /\{(\d+),(\d+)\}/.exec(/^const LABEL = (\/.+\/[a-z]*);$/m.exec(readFileSync(join(DIST, 'records.js'), 'utf8'))[1]);
+  const flat = (s) => s.replace(/\s+/g, ' ');
+  assert.ok(flat(run('--help').stdout).includes(`the label rule (${lo} to ${hi} ASCII letters, digits and . _ : + -)`), `records --help gives the label rule as ${lo} to ${hi} characters`);
+  const privacy = readFileSync(join(root, 'README.md'), 'utf8').split('\n## Privacy')[1].split('\n## ')[0];
+  assert.ok(privacy.includes(`looks like one: ${lo} to ${hi} ASCII letters, digits and`), `the README's Privacy gives the label rule as ${lo} to ${hi} characters`);
+  rmSync(d, { recursive: true });
+});
+
 /** The balance line's form, as the README's section on records and records --help give it (the line that starts
  *  "ltms records: '<file>': "), as a regular expression: [ ] around what is printed only sometimes, <n> a count, <file>
  *  the path, <url> an address, and "<n> <kind>, ..." the kinds with their counts. null when the text gives none. */

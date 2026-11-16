@@ -19,11 +19,12 @@
 //   any other type other (its type kept, as every record's is, in supplier.type).
 //   A line of white space only is blank; one that is not a JSON object is malformed.
 //
-// The parent link: a record with the envelope (a uuid and a parentUuid key) has parent_by "supplied": parent is the
-// address of the first record in the file that carries its parentUuid, or null (a root, or a parent not in this file:
-// supplier.parent then says which). A record without the envelope (Claude Code's sidecars: last-prompt, ai-title and
-// the like) is outside the tree: parent null, parent_by "none". A record whose uuid an earlier record carries (a replay)
-// names that one in dup_of. Nothing is repaired here: a repair belongs to a view (the live path), not to the records.
+// The parent link: a record with a parentUuid key (with a uuid or without one) has parent_by "supplied": parent is the
+// address of the first record with the envelope (a uuid and a parentUuid key) that carries its parentUuid as its uuid,
+// or null (a root, or a parent not in this file: supplier.parent then says which). A record without a parentUuid
+// (Claude Code's sidecars: last-prompt, ai-title and the like) is outside the tree: parent null, parent_by "none". A
+// record with the envelope whose uuid an earlier one with the envelope carries (a replay) names that one in dup_of.
+// Nothing is repaired here: a repair belongs to a view (the live path), not to the records.
 //
 // How it reads (S375): never the whole file. Two passes over the same bytes, a chunk at a time (1 MiB): the first finds
 // the first line that carries each uuid (a parent may be written after its child) and the versions (the header, written
@@ -386,7 +387,9 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
       const id = valueAt(p, 'uuid');
       if (id !== undefined) supplier.id = id;
       let parent: string | null = null, parentBy: 'supplied' | 'none' = 'none', dup: string | undefined;
-      if (hasEnvelope(p)) {
+      // the parent link of every record that has a parentUuid, whether its uuid is a string or not, or it has none
+      // (S375's known issue O11): such a record names its parent as any record does, though no record can name it
+      if ('parentUuid' in p) {
         const pu: unknown = p.parentUuid;
         parentBy = 'supplied';
         if (pu === null) { supplier.parent = null; parents.root++; }
@@ -395,9 +398,11 @@ export function writeRecords(read: ReadAt, size: number, o: RecordsOptions, writ
           const pl = firstLine.get(pu);
           if (pl !== undefined) { parent = at(pl); parents.resolved++; } else parents.unresolved++;
         } else { supplier.parent = WITHHELD; parents.unresolved++; } // names a parent, by no uuid any record can carry
+      } else parents.none++;
+      if (hasEnvelope(p)) {
         const first = firstLine.get(p.uuid);
         if (first !== undefined && first !== line) { dup = at(first); dupOf++; }
-      } else parents.none++;
+      }
       const version = valueAt(p, 'version');
       if (version !== undefined) supplier.version = version;
       // the other links the file supplies (his word, S375 22:43: O3), each as written too
