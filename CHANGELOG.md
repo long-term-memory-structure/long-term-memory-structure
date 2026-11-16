@@ -19,6 +19,7 @@
 - `ltms records`: `leaf` and `logical_parent` are the address of the first record that carries the id as its uuid, with a parentUuid or without one (a sidecar, such as an `ai-title` record), as the record protocol's draft says; they went by the records with a uuid and a parentUuid alone, so an id that only a sidecar carries was `null` and counted on the balance line as not in this file. `parent` and `dup_of` still go by the records with both.
 - `ltms records --help` gives the check of the balance for a file still being written, as the README does: count only the bytes the header names, `head -c <bytes> <file> | wc -l` (plus one when `last_line_unterminated` is `true`); it gave only the file's `wc -l`, which reports a false imbalance once the file has grown since the run.
 - `ltms records --help`'s `time` row says which stamps get a `utc`, as the README's does: an ISO 8601 date and time in the extended format (`2026-01-05T09:00:00`, a fraction allowed) with its zone (`Z` or `z`, or an offset of hours and minutes); it said "an ISO 8601 date and time with its zone", which `2026-01-01T10:00Z`, `2026-01-01T10:00:00+02` and `20260101T100000Z` are, and none gets one.
+- README, `ltms records`: the `calls` row says it is on a user record of any kind that holds tool_result blocks; its "(a tool result's)" gave the kind as `tool result`, where a record whose first block is text, and so of kind `input`, holds one too.
 
 ## 0.3.0 (2026-11-16)
 

@@ -599,7 +599,7 @@ The second record's bytes, read at its address, are line 22 of the file: `tail -
 | `parent` | the address of the record its parentUuid names (the first record with a uuid and a parentUuid that carries that uuid, so a parent written after its child is found), or `null` |
 | `leaf` | the address of the record its leafUuid names (a `last-prompt` marker's: the session's head): the first record that carries it as its uuid, with a parentUuid or without one, or `null` when no record in the file does |
 | `logical_parent` | the address of the record its logicalParentUuid names (a compaction's boundary: the record before it, across the new root), as `leaf`'s, or `null` |
-| `calls` | a user record's that holds tool_result blocks (a tool result's): for each of them, in order, the address of the first assistant record that holds the tool_use it answers, or `null` when none in the file does |
+| `calls` | a user record's that holds tool_result blocks, whatever its kind (most are `tool result`; one whose first block is text can be `input`): for each of them, in order, the address of the first assistant record that holds the tool_use it answers, or `null` when none in the file does |
 | `parent_by` | `"supplied"` (the record has a parentUuid, with a uuid or without one), or `"none"` (it is outside the session's tree: `last-prompt`, `ai-title` and the like, and blank and malformed lines) |
 | `group` | an assistant record's requestId (its message's id where it has none): the records of one response share it |
 | `dup_of` | the first record with a uuid and a parentUuid that carries its uuid, when it repeats one |
