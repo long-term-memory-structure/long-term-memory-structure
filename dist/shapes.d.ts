@@ -44,14 +44,20 @@ export interface ShapesVocabulary {
 }
 /** Reads a vocabulary file (ltms-shapes-vocabulary/0). A file that cannot be read throws its own error; one that is not a
  *  vocabulary, that holds a field the format does not name (at its top or in kinds), whose path, name or value breaks
- *  the rules, that names in kinds, versions or values a path that paths does not list, or that names in kinds.sub a kind
- *  that values does not list at the kind path, is a usage error whose message names the entry by its field and index
- *  (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]). */
+ *  the rules, or that names in kinds, versions or values a path that paths does not list, is a usage error whose
+ *  message names the entry by its field and index (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]).
+ *  A kinds.sub entry for a kind that values does not list at the kind path is taken: --allow can list the kind
+ *  (inapplicableSubKinds names the entries that do not apply in a run). */
 export declare function loadVocabulary(file: string): ShapesVocabulary;
 /** --allow <path> or --allow <path>=<value>: the person names a key path (and with it every path above it) or a value, to
  *  print. Adds them to the vocabulary; returns the allowed list as the first line prints it, sorted, each once. A value
  *  at a kind path may not hold ':' (S374's closure read, U15): it would merge two kinds of record into one line. */
 export declare function applyAllow(V: ShapesVocabulary, specs: readonly string[]): string[];
+/** The kinds.sub entries whose kind neither the vocabulary nor --allow lists at the kind path, after applyAllow: such a
+ *  kind prints as (unlisted) before its sub-kind's path is read, so the entry does not apply in this run. A warning, not
+ *  a refusal (S375's known issue k5, as S376 decided it): on 0.3.0 such an entry applied once --allow listed the kind,
+ *  the route --unlisted suggests for a kind the vocabulary lacks. */
+export declare function inapplicableSubKinds(V: ShapesVocabulary): string[];
 /** A path that could not be read, with its error (the command words the message). */
 export interface ShapesFailure {
     /** The path, as given or as met under a directory given. */

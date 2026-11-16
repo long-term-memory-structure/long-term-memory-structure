@@ -555,9 +555,9 @@ A vocabulary is one JSON object, which `--vocabulary <file>` reads; `vocab/claud
 - A name, which is a step of a path: an optional `$` or `@`, then an ASCII letter or `_`, then ASCII letters, digits and `_ : + -`, at most 64 characters after the `$` or `@`.
 - A path: steps, each `.` and a name, or `[]`, the elements of an array, as in `.message.content[].type`. A plain path has no `[]` step.
 - A value, and a kind in `sub`: 1 to 64 ASCII letters, digits and `. _ : + -` (the label rule in [Privacy](#privacy)).
-- Every path that `kinds`, `versions` and `values` name must also be in `paths`; and every kind in `kinds.sub` must be a value that `values` lists at `kinds.path`, since a kind it does not list prints as `(unlisted)` before its sub-kind is read.
+- Every path that `kinds`, `versions` and `values` name must also be in `paths`; a kind in `kinds.sub` applies when `values` lists it at `kinds.path`, or `--allow` does (`--allow .type=<kind>`, the route `--unlisted` suggests): a kind that neither lists prints as `(unlisted)` before its sub-kind is read, and a warning on stderr names such an entry.
 
-ltms refuses (a usage error, exit 2) a vocabulary with another field, at its top or in `kinds`, with a path, a name or a value that breaks these rules, with a path in `kinds`, `versions` or `values` that `paths` does not list, or a kind in `kinds.sub` that `values` does not list at `kinds.path`; its message names the entry by its field and index: `paths[3]`, `values[".type"][2]`, `kinds.sub["system"]`, `versions[0]`.
+ltms refuses (a usage error, exit 2) a vocabulary with another field, at its top or in `kinds`, with a path, a name or a value that breaks these rules, or with a path in `kinds`, `versions` or `values` that `paths` does not list; its message names the entry by its field and index: `paths[3]`, `values[".type"][2]`, `kinds.sub["system"]`, `versions[0]`.
 
 ### `ltms records <file.jsonl>`
 

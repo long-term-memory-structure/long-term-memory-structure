@@ -33,7 +33,7 @@ import type { SearchCounts, SearchKind, SearchNotSearched, SearchQuery, SearchRe
 import { indexTranscript } from './session.js';
 import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
 import type { PinCheckDone, PinCoverage, PinDone, PinLogLine, PinRefusal } from './pin.js';
-import { applyAllow, buildReport, checkReport, collectFiles, listBytes, loadVocabulary, readShapes, reviewLines, reviewTotals, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE, SHAPES_MIN_FLOOR, SHAPES_NAMES_PER_PATH } from './shapes.js';
+import { applyAllow, inapplicableSubKinds, buildReport, checkReport, collectFiles, listBytes, loadVocabulary, readShapes, reviewLines, reviewTotals, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE, SHAPES_MIN_FLOOR, SHAPES_NAMES_PER_PATH } from './shapes.js';
 import type { ByteDirent, ShapesProblem, ShapesVocabulary } from './shapes.js';
 import { writeRecords, RecordsLineTooLong, RECORD_KINDS } from './records.js';
 import type { RecordsRun } from './records.js';
@@ -2349,9 +2349,8 @@ program and version wrote the transcripts.
 --vocabulary <file>   a vocabulary file instead (its format,
                       ltms-shapes-vocabulary/0, is in the README's section
                       on ltms shapes: The vocabulary file). A field it does
-                      not name, a path in kinds, versions or values that
-                      paths does not list, or a kind in kinds.sub that
-                      values does not list at kinds.path, is a usage error
+                      not name, or a path in kinds, versions or values that
+                      paths does not list, is a usage error
 --floor <n>           the files a path must be seen in to be printed
                       (default ${SHAPES_FLOOR}; a whole number from ${SHAPES_MIN_FLOOR} to
                       ${Number.MAX_SAFE_INTEGER})
@@ -2563,6 +2562,9 @@ function shapesRun(args: string[]): number {
   let allowed: string[];
   try { allowed = applyAllow(V, a.allow); }
   catch (e) { if (e instanceof ShapesUsageError) { err(`ltms shapes: ${e.message}`); return 2; } throw e; }
+  // a kinds.sub entry for a kind that neither the vocabulary nor --allow lists at the kind path does not apply in this
+  // run (S375's known issue k5, as S376 decided it: a warning, not a refusal)
+  for (const t of inapplicableSubKinds(V)) err(`ltms shapes: warning: the vocabulary's kinds.sub[${JSON.stringify(t)}] does not apply in this run: neither values nor --allow lists ${JSON.stringify(t)} at the kind path, ${V.kindPath}, so such records print as (unlisted) before their sub-kind is read; --allow ${V.kindPath}=${t} applies it.`);
 
   const found = collectFiles(a.paths);
   for (const f of found.failed) err(isReadError(f.error) ? cannotRead('shapes', f.path, f.error) : `ltms shapes: cannot read '${f.path}' (${internalError(f.error)}).`);

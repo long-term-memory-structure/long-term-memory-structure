@@ -169,9 +169,10 @@ function shown(x: unknown): string {
 
 /** Reads a vocabulary file (ltms-shapes-vocabulary/0). A file that cannot be read throws its own error; one that is not a
  *  vocabulary, that holds a field the format does not name (at its top or in kinds), whose path, name or value breaks
- *  the rules, that names in kinds, versions or values a path that paths does not list, or that names in kinds.sub a kind
- *  that values does not list at the kind path, is a usage error whose message names the entry by its field and index
- *  (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]). */
+ *  the rules, or that names in kinds, versions or values a path that paths does not list, is a usage error whose
+ *  message names the entry by its field and index (paths[3], values[".kind"][2], kinds.sub["event"], versions[0]).
+ *  A kinds.sub entry for a kind that values does not list at the kind path is taken: --allow can list the kind
+ *  (inapplicableSubKinds names the entries that do not apply in a run). */
 export function loadVocabulary(file: string): ShapesVocabulary {
   const bytes = readFileSync(file);
   let v: unknown;
@@ -218,9 +219,6 @@ export function loadVocabulary(file: string): ShapesVocabulary {
     for (const [t, sp] of Object.entries(k.sub ?? {})) {
       const at = `kinds.sub[${shown(t)}]`;
       if (!LABEL.test(t)) throw bad(`${at}: the kind is not a value: ${VALUE_RULE}.`);
-      // a kind values does not list at the kind path prints as (unlisted) before its sub-kind's path is read (kindOf),
-      // so such an entry could never apply (S375's known issue k5)
-      if (!V.values.get(k.path)?.has(t)) throw bad(`${at}: the kind is not a value that values lists at the kind path, values[${shown(k.path)}]; a sub-kind's path is read only for a kind listed there.`);
       if (typeof sp !== 'string' || !PLAIN_PATH.test(sp)) throw bad(`${at} ${shown(sp)} is not a plain path: ${PLAIN_RULE}.`);
       if (!V.paths.has(sp)) throw bad(`${at} ${shown(sp)}${notListed}`);
       V.sub.set(t, sp);
@@ -285,6 +283,15 @@ export function applyAllow(V: ShapesVocabulary, specs: readonly string[]): strin
     allowed.push(s);
   }
   return [...new Set(allowed)].sort();
+}
+/** The kinds.sub entries whose kind neither the vocabulary nor --allow lists at the kind path, after applyAllow: such a
+ *  kind prints as (unlisted) before its sub-kind's path is read, so the entry does not apply in this run. A warning, not
+ *  a refusal (S375's known issue k5, as S376 decided it): on 0.3.0 such an entry applied once --allow listed the kind,
+ *  the route --unlisted suggests for a kind the vocabulary lacks. */
+export function inapplicableSubKinds(V: ShapesVocabulary): string[] {
+  if (V.kindPath === null) return [];
+  const listed = V.values.get(V.kindPath);
+  return [...V.sub.keys()].filter((t) => !listed?.has(t)).sort();
 }
 function getPlain(rec: unknown, path: string): unknown {
   let x: unknown = rec;

@@ -1917,7 +1917,7 @@ test("shapes (0.3.1, k2): with --vocabulary, the closing line says to read the r
 // kind path. Such a kind prints as (unlisted) before its sub-kind's path is read, so the entry could never apply, and the
 // vocabulary said what a report does not do. It is refused now (exit 2), its message naming the entry as the loader's
 // other refusals do; the vocabularies of this repository pass, and the README states the rule.
-test('shapes (0.3.1, k5): a vocabulary whose kinds.sub names a kind that values does not list at the kind path is refused (exit 2), the message naming the entry; the vocabulary that ships and the two sketches pass', () => {
+test('shapes (0.3.1, k5 as S376 decided): a kinds.sub entry for a kind that values does not list at the kind path is taken; without --allow a warning names it and the run goes on; with --allow <kind path>=<kind> it applies, as on 0.3.0 (the route --unlisted suggests); the vocabulary that ships and the two sketches pass', () => {
   const base = JSON.parse(readFileSync(DOCS, 'utf8'));
   const variant = (fn) => { const v = structuredClone(base); fn(v); return v; };
   const cases = [
@@ -1931,14 +1931,26 @@ test('shapes (0.3.1, k5): a vocabulary whose kinds.sub names a kind that values 
       const f = join(dir, `k5-${i}.json`);
       writeFileSync(f, JSON.stringify(v));
       const r = shapes(['--vocabulary', f, ...CC]);
-      assert.deepEqual([r.code, r.out, r.err], [2, '', `ltms shapes: '${f}': kinds.sub["${kind}"]: the kind is not a value that values lists at the kind path, values[".type"]; a sub-kind's path is read only for a kind listed there.\n`], what);
+      assert.equal(r.code, 0, `${what}: ${r.err}`);
+      assert.match(r.err, new RegExp(`warning: the vocabulary's kinds\\.sub\\["${kind}"\\] does not apply in this run`), what);
     });
+    // the route the checker ran on 0.3.0: --allow lists the kind at the kind path, and its sub-kind's path is read
+    const f = join(dir, 'k5-0.json');
+    const tx = join(dir, 'tx');
+    mkdirSync(tx);
+    for (const n of ['a', 'b', 'c']) writeFileSync(join(tx, `${n}.jsonl`), JSON.stringify({ type: 'zqnotakind', subtype: 'zqsub', uuid: `u-${n}` }) + '\n');
+    const without = shapes(['--vocabulary', f, tx]);
+    const allowed = shapes(['--vocabulary', f, '--allow', '.type=zqnotakind', '--allow', '.subtype=zqsub', tx]);
+    assert.deepEqual([without.code, allowed.code], [0, 0], `${without.err}\n${allowed.err}`);
+    assert.match(allowed.out, /zqnotakind:zqsub/, 'the sub-kind applies once --allow lists the kind');
+    assert.doesNotMatch(allowed.err, /kinds\.sub\["zqnotakind"\] does not apply/, 'no warning once --allow lists the kind');
+    assert.doesNotMatch(without.out, /zqnotakind/, 'without it the kind prints as (unlisted)');
   } finally { rm(dir); }
   for (const f of [DOCS, CODEX_V, GEMINI_V]) assert.doesNotThrow(() => SH.loadVocabulary(f), f);
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
   const part = readme.slice(readme.indexOf('#### The vocabulary file'), readme.indexOf('\n#', readme.indexOf('#### The vocabulary file') + 1)).replace(/\s+/g, ' ');
-  assert.match(part, /every kind in `kinds\.sub` must be a value that `values` lists at `kinds\.path`/, "the README's rules");
-  assert.match(part, /or a kind in `kinds\.sub` that `values` does not list at `kinds\.path`/, "the README's refusals");
+  assert.match(part, /a kind in `kinds\.sub` applies when `values` lists it at `kinds\.path`, or `--allow` does/, "the README's rule");
+  assert.doesNotMatch(part, /or a kind in `kinds\.sub` that `values` does not list at `kinds\.path`/, 'no such refusal in the README');
 });
 
 // k11 (S375's known issues, for 0.3.1): a count map's keys that are whole numbers come first, in numeric order, since a
