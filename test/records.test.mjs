@@ -152,7 +152,7 @@ test('records: an empty file is a header and no record; a file of one line with 
 
 test('records: usage errors exit 2 and name the fix; a file that cannot be read exits 1; --help is its whole part', () => {
   const d = tmp();
-  for (const [args, re] of [[[], /give one transcript \(none was given\)/], [['a.jsonl', 'b.jsonl'], /give one transcript \(2 were given\)/], [[d], /is a directory; records reads one transcript\. For a folder: mkdir -p records; for f in /], [['-'], /reading from standard input/], [['--frobnicate', 'x.jsonl'], /unknown option '--frobnicate'/]]) {
+  for (const [args, re] of [[[], /give one transcript \(none was given\)/], [['a.jsonl', 'b.jsonl'], /give one transcript \(2 were given\)/], [[d], /is a directory; records reads one transcript\. For a folder: mkdir -p records; \( .* for f in /], [['-'], /reading from standard input/], [['--frobnicate', 'x.jsonl'], /unknown option '--frobnicate'/]]) {
     const r = run(...args);
     assert.equal(r.status, 2, `${args.join(' ')}: ${r.stderr}`);
     assert.equal(r.stdout, '', args.join(' '));
@@ -534,24 +534,54 @@ test('records (S375, O8): a path that names another file by the end (renamed ove
   rmSync(d, { recursive: true });
 });
 
-test('records (S375, O2): the folder loop is one in the README, the help and the folder message, and run by sh it keeps the records of a run that succeeds and names the one that fails', (t) => {
+test('records (S375 O2, S376): the folder loop is one in the README, the help and the folder messages; run as written by bash, zsh and sh, it keeps the records of a run that succeeds, names on stderr the run that fails and each entry named .jsonl that is not a regular file, ends with status 1 after a failure and never calls exit, and over an empty folder does nothing and ends with 0', (t) => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
-  const pick = (text) => text.split('\n').map((l) => l.trim()).find((l) => l.startsWith('mkdir -p records; for f in'));
+  const pick = (text) => text.split('\n').map((l) => l.trim()).find((l) => l.startsWith('mkdir -p records;'));
   const d = tmp();
-  const fromReadme = pick(readme), fromHelp = pick(run('--help').stdout), fromMessage = pick(run(d).stderr.replace(/^.*For a folder: /s, ''));
+  const fromReadme = pick(readme), fromHelp = pick(run('--help').stdout);
   assert.ok(fromReadme, 'the README has the loop');
   assert.equal(fromHelp, fromReadme, 'the help gives the README\'s loop');
-  assert.equal(fromMessage, fromReadme.replace('<folder>', `'${d}'`), 'the folder message gives it, for the folder given');
-  if (process.getuid?.() === 0) { t.skip('as root, a file without read permission is still read'); rmSync(d, { recursive: true }); return; }
-  const folder = join(d, 'in');
-  mkdirSync(folder);
+  assert.equal(pick(run(d).stderr.replace(/^.*For a folder: /s, '')), fromReadme.replace('<folder>', `'${d}'`), 'the directory message gives it, for the folder given');
+  assert.equal(pick(run().stderr.replace(/^.*For a folder: /s, '')), fromReadme, 'the message for no path gives it');
+  // pasted into an interactive shell, exit would close the terminal: the status is the last command's
+  assert.doesNotMatch(fromReadme, /\bexit\b/, 'the loop calls exit');
+  const asRoot = process.getuid?.() === 0;
+  const folder = join(d, 'in'), empty = join(d, 'empty');
+  mkdirSync(folder); mkdirSync(empty);
   writeFileSync(join(folder, 'aaaaaaaa-ok.jsonl'), '{"type":"x"}\n');
   writeFileSync(join(folder, 'bbbbbbbb-no.jsonl'), '{"type":"x"}\n');
   spawnSync('chmod', ['000', join(folder, 'bbbbbbbb-no.jsonl')]);
-  const script = `ltms() { "${process.execPath}" "${CLI}" "$@"; }; ` + fromReadme.replace('<folder>', `'${folder}'`);
-  const r = spawnSync('sh', ['-c', script], { cwd: d, encoding: 'utf8' });
-  assert.deepEqual(readdirSync(join(d, 'records')).sort(), ['aaaaaaaa-ok.records.jsonl']);
-  assert.match(r.stderr, /failed: .*bbbbbbbb-no\.jsonl/);
+  const fifo = spawnSync('mkfifo', [join(folder, 'cccccccc-fifo.jsonl')]).status === 0;
+  mkdirSync(join(folder, 'dddddddd-dir.jsonl'));
+  // each shell as it starts with no startup file of the user's (zsh -f; no BASH_ENV or ENV)
+  const env = { ...process.env }; delete env.BASH_ENV; delete env.ENV;
+  const shells = [['bash', []], ['zsh', ['-f']], ['sh', []]];
+  let ran = 0;
+  for (const [sh, flags] of shells) {
+    if (spawnSync(sh, [...flags, '-c', 'true']).status !== 0) { t.diagnostic(`${sh} is not here: the loop is not run by it`); continue; }
+    ran++;
+    for (const src of [folder, empty]) {
+      const work = join(d, `${sh}-${basename(src)}`);
+      mkdirSync(work);
+      const script = `ltms() { "${process.execPath}" "${CLI}" "$@"; }; ` + fromReadme.replace('<folder>', `'${src}'`);
+      const r = spawnSync(sh, [...flags, '-c', script], { cwd: work, encoding: 'utf8', env, timeout: 60000 });
+      const what = `${sh} over ${basename(src)}: status ${r.status}, stderr ${JSON.stringify(r.stderr)}`;
+      assert.doesNotMatch(r.stderr, /no matches found|no match/, what);
+      if (src === empty) {
+        assert.equal(r.status, 0, what);
+        assert.equal(r.stderr, '', what);
+        assert.deepEqual(readdirSync(join(work, 'records')), [], what);
+        continue;
+      }
+      // the run that fails: named, its records not kept, and the status 1 (as root, a file without read permission is read)
+      assert.equal(r.status, asRoot ? 0 : 1, what);
+      if (!asRoot) assert.ok(r.stderr.includes(`failed: ${folder}/bbbbbbbb-no.jsonl\n`), what);
+      for (const n of [...(fifo ? ['cccccccc-fifo.jsonl'] : []), 'dddddddd-dir.jsonl']) assert.ok(r.stderr.includes(`skipped, not a regular file: ${folder}/${n}\n`), what);
+      assert.deepEqual(readdirSync(join(work, 'records')).sort(), asRoot ? ['aaaaaaaa-ok.records.jsonl', 'bbbbbbbb-no.records.jsonl'] : ['aaaaaaaa-ok.records.jsonl'], what);
+      assert.equal(lines(readFileSync(join(work, 'records', 'aaaaaaaa-ok.records.jsonl'), 'utf8')).length, 2, 'the records of the run that succeeded, whole');
+    }
+  }
+  assert.ok(ran > 0, 'no shell ran the loop');
   spawnSync('chmod', ['600', join(folder, 'bbbbbbbb-no.jsonl')]);
   rmSync(d, { recursive: true });
 });

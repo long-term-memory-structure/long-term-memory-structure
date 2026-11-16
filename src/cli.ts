@@ -2747,6 +2747,14 @@ function recordsOutput(): (text: string) => void {
 // The command around ./records.js: one transcript in, ltms-records/0 out (a header, then one record per line), and on
 // stderr the balance: lines read against records written, which must be equal.
 
+/** The folder loop that records' help, its folder messages and the README give, one line, run as written by sh, bash and
+ *  zsh (S375's known issue O2): it keeps a records file only when its run succeeds; it names on stderr each run that
+ *  fails and each entry named .jsonl that is not a regular file (a FIFO, a directory, a socket), which it skips; its
+ *  status is 1 when a run failed, set by its last command, never by exit, which would close the interactive shell it is
+ *  pasted into. In zsh, nullglob, set in the loop's own subshell, keeps a folder with no .jsonl file from stopping it
+ *  ("no matches found"); in sh and bash, the pattern left unmatched is passed over. */
+const RECORDS_FOLDER_LOOP = `mkdir -p records; ( [ -z "$ZSH_VERSION" ] || setopt nullglob; n=0; for f in <folder>/*.jsonl; do [ -e "$f" ] || [ -L "$f" ] || continue; [ -f "$f" ] || { printf 'skipped, not a regular file: %s${BS}n' "$f" >&2; continue; }; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; printf 'failed: %s${BS}n' "$f" >&2; n=$((n+1)); fi; done; [ "$n" -eq 0 ] )`;
+
 const RECORDS_HELP = `ltms records <file.jsonl>
 
 Prints the transcript as ltms-records/0, the record protocol's format
@@ -2758,8 +2766,11 @@ is true. A record holds no text: it gives the address of its bytes, and the
 text is read there.
   ltms records ~/.claude/projects/-home-me-my-app/<session>.jsonl > session.records.jsonl
 One transcript at a time; for a folder, write the records outside ~/.claude,
-keeping each only when its run succeeds (in sh, bash or zsh):
-  mkdir -p records; for f in <folder>/*.jsonl; do [ -f "$f" ] || continue; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; echo "failed: $f" >&2; fi; done
+keeping each only when its run succeeds (in sh, bash or zsh, a folder with no
+.jsonl file included). It names on stderr each run that fails and each entry
+named .jsonl that is not a regular file, which it skips; its status is 1 when
+a run failed, and it never calls exit, which would close the shell:
+  ${RECORDS_FOLDER_LOOP}
 
 The first line, the header:
   format        "ltms-records/0"
@@ -2883,8 +2894,7 @@ function recordsRun(args: string[]): number {
     if (!ended && a.startsWith('-')) { err(`ltms records: unknown option '${escapeControls(a)}'. The options are --help and --version; put -- before a path that starts with '-'.`); return 2; }
     paths.push(a);
   }
-  const FOLDER = 'mkdir -p records; for f in <folder>/*.jsonl; do [ -f "$f" ] || continue; o="records/$(basename "$f" .jsonl).records.jsonl"; if ltms records "$f" > "$o.tmp"; then mv "$o.tmp" "$o"; else rm -f "$o.tmp"; echo "failed: $f" >&2; fi; done';
-  if (paths.length !== 1) { err(`ltms records: give one transcript (${paths.length ? `${paths.length} were given` : 'none was given'}): a records file is one transcript's. For a folder: ${FOLDER}`); return 2; }
+  if (paths.length !== 1) { err(`ltms records: give one transcript (${paths.length ? `${paths.length} were given` : 'none was given'}): a records file is one transcript's. For a folder: ${RECORDS_FOLDER_LOOP}`); return 2; }
   const file = paths[0];
   // the path as every line below prints it: its control characters escaped, so it cannot split a line (S375's known issue O15)
   const named = escapeControls(file);
@@ -2893,7 +2903,7 @@ function recordsRun(args: string[]): number {
   try { const pre = statSync(file); isDir = pre.isDirectory(); notRegular = !isDir && !pre.isFile(); } catch { /* reading it below says why */ }
   const notRegularMessage = `ltms records: '${named}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Save it to one first: a FIFO with a writer, cat ${q(named)} > transcript.jsonl; a process substitution, the command's own output (<command> > transcript.jsonl); then give that file.`;
   if (notRegular) { err(notRegularMessage); return 2; }
-  if (isDir) { err(`ltms records: '${named}' is a directory; records reads one transcript. For a folder: ${FOLDER.replace('<folder>', q(named.replace(/\/+$/, '')))}`); return 2; }
+  if (isDir) { err(`ltms records: '${named}' is a directory; records reads one transcript. For a folder: ${RECORDS_FOLDER_LOOP.replace('<folder>', q(named.replace(/\/+$/, '')))}`); return 2; }
   // Read twice, a chunk at a time (src/records.ts says why). O_NONBLOCK: a FIFO opens at once, without waiting for a
   // writer, and is refused below; a regular file reads as usual.
   let fd: number;
