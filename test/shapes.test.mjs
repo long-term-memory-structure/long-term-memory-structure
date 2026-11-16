@@ -2333,3 +2333,36 @@ test("shapes (0.3.1, k8): --check and the receiver's validator refuse a floor pa
     assert.deepEqual([c.code, v.status], [0, 0], `floor 9007199254740991: ${c.err} ${v.stderr}`);
   } finally { rm(dir); }
 });
+
+// k9 (S375's known issues, for 0.3.1): no test refused a kind that joins a kind to a value of another path, such as
+// system:tool_use (tool_use is a value at .message.content[].type, never at .subtype, system's sub-kind path): S375's
+// mutant CL46, whose language joined each kind that has a sub-kind's path to every value of the vocabulary, lived 65/0.
+// Such a kind, on a kind line, a path line and a rare line put where the format puts them in a report ltms made, is
+// refused by --check (that line, its field kind), by the receiver's validator, and at the write.
+test("shapes (0.3.1, k9): a kind that joins a kind to a value of another path (system:tool_use, attachment:assistant, ...) is refused by --check and by the receiver's validator, on a kind, a path and a rare line, and at the write", () => {
+  const dir = tmp();
+  try {
+    const v = JSON.parse(readFileSync(DOCS, 'utf8'));
+    const R = shapes([...CC]);
+    assert.equal(R.code, 0, R.err);
+    const V = SH.loadVocabulary(DOCS);
+    const f = join(dir, 'r.txt'), wrong = [];
+    for (const kind of ['system:tool_use', 'system:queued_command', 'system:direct', 'attachment:assistant', 'attachment:turn_duration']) {
+      // a value the vocabulary lists at another path, and not at the kind's own sub-kind path
+      const [t, s] = kind.split(':'), paths = Object.keys(v.values).filter((p) => v.values[p].includes(s));
+      assert.ok(paths.length > 0 && !paths.includes(v.kinds.sub[t]), `${s} is a value at ${paths.join(', ')}, not at ${v.kinds.sub[t]}`);
+      for (const line of [{ k: 'kind', kind, records: '1', files: '1', versions: {} }, { k: 'path', kind, path: '.type', n: '4-7', files: '4-7' }, { k: 'rare', kind, paths: '1', n: '1' }]) {
+        const [lines, at] = plant(R.lines, line), text = lines.map((o) => JSON.stringify(o)).join('\n') + '\n';
+        writeFileSync(f, text);
+        const c = shapes(['--check', f]);
+        const said = `ltms shapes --check: line ${at}: field "kind" holds a value the report's language does not allow there.\nltms shapes --check: '${f}': 1 problem; do not send it as it is.\n`;
+        if (c.code !== 1 || c.err !== said) wrong.push(`--check, ${kind} on a ${line.k} line (line ${at}): exit ${c.code}, ${JSON.stringify(c.err)}`);
+        const p = validateText(text, [DOCS]);
+        if (!p.length || p.some((x) => x.line !== at || x.at !== 'kind')) wrong.push(`the validator, ${kind} on a ${line.k} line (line ${at}): ${JSON.stringify(p)}`);
+        const w = SH.writeReport(lines, SH.shapesLanguage(V, [], { floor: 3, lines: lines.length }), () => {});
+        if (w.written !== 0 || JSON.stringify(w.reasons) !== JSON.stringify([{ line: at, why: 'kind' }])) wrong.push(`the write, ${kind} on a ${line.k} line (line ${at}): ${w.written} lines written, ${JSON.stringify(w.reasons)}`);
+      }
+    }
+    assert.deepEqual(wrong, [], 'each refused, at its line, by its field kind');
+  } finally { rm(dir); }
+});
