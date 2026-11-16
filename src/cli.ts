@@ -1144,8 +1144,9 @@ interface Walker { cmd: 'search' | 'index'; done: string; whole: string; lost: s
  *  set-aside copies of a session, the pin directories, and, for each session directory, its agent transcripts. Every
  *  count is of distinct paths: a directory given twice, or under another one given, is walked for each, as 0.1.2
  *  walked it, and what it holds is counted once however many paths given reach it (S375's known issue k14): an entry
- *  by its device and inode (lstat's), a directory met again by the directory it was met in and its name. A path given
- *  that cannot be read is counted as given. */
+ *  named .jsonl that is not a regular file, a directory met again and a name that is not UTF-8, each by the directory
+ *  it was met in (its device and inode) and its name, as shapes counts them, so that two names of one inode (hard
+ *  links) are two. A path given that cannot be read is counted as given. */
 interface SearchWalk {
   files: { path: string; named: boolean; under?: string }[]; failed: number; symlinks: number; special: number; again: number;
   /** .jsonl files under a session's own directory: counted, not read (index). */
@@ -1177,10 +1178,10 @@ const AGENT_NAME = /^agent-.*\.jsonl$/;
 function walkPaths(wk: Walker, paths: string[], classify = false): SearchWalk {
   const all: { path: string; named: boolean; under?: string }[] = [];
   let failed = 0;
-  // what is counted once however many paths given reach it (S375's known issue k14): the entries named .jsonl that are
-  // not regular files, under a path given that holds a file (`special`) and named in a no-.jsonl warning (`warnedPipes`:
-  // not counted again); the directories met again, by the directory each was met in and its name; and the names that
-  // are not UTF-8, reported once
+  // what is counted once however many paths given reach it (S375's known issue k14), each by the directory it was met
+  // in (its device and inode) and its name: the entries named .jsonl that are not regular files, under a path given that
+  // holds a file (`special`) and named in a no-.jsonl warning (`warnedPipes`: not counted again); the directories met
+  // again; and the names that are not UTF-8 (by their bytes), reported once
   const special = new Set<string>(), warnedPipes = new Set<string>(), again = new Set<string>(), notUtf8 = new Set<string>();
   // each counted entry is keyed by what it IS (lstat's device and inode), not by its name: two spellings of one file
   // (an argument that is a link) count once, and two names that differ only in bytes that are not UTF-8 count twice
@@ -1255,7 +1256,7 @@ function walkPaths(wk: Walker, paths: string[], classify = false): SearchWalk {
           }
           if (classify && !isDir && SET_ASIDE_NAME.test(name)) { setAside.add(idOf(bytes)); counted++; continue; }   // never read: counted, not failed
           reported++;
-          const key = idOf(bytes);
+          const key = `${here}/${e.name.toString('hex')}`;
           if (notUtf8.has(key)) continue;   // reached again through another argument: reported and counted once
           notUtf8.add(key);
           const what = isDir ? `the directory '${join(d, escapedName(e.name))}'` : `'${join(d, escapedName(e.name))}'`;
@@ -1274,7 +1275,7 @@ function walkPaths(wk: Walker, paths: string[], classify = false): SearchWalk {
           if (classify && inside === null && isSessionDir(name, entries)) { inside = resolve(full); if (!agentFiles.has(inside)) agentFiles.set(inside, new Set()); }
           stack.push({ d: full, session: inside, at: `${here}/${name}` });
         } else if (name.endsWith('.jsonl')) {
-          if (!e.isFile()) pipes.add(idOf(full));
+          if (!e.isFile()) pipes.add(`${here}/${name}`);
           else if (classify && session !== null) { part(session, full, name); counted++; }
           else if (classify && SET_ASIDE_NAME.test(name)) { setAside.add(idOf(full)); counted++; }
           else found.push(full);

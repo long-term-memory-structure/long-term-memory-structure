@@ -15,7 +15,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { closeSync, chmodSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, chmodSync, ftruncateSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -2377,6 +2377,24 @@ test("search (0.3.1, k14): every count of the walk is of distinct paths: an entr
       assert.deepEqual(warnings(s, 'shapes'), [pipes('shapes', 2)], `shapes ${where}`);
       assert.equal(s.err.split(bad).length - 1, 1, `shapes ${where}: ${s.err}`);
       assert.deepEqual(s.lines[0].files, { read: '1', failed: '1' }, `shapes ${where}`);
+    }
+    // two names of one inode (hard links) are two paths: a FIFO under both, and a file whose names are not UTF-8, each
+    // counted, and each name reported, by search and index as by shapes
+    const hard = join(dir, 'hard');
+    mkdirSync(hard);
+    writeFileSync(join(hard, 'real.jsonl'), sessionWith([['zqk14word', 'ok']]));
+    assert.equal(spawnSync('mkfifo', [join(hard, 'p1.jsonl')]).status, 0);
+    const byBytes = (b) => Buffer.concat([Buffer.from(hard + '/'), Buffer.from([b]), Buffer.from('.jsonl')]);
+    writeFileSync(byBytes(0xff), sessionWith([['zqk14word', 'ok']]));
+    linkSync(join(hard, 'p1.jsonl'), join(hard, 'p2.jsonl'));
+    linkSync(byBytes(0xff), byBytes(0xfe));
+    for (const cmd of ['search', 'index', 'shapes']) {
+      const r = ltms(cmd === 'search' ? ['search', 'zqk14word', hard, hard] : [cmd, hard, hard]);
+      assert.equal(r.code, 1, `${cmd}: ${r.err}`);
+      assert.deepEqual(warnings(r, cmd), [pipes(cmd, 2)], `${cmd}: two names of one FIFO`);
+      assert.deepEqual(notUtf8Said(r.err, cmd), [`${hard}/${BSL}xfe.jsonl`, `${hard}/${BSL}xff.jsonl`], `${cmd}: two names of one file, each reported once: ${r.err}`);
+      if (cmd !== 'shapes') assert.deepEqual([r.lines[0].files.found, r.lines[0].files.read, r.lines[0].files.failed], [3, 1, 2], cmd);
+      else assert.deepEqual(r.lines[0].files, { read: '1', failed: '2-3' });
     }
     // a FIFO a no-.jsonl warning names (its folder holds nothing else) is not counted again in the warning line, when
     // another argument reaches it too, before or after
