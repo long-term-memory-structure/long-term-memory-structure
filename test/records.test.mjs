@@ -490,9 +490,13 @@ test('records (S375, R11): the header lists versions in version order; read_at i
   rmSync(d, { recursive: true });
 });
 
-/** The peak resident memory of `ltms records <file>`, from a module that reports it as the process exits. */
+/** The peak resident memory of `ltms records <file>`, its own: VmHWM from /proc/self/status, which a module reads as the
+ *  process exits. Not process.resourceUsage().maxRSS: on Linux a spawned child's starts at its parent's peak, so a runner
+ *  holding more than the command's peak hid any growth (S375's closure check, R7m: a file held whole passed with the
+ *  runner at 300 MiB). VmHWM is the address space's own, and a new one starts at exec. */
+const HAS_VMHWM = (() => { try { return /^VmHWM:/m.test(readFileSync('/proc/self/status', 'utf8')); } catch { return false; } })();
 function peakKiB(dir, file) {
-  const mod = importModule(dir, 'peak.mjs', "process.on('exit', () => process.stderr.write('PEAK ' + process.resourceUsage().maxRSS + '\\n'));");
+  const mod = importModule(dir, 'peak.mjs', "process.on('exit', () => { const m = /^VmHWM:\\s+(\\d+) kB$/m.exec(fs.readFileSync('/proc/self/status', 'utf8')); process.stderr.write('PEAK ' + (m ? m[1] : 'none') + '\\n'); });");
   const outPath = file + '.records', fd = openSync(outPath, 'w');
   try {
     // a heap held small (old space 16 MB, semi-space 1 MB) is warm at both sizes, so only memory that grows with the file
@@ -500,11 +504,13 @@ function peakKiB(dir, file) {
     // stays flat at 96, 192 MB)
     const r = spawnSync(process.execPath, ['--max-old-space-size=16', '--max-semi-space-size=1', '--import', mod, CLI, 'records', file], { encoding: 'utf8', stdio: ['ignore', fd, 'pipe'], timeout: 600000 });
     assert.equal(r.status, 0, r.stderr.slice(0, 400));
-    return Number(/PEAK (\d+)/.exec(r.stderr)?.[1]);
+    const peak = Number(/PEAK (\d+)/.exec(r.stderr)?.[1]);
+    assert.ok(peak > 0, `no VmHWM from the command: ${r.stderr.slice(-200)}`);
+    return peak;
   } finally { closeSync(fd); rmSync(outPath, { force: true }); }
 }
 
-test('records (S375, R7): the peak resident memory does not grow with the file: 16 MB and 96 MB give peaks within 16 MiB of each other under a small heap (the heap limit alone could not see a file held whole in a Buffer: that grows by the file, 81 MiB here)', () => {
+test('records (S375, R7): the peak resident memory does not grow with the file: 16 MB and 96 MB give peaks within 16 MiB of each other under a small heap (the heap limit alone could not see a file held whole in a Buffer: that grows by the file, 81 MiB here); the peak is the command\'s own (VmHWM), whatever the runner holds', { skip: !HAS_VMHWM && 'the peak is VmHWM, read from /proc/self/status (Linux)' }, () => {
   const d = tmp();
   const demo = readFileSync(join(here, 'fixtures', 'demo.jsonl'));
   const make = (name, mb) => { const f = join(d, name), fd = openSync(f, 'w'); for (let i = 0, n = Math.ceil((mb << 20) / demo.length); i < n; i++) writeSync(fd, demo); closeSync(fd); return f; };
