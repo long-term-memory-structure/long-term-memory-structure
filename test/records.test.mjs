@@ -651,6 +651,25 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+test('records (S376, R2 O4): the check the README and --help give, run as they give it on a transcript still being written (its last line half written, then finished, then followed by more): the bytes the header names balance the records', { skip: process.platform === 'win32' && 'head -c and wc -l' }, () => {
+  const flat = (s) => s.replace(/\s+/g, ' ');
+  const readme = flat(readFileSync(join(root, 'README.md'), 'utf8')), help = flat(run('--help').stdout);
+  const LIVE = 'head -c <bytes> <file> | wc -l';
+  assert.ok(readme.includes(`for a file still being written, count only the bytes the header names: \`${LIVE}\``), 'the README gives the check for a file still being written');
+  assert.ok(help.includes(`for a file still being written, count only the bytes the header names: ${LIVE}`), 'records --help gives the check for a file still being written');
+  const d = tmp(), f = join(d, 'live.jsonl'), demo = readFileSync(join(here, 'fixtures', 'demo.jsonl'));
+  writeFileSync(f, demo.subarray(0, demo.lastIndexOf(10, demo.length - 2) + 91));   // 36 lines and 90 bytes of the 37th
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [h, ...recs] = lines(r.stdout);
+  assert.equal(h.source.last_line_unterminated, true);
+  writeFileSync(f, Buffer.concat([demo, demo.subarray(0, demo.indexOf(10) + 1)]));          // the writer finished it, and wrote one more
+  const count = (cmd) => Number(spawnSync('sh', ['-c', cmd], { encoding: 'utf8' }).stdout.trim()) + (h.source.last_line_unterminated ? 1 : 0);
+  assert.notEqual(count(`wc -l < '${f}'`), recs.length, 'the plain wc -l check, on the file as it is now, does not balance: the case the live form is for');
+  assert.equal(count(LIVE.replace('<bytes>', String(h.source.bytes)).replace('<file>', `'${f}'`)), recs.length, 'the live form balances');
+  rmSync(d, { recursive: true });
+});
+
 test('records (S376, LT): leaf and logical_parent are the address of the first record that carries the id as its uuid, with a parentUuid or without one (a sidecar), as the draft says; the links count follows; parent and dup_of still go by the records with the envelope', () => {
   const d = tmp(), f = join(d, 'llllllll-carriers.jsonl');
   const L = [

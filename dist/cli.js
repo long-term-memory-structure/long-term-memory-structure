@@ -3305,8 +3305,9 @@ Prints the transcript as ltms-records/0, the record protocol's format
 the lines it does not understand included, so the count always balances: lines
 read = records written. Anyone can check it: the output's lines after the
 first are the file's wc -l, plus one when the header's last_line_unterminated
-is true. A record holds no text: it gives the address of its bytes, and the
-text is read there.
+is true (wc -l counts newlines); for a file still being written, count only
+the bytes the header names: head -c <bytes> <file> | wc -l. A record holds no
+text: it gives the address of its bytes, and the text is read there.
   ltms records ~/.claude/projects/-home-me-my-app/<session>.jsonl > session.records.jsonl
 One transcript at a time; for a folder, write the records outside ~/.claude,
 keeping each only when its run succeeds (in sh, bash or zsh, a folder with no

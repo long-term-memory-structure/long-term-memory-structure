@@ -3,7 +3,8 @@
 // its start, its length in bytes and the sha256 of exactly those bytes), its kind, and its parent link as the source
 // supplies it. No text: the text stays in the source and is read back through the address (the draft's D2: content by
 // address). The count balances: every line read gives one record, the lines not understood included (other,
-// malformed, blank), so `wc -l` on the source and a count of the records check each other.
+// malformed, blank), so the source's lines and a count of the records check each other: `wc -l`, plus one when the
+// last line has no newline, over the bytes the header names (`head -c <bytes> <file> | wc -l`) when the file has grown.
 //
 // The kinds of a Claude Code record (the draft's section 13, decided S374):
 //   assistant      by its content block: text gives reply; thinking and redacted_thinking, thinking; tool_use, tool
