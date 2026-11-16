@@ -27,7 +27,7 @@ import { checkSearchSupport, parseSearchQuery, searchTranscript, sieveMayHold, s
 import { openSieveCache, sieveKey } from './sieve-cache.js';
 import { indexTranscript } from './session.js';
 import { checkPin, claudeConfigDir, isSweepShaped, pinPaths, projectPinReaches } from './pin.js';
-import { applyAllow, buildReport, checkReport, collectFiles, loadVocabulary, readShapes, reviewLines, reviewTotals, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE, SHAPES_MIN_FLOOR, SHAPES_NAMES_PER_PATH } from './shapes.js';
+import { applyAllow, buildReport, checkReport, collectFiles, listBytes, loadVocabulary, readShapes, reviewLines, reviewTotals, shapesLanguage, writeReport, ShapesUsageError, SHAPES_FLOOR, SHAPES_MAX_LINE, SHAPES_MIN_FLOOR, SHAPES_NAMES_PER_PATH } from './shapes.js';
 import { writeRecords, RecordsLineTooLong, RECORD_KINDS } from './records.js';
 /** The issues of ltms's repository, package.json's bugs.url (the tests hold the two equal), written here once: where a
  *  bug in ltms is reported, and where a shapes report is sent. An issue there is public (S374's closure read, U2). */
@@ -1274,44 +1274,12 @@ function searchNotices(q, s) {
     }
     return notes;
 }
-/** U+FFFD, which the text listing of a directory puts in a name for each byte that is not UTF-8. */
-const REPLACEMENT = cp(0xfffd);
 /** A name's bytes as text: printable ASCII as it is, every other byte (and the backslash) as backslash, x and two hex
  *  digits. */
 const escapedName = (b) => [...b].map((x) => (x >= 0x20 && x < 0x7f && x !== 0x5c ? String.fromCharCode(x) : `${BS}x${x.toString(16).padStart(2, '0')}`)).join('');
-/** A directory's entries whose names are not valid UTF-8, read again as bytes: `lossy` holds them as the text listing
- *  gives them (which opens nothing), `report` the directories and the files named .jsonl among them (in the listing's
- *  order: on Unix, libuv sorts the names by their bytes). */
-function notUtf8Names(d) {
-    const lossy = new Set(), report = [], links = [];
-    let names;
-    try {
-        names = readdirSync(d, { encoding: 'buffer' });
-    }
-    catch {
-        return { lossy, report, links };
-    }
-    for (const b of names) {
-        const s = b.toString('utf8');
-        if (Buffer.from(s, 'utf8').equals(b))
-            continue;
-        lossy.add(s);
-        let st;
-        try {
-            st = lstatSync(Buffer.concat([Buffer.from(d + '/'), b]));
-        }
-        catch {
-            continue;
-        }
-        if (st.isSymbolicLink())
-            links.push(b);
-        else if (st.isDirectory())
-            report.push({ name: b, dir: true });
-        else if (s.endsWith('.jsonl'))
-            report.push({ name: b, dir: false });
-    }
-    return { lossy, report, links };
-}
+/** A directory's entries by their bytes (shapes' listBytes: the three commands list a directory alike), in the
+ *  listing's order (on Unix, libuv sorts the names by their bytes). */
+const namedEntries = (d) => listBytes(d).map((e) => { const name = e.name.toString('utf8'); return { e, name, valid: Buffer.from(name, 'utf8').equals(e.name) }; });
 /** A session's own directory, by pin's rule (pin.ts, the sweep's shape): its name is a UUID, or its name plus .jsonl
  *  names a regular file beside it. Claude Code keeps a session's subagents/, tool-results/, mcp-tasks/ and workflows
  *  there. */
@@ -1342,7 +1310,7 @@ function walkPaths(wk, paths, classify = false) {
     };
     const links = new Set(), parts = new Set(), setAside = new Set(), pinStores = new Map(), failedDirs = new Set();
     const agentFiles = new Map(), listed = new Set();
-    const isSessionDir = (name, siblings) => UUID_NAME.test(name) || siblings.some((x) => x.name === `${name}.jsonl` && x.isFile());
+    const isSessionDir = (name, siblings) => UUID_NAME.test(name) || siblings.some((x) => x.valid && x.name === `${name}.jsonl` && x.e.isFile());
     const part = (session, path, name) => {
         const id = idOf(path);
         parts.add(id);
@@ -1386,7 +1354,7 @@ function walkPaths(wk, paths, classify = false) {
             }
             let entries;
             try {
-                entries = readdirSync(d, { withFileTypes: true });
+                entries = namedEntries(d);
             }
             catch (e) {
                 if (session !== null)
@@ -1403,7 +1371,7 @@ function walkPaths(wk, paths, classify = false) {
                 failed++;
                 continue;
             }
-            if (classify && !top && entries.some((e) => e.name === 'PINS.log' && e.isFile())) {
+            if (classify && !top && entries.some((x) => x.valid && x.name === 'PINS.log' && x.e.isFile())) {
                 const key = id ?? `path:${resolve(d)}`;
                 if (!pinStores.has(key))
                     pinStores.set(key, d);
@@ -1412,71 +1380,75 @@ function walkPaths(wk, paths, classify = false) {
             }
             if (classify)
                 listed.add(resolve(d));
-            const bad = entries.some((e) => e.name.includes(REPLACEMENT)) ? notUtf8Names(d) : null;
-            for (const e of entries) {
-                if (bad?.lossy.has(e.name))
-                    continue; // counted or reported below, by its bytes
-                const full = join(d, e.name);
+            for (const { e, name, valid } of entries) {
+                if (!valid) {
+                    // a name that is not valid UTF-8, by its bytes, in the listing's order: a symbolic link counted, as any link;
+                    // a directory, and a name that ends in .jsonl, reported and counted as failed (index: counted where nothing
+                    // is read); never opened by its decoded name, which can name its twin (S375's known issue k13)
+                    const bytes = Buffer.concat([Buffer.from(d + '/'), e.name]), isDir = e.isDirectory();
+                    if (e.isSymbolicLink()) {
+                        met++;
+                        links.add(idOf(bytes));
+                        if (classify && session !== null)
+                            agentFiles.set(session, null);
+                        continue;
+                    }
+                    if (!isDir && !name.endsWith('.jsonl'))
+                        continue;
+                    if (classify && session !== null) {
+                        // in a session's own directory nothing is read, so a name that is not UTF-8 is counted there, not failed
+                        if (isDir)
+                            agentFiles.set(session, null);
+                        else {
+                            part(session, bytes, name);
+                            counted++;
+                        }
+                        continue;
+                    }
+                    if (classify && !isDir && SET_ASIDE_NAME.test(name)) {
+                        setAside.add(idOf(bytes));
+                        counted++;
+                        continue;
+                    } // never read: counted, not failed
+                    const what = isDir ? `the directory '${join(d, escapedName(e.name))}'` : `'${join(d, escapedName(e.name))}'`;
+                    err(`ltms ${wk.cmd}: cannot read ${what} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${isDir ? 'the files under it are' : 'it is'} not ${wk.done}. Give it a UTF-8 name to ${wk.cmd} it; ls -b${dashFor([d])} ${q(d)} shows the name.`);
+                    failed++;
+                    reported++;
+                    continue;
+                }
+                const full = join(d, name);
                 if (e.isSymbolicLink()) {
                     met++;
                     links.add(idOf(full));
                     // a link is not followed: in a session's own directory, or as a session's directory, its agents are not known
                     if (classify && session !== null)
                         agentFiles.set(session, null);
-                    else if (classify && isSessionDir(e.name, entries))
+                    else if (classify && isSessionDir(name, entries))
                         agentFiles.set(resolve(full), null);
                 }
                 else if (e.isDirectory()) {
                     let inside = session;
-                    if (classify && inside === null && isSessionDir(e.name, entries)) {
+                    if (classify && inside === null && isSessionDir(name, entries)) {
                         inside = resolve(full);
                         if (!agentFiles.has(inside))
                             agentFiles.set(inside, new Set());
                     }
                     stack.push({ d: full, session: inside });
                 }
-                else if (e.name.endsWith('.jsonl')) {
+                else if (name.endsWith('.jsonl')) {
                     if (!e.isFile())
                         pipes++;
                     else if (classify && session !== null) {
-                        part(session, full, e.name);
+                        part(session, full, name);
                         counted++;
                     }
-                    else if (classify && SET_ASIDE_NAME.test(e.name)) {
+                    else if (classify && SET_ASIDE_NAME.test(name)) {
                         setAside.add(idOf(full));
                         counted++;
                     }
                     else
                         found.push(full);
                 }
-            }
-            for (const b of bad?.links ?? []) {
-                met++;
-                links.add(idOf(Buffer.concat([Buffer.from(d + '/'), b])));
-                if (classify && session !== null)
-                    agentFiles.set(session, null);
-            }
-            for (const b of bad?.report ?? []) {
-                const bytes = Buffer.concat([Buffer.from(d + '/'), b.name]), name = b.name.toString('utf8');
-                if (classify && session !== null) {
-                    // in a session's own directory nothing is read, so a name that is not UTF-8 is counted there, not failed
-                    if (b.dir)
-                        agentFiles.set(session, null);
-                    else {
-                        part(session, bytes, name);
-                        counted++;
-                    }
-                    continue;
-                }
-                if (classify && !b.dir && SET_ASIDE_NAME.test(name)) {
-                    setAside.add(idOf(bytes));
-                    counted++;
-                    continue;
-                } // never read: counted, not failed
-                const what = b.dir ? `the directory '${join(d, escapedName(b.name))}'` : `'${join(d, escapedName(b.name))}'`;
-                err(`ltms ${wk.cmd}: cannot read ${what} (the bytes of its name that are not printable ASCII written as ${BS}xHH): its name is not valid UTF-8, and ltms reads paths as text, so ${b.dir ? 'the files under it are' : 'it is'} not ${wk.done}. Give it a UTF-8 name to ${wk.cmd} it; ls -b${dashFor([d])} ${q(d)} shows the name.`);
-                failed++;
-                reported++;
             }
         }
         if (!found.length && !reported && !counted) {

@@ -448,7 +448,7 @@ An entry of a hit's `at`:
 - A copy of the transcripts under the path searched doubles the hits: each session is found twice, once in each place.
 - Symbolic links met under a directory are counted, not followed: a transcript reached only through a link is not searched unless the link is named on the command line.
 - Under a directory given, each directory is read once, known by its device and inode: one met again (a bind mount of a directory inside itself shows the same device and inode, and would have its files read twice) is not read again, and the warning line counts it. Tested on Linux with a real bind mount in a user namespace (`unshare -rm`), and with a stubbed `stat`; not on macOS or Windows.
-- A file or a directory whose name is not valid UTF-8 cannot be read by `ltms`, which takes paths as text: it is reported with the name's bytes written as `\xHH`, and counted as failed.
+- A file or a directory whose name is not valid UTF-8 cannot be read by `ltms`, which takes paths as text: it is reported with the name's bytes written as `\xHH`, and counted as failed. Directories are listed with their names as bytes, so such a name is never opened by its decoded text: a valid name beside it that decodes the same (U+FFFD where it has a byte that is not UTF-8) is read as any other.
 
 ### `ltms shapes <path>...`
 

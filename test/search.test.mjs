@@ -2270,3 +2270,73 @@ test('help and README: each says in its prose, the command aside, what the windo
     assert.ok(p.includes('not a string here') && p.includes('at is past the end of this field'), `${where} does not say both messages in its prose`);
   }
 });
+
+// ---- 0.3.1: S375's known issues k13 and k14 (the walk), k7 (--max and --skip) --------------------------------------
+
+// k13 (S375's known issues, for 0.3.1): search listed a directory's names as text, and passed over every entry whose
+// text was that of a name that is not valid UTF-8 (its bytes decoded, with U+FFFD for each byte that is not UTF-8): so
+// beside \xff.jsonl, the valid U+FFFD.jsonl, a file, a directory or a symbolic link, was never searched, without a word
+// (found 1, read 0, failed 1), where shapes, which lists names as bytes since S7, reads it, and the README says shapes
+// reads "the same files as search". search and index now list a directory's entries as shapes does, by their bytes.
+/** A session holding zqk13all and `word` in its prompt, and a record of `type` after it, which marks it in shapes'
+ *  report. */
+const twinFile = (word, type) => sessionWith([[`zqk13all ${word}`, 'ok']]) + JSON.stringify({ type }) + '\n';
+/** A name that is not valid UTF-8 beside its twin, a valid name that decodes the same (U+FFFD where the other has its
+ *  byte), in a folder of its own for each case: as files, as directories, and with the twin a symbolic link to a file
+ *  outside the folder. The paths each command must read, and the paths it must report as not UTF-8 (\xHH), by case. */
+function twinFolders(dir) {
+  const FFFD = cp(0xfffd), FF = Buffer.from([0xff]), E9 = Buffer.from([0xe9]);
+  const bytes = (...parts) => Buffer.concat(parts.map((x) => (Buffer.isBuffer(x) ? x : Buffer.from(x))));
+  const folder = (name) => { const d = join(dir, name); mkdirSync(d); return d; };
+  const files = folder('files');
+  writeFileSync(bytes(files, '/', FF, '.jsonl'), twinFile('zqk13bad', 'queue-operation'));
+  writeFileSync(join(files, `${FFFD}.jsonl`), twinFile('zqk13twin', 'file-history-snapshot'));
+  const dirs = folder('dirs');
+  mkdirSync(bytes(dirs, '/d', E9));
+  writeFileSync(bytes(dirs, '/d', E9, '/a.jsonl'), twinFile('zqk13bad', 'queue-operation'));
+  mkdirSync(join(dirs, `d${FFFD}`));
+  writeFileSync(join(dirs, `d${FFFD}`, 'b.jsonl'), twinFile('zqk13twin', 'file-history-snapshot'));
+  const outside = folder('outside');
+  writeFileSync(join(outside, 'target.jsonl'), twinFile('zqk13out', 'mode'));
+  const links = folder('links');
+  writeFileSync(bytes(links, '/', FF, '.jsonl'), twinFile('zqk13bad', 'queue-operation'));
+  symlinkSync(join(outside, 'target.jsonl'), join(links, `${FFFD}.jsonl`));
+  const BSLASH = String.fromCharCode(92);
+  return [
+    // the folder, the files read, the paths reported as not UTF-8, search's files (found, read, failed, symlinks), and
+    // the kinds in shapes' report of the files read
+    { name: 'files', d: files, read: [join(files, `${FFFD}.jsonl`)], failed: [`${files}/${BSLASH}xff.jsonl`], found: 2, symlinks: 0, kinds: ['file-history-snapshot'] },
+    { name: 'dirs', d: dirs, read: [join(dirs, `d${FFFD}`, 'b.jsonl')], failed: [`${dirs}/d${BSLASH}xe9`], found: 2, symlinks: 0, kinds: ['file-history-snapshot'] },
+    { name: 'links', d: links, read: [], failed: [`${links}/${BSLASH}xff.jsonl`], found: 1, symlinks: 1, kinds: [] },
+  ];
+}
+/** The paths a run's stderr reports as not valid UTF-8, in order. */
+const notUtf8Said = (err, cmd) => err.split('\n').map((l) => new RegExp(`^ltms ${cmd}: cannot read (?:the directory )?'([^']*)' \\(the bytes of its name that are not printable ASCII written as `).exec(l)).filter((m) => m).map((m) => m[1]);
+
+test("search (0.3.1, k13): beside a name that is not valid UTF-8, its twin, a valid name that decodes the same (U+FFFD.jsonl, as a file, a directory or a symbolic link), is searched as any name is, and index and shapes read the same files and fail the same ones", { skip: process.platform !== 'linux' && 'names that are not UTF-8 are made here on Linux' }, () => {
+  const dir = tmp();
+  try {
+    for (const c of twinFolders(dir)) {
+      const s = ltms(['search', 'zqk13all', c.d]);
+      assert.equal(s.code, 1, `${c.name}: ${s.err}`);
+      assert.deepEqual(s.lines.filter((l) => l.k === 'file').map((l) => l.path), c.read, `${c.name}: the files search read`);
+      assert.deepEqual(notUtf8Said(s.err, 'search'), c.failed, `${c.name}: what search reported: ${s.err}`);
+      assert.deepEqual(s.lines[0].files, { given: 1, found: c.found, read: c.read.length, failed: c.failed.length, notConversation: 0, symlinks: c.symlinks }, c.name);
+      // the twin's own word is found; the word of the file whose name is not UTF-8, never; a link's target's, never
+      assert.equal(ltms(['search', 'zqk13twin', c.d]).lines[0].hits.turns, c.read.length, `${c.name}: zqk13twin`);
+      for (const w of ['zqk13bad', 'zqk13out']) assert.equal(ltms(['search', w, c.d]).lines[0].hits.turns, 0, `${c.name}: ${w}`);
+      // index: the same walk, the same files
+      const i = ltms(['index', c.d]);
+      assert.equal(i.code, 1, `${c.name}: ${i.err}`);
+      assert.deepEqual(i.lines.filter((l) => l.k === 'session').map((l) => l.path), c.read, `${c.name}: the files index read`);
+      assert.deepEqual(notUtf8Said(i.err, 'index'), c.failed, `${c.name}: what index reported: ${i.err}`);
+      // shapes: the same files read (by the kind that marks each) and the same ones failed
+      const r = ltms(['shapes', c.d]);
+      assert.equal(r.code, 1, `${c.name}: ${r.err}`);
+      const marks = ['queue-operation', 'file-history-snapshot', 'mode'];
+      assert.deepEqual(r.lines.filter((l) => l.k === 'kind' && marks.includes(l.kind)).map((l) => l.kind), c.kinds, `${c.name}: the files shapes read`);
+      assert.deepEqual(notUtf8Said(r.err, 'shapes'), c.failed, `${c.name}: what shapes reported: ${r.err}`);
+      assert.deepEqual(r.lines[0].files, { read: String(c.read.length), failed: String(c.failed.length) }, c.name);
+    }
+  } finally { rm(dir); }
+});

@@ -326,8 +326,10 @@ function getPlain(rec, path) {
 }
 /** A directory's entries, their names as bytes (encoding 'buffer'), with their types: a name that is not valid UTF-8
  *  comes back as its bytes, never as text whose U+FFFD can spell another entry's name (S374's closure read, S7).
- *  (Node gives Buffer names here; the typings of @types/node 20 have no such overload, hence the casts.) */
-const listBytes = (d) => readdirSync(d, { withFileTypes: true, encoding: 'buffer' });
+ *  (Node gives Buffer names here; the typings of @types/node 20 have no such overload, hence the casts.) search's and
+ *  index's walk lists directories with it too, so the three commands key a directory's entries alike (S375's known
+ *  issue k13). */
+export const listBytes = (d) => readdirSync(d, { withFileTypes: true, encoding: 'buffer' });
 /** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
  *  entry named .jsonl that is not a regular file counted, not read; a name that is not valid UTF-8 kept by its bytes and
  *  not read; a directory met again in a path's walk, by its device and inode, not entered again, and counted). Each

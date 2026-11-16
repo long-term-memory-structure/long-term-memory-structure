@@ -1,3 +1,4 @@
+import type { Dirent } from 'node:fs';
 /** The report's format, named in its first line. */
 export declare const SHAPES_FORMAT = "ltms-shapes/0";
 /** The format a vocabulary file names in its `format` field. */
@@ -82,6 +83,16 @@ export interface ShapesFiles {
         isDir: boolean;
     }[];
 }
+/** A directory's entry, its name as bytes. */
+export type ByteDirent = Omit<Dirent, 'name'> & {
+    name: Buffer;
+};
+/** A directory's entries, their names as bytes (encoding 'buffer'), with their types: a name that is not valid UTF-8
+ *  comes back as its bytes, never as text whose U+FFFD can spell another entry's name (S374's closure read, S7).
+ *  (Node gives Buffer names here; the typings of @types/node 20 have no such overload, hence the casts.) search's and
+ *  index's walk lists directories with it too, so the three commands key a directory's entries alike (S375's known
+ *  issue k13). */
+export declare const listBytes: (d: string) => ByteDirent[];
 /** Every file named, and every .jsonl under a directory named (at any depth; symbolic links counted, not followed; an
  *  entry named .jsonl that is not a regular file counted, not read; a name that is not valid UTF-8 kept by its bytes and
  *  not read; a directory met again in a path's walk, by its device and inode, not entered again, and counted). Each
