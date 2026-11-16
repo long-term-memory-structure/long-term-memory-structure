@@ -859,7 +859,13 @@ const HEADER_FILES = ['read', 'failed'], HEADER_LINES = ['records', 'blank', 'no
 /** The language a report of this vocabulary and allowed list is written in. `expect`, at the write, is the run's floor
  *  and its number of lines. */
 export function shapesLanguage(V, allowed, expect) {
-    // exactly what kindOf can give: a kind that has a sub-kind's path never prints alone
+    // THE KINDS A LINE MAY NAME: the format's four words for a kind, (none), (not a string), (unlisted) and (all), wherever
+    // a kind stands, whatever the vocabulary; each kind at the kind path that has no sub-kind's path, the vocabulary's and
+    // the allowed list's (applyAllow put those in V); and each kind that has one, joined to (unlisted), (none),
+    // (not a string) and each value at its sub-kind's path, the vocabulary's and the allowed list's, never alone. That is
+    // what kindOf can give, and more: (all) beside a kind path, and (none), (not a string) and (unlisted) without one. The
+    // language is not narrowed to what kindOf gives: a word of the format leaks nothing, and a narrower language that
+    // missed a kind kindOf can give would make a valid report fail its write (S375's known issue k3).
     const kindTokens = new Set([NONE, NOT_STRING, UNLISTED, ALL]);
     if (V.kindPath)
         for (const t of V.values.get(V.kindPath) ?? []) {

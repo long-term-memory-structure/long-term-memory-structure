@@ -2203,3 +2203,68 @@ test("shapes (0.3.1, k1): --check names each entry of a report's allowed list th
     }
   } finally { rm(dir); }
 });
+
+// k3 (S375's known issues, for 0.3.1): shapesLanguage's comment said its kinds were "exactly what kindOf can give", where
+// it admits the four words of the format for a kind, (none), (not a string), (unlisted) and (all), wherever a kind
+// stands: (all) beside a kind path, and the other three without one. The language is not narrowed: a word of the format
+// leaks nothing, and a narrower language that missed a kind the reading can give would make a valid report fail its
+// write. The comment now says what the language admits; this test pins that set, so that a change to it is made on
+// purpose, and the next one holds that every kind the reading gives is in it.
+const FOUR_KIND_WORDS = ['(all)', '(none)', '(not a string)', '(unlisted)'];
+test("shapes (0.3.1, k3): the kinds the language admits, pinned: the format's four words for a kind wherever a kind stands; each kind at the kind path (the vocabulary's and the allowed list's) that has no sub-kind's path; and each that has one, joined to (unlisted), (none), (not a string) and each value at that path, never alone", () => {
+  const kinds = (V, allow) => [...SH.shapesLanguage(V, SH.applyAllow(V, allow)).kindTokens].sort();
+  const SHIPPED = [...FOUR_KIND_WORDS, 'ai-title', 'artifact-autoreact-ledger', 'artifact-comment-monitor', 'assistant', 'atis-latch',
+    'attachment:(none)', 'attachment:(not a string)', 'attachment:(unlisted)', 'attachment:queued_command', 'bridge-session', 'file-history-delta',
+    'file-history-snapshot', 'frame-link', 'last-prompt', 'launched', 'mode', 'permission-mode', 'queue-operation', 'result', 'started',
+    'system:(none)', 'system:(not a string)', 'system:(unlisted)', 'system:api_error', 'system:away_summary', 'system:compact_boundary',
+    'system:local_command', 'system:model_refusal_fallback', 'system:stop_hook_summary', 'system:turn_duration', 'user'];
+  assert.deepEqual(kinds(SH.loadVocabulary(DOCS), []), SHIPPED, 'the vocabulary that ships');
+  assert.deepEqual(kinds(SH.loadVocabulary(DOCS), ['.type=zq_kind', '.subtype=zq_sub', '.attachment.type=zq_att']), [...SHIPPED, 'attachment:zq_att', 'system:zq_sub', 'zq_kind'].sort(), 'the vocabulary that ships, a kind and two sub-kinds allowed');
+  const dir = tmp();
+  try {
+    assert.deepEqual(kinds(SH.loadVocabulary(putVocabulary(dir, 'k3-none', { paths: ['.type'] })), []), FOUR_KIND_WORDS, 'no kind path: the four words');
+    assert.deepEqual(kinds(SH.loadVocabulary(putVocabulary(dir, 'k3-nolist', { paths: ['.type'], kinds: { path: '.type' } })), []), FOUR_KIND_WORDS, 'a kind path with no value list: the four words');
+    const sub = putVocabulary(dir, 'k3-sub', { paths: ['.t', '.s'], values: { '.t': ['a', 'b'], '.s': ['x'] }, kinds: { path: '.t', sub: { b: '.s' } } });
+    assert.deepEqual(kinds(SH.loadVocabulary(sub), ['.s=y', '.t=c']), [...FOUR_KIND_WORDS, 'a', 'b:(none)', 'b:(not a string)', 'b:(unlisted)', 'b:x', 'b:y', 'c'], 'a kind with a sub-kind path and one without, a kind and a sub-kind allowed');
+  } finally { rm(dir); }
+});
+test('shapes (0.3.1, k3): every kind the reading gives is one the language admits: over every fixture, read with the vocabulary that ships, with kinds allowed, with the two sketches and with no kind path; and over records that take each way the reading of a kind can go, where it gives every kind the language admits but (all)', () => {
+  const dir = tmp();
+  try {
+    // each way the reading of a kind can go, at the kind path and at each sub-kind's path: no value there, another type,
+    // a string the vocabulary lacks, one it lists
+    const v = JSON.parse(readFileSync(DOCS, 'utf8'));
+    const others = [undefined, 7, null, true, [], {}, ''];
+    const types = [...others, 'zq_kind', 'zq:colon', ...v.values['.type']], subs = [...others, 'zq_sub', 'zq:colon', ...v.values['.subtype']];
+    const atts = [undefined, 'zq', {}, { type: 42 }, { type: null }, { type: 'zq_att' }, ...v.values['.attachment.type'].map((type) => ({ type }))];
+    const recs = [];
+    for (const type of types) for (const subtype of subs) for (const attachment of atts) recs.push({ type, subtype, attachment });
+    const every = join(dir, 'every-way.jsonl');
+    writeFileSync(every, recs.map((o) => JSON.stringify(o)).join('\n') + '\n');   // JSON leaves out an undefined: no key there
+    const noKinds = putVocabulary(dir, 'k3-none', { paths: ['.type', '.subtype'] });
+    const fixtures = readdirSync(join(here, 'shapes-fixtures')).filter((f) => f.endsWith('.jsonl')).map(FX);
+    const read = (vocab, allow, files) => {
+      const V = SH.loadVocabulary(vocab), allowed = SH.applyAllow(V, allow);
+      const S = SH.readShapes(V, files, { maxLine: SH.SHAPES_MAX_LINE, unlisted: false });
+      assert.equal(S.filesRead, files.length);
+      return [new Set([...S.kinds.keys(), ...[...S.lines.values()].map((L) => L.kind)]), SH.shapesLanguage(V, allowed).kindTokens];
+    };
+    for (const [what, vocab, allow, files] of [
+      ['the vocabulary that ships, every fixture', DOCS, [], [...fixtures, every]],
+      ['the vocabulary that ships, kinds allowed', DOCS, ['.type=zq_kind', '.subtype=zq_sub', '.attachment.type=zq_att'], [...fixtures, every]],
+      ['the Codex sketch', CODEX_V, [], [...CODEX, every]],
+      ['the Gemini sketch', GEMINI_V, [], [...GEMINI, every]],
+      ['no kind path', noKinds, [], [...fixtures, every]],
+    ]) {
+      const [given, admitted] = read(vocab, allow, files);
+      assert.ok(given.size >= 1, `${what}: ${given.size} kinds given`);
+      assert.deepEqual([...given].filter((k) => !admitted.has(k)), [], `${what}: kinds the reading gives that the language does not admit`);
+    }
+    // the records of every way reach each kind the language admits with the vocabulary that ships, but (all), which it
+    // admits beside a kind path; with no kind path, the reading gives (all) alone, and the language admits the four
+    const [given, admitted] = read(DOCS, [], [every]);
+    assert.deepEqual([...given].sort(), [...admitted].filter((k) => k !== '(all)').sort(), 'the vocabulary that ships, over the records of every way');
+    const [g0, a0] = read(noKinds, [], [every]);
+    assert.deepEqual([[...g0], [...a0].sort()], [['(all)'], FOUR_KIND_WORDS], 'no kind path, over the records of every way');
+  } finally { rm(dir); }
+});
