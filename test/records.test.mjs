@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, constants, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync, writeSync, mkdirSync } from 'node:fs';
+import { closeSync, constants, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync, writeSync, mkdirSync, symlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -590,6 +590,19 @@ test('records (S375 O2, S376): the folder loop is one in the README, the help an
   }
   assert.ok(ran > 0, 'no shell ran the loop');
   spawnSync('chmod', ['600', join(folder, 'bbbbbbbb-no.jsonl')]);
+  rmSync(d, { recursive: true });
+});
+
+// O15 (b) (K3's closure check, S376): an open error of another kind than the four named ones printed Node's own message,
+// which holds the raw path, so a newline in the path split the line
+test("records (S376, O15 b): an open error of another kind (a symbolic link to itself: ELOOP) prints Node's own words with the path's controls escaped too, so a newline in the path cannot split the line", () => {
+  const d = tmp(), f = join(d, 'a\nb.jsonl');
+  symlinkSync(f, f);
+  const r = run(f);
+  assert.notEqual(r.status, 0, r.stderr);
+  assert.equal(r.stderr.split('\n').filter((l) => l !== '').length, 1, JSON.stringify(r.stderr));
+  assert.match(r.stderr, /ELOOP/, r.stderr);
+  assert.match(r.stderr, /a\\nb\.jsonl/, r.stderr);
   rmSync(d, { recursive: true });
 });
 

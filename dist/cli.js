@@ -734,7 +734,9 @@ function cannotRead(cmd, file, e) {
         return `ltms ${cmd}: cannot read '${file}': permission denied. Check its permissions with: ls -l${dashFor([file])} ${q(file)}`;
     if (code === 'ERR_STRING_TOO_LONG')
         return `ltms ${cmd}: cannot read '${file}': the file is too large to load as one string (the limit is about 512 MB).`;
-    return `ltms ${cmd}: cannot read '${file}': ${e?.message ?? String(e)}`;
+    // Node's own words hold the path as given, raw: its controls escaped as the path's are, so a newline cannot split the
+    // line (S375's known issue O15, its part (b), S376)
+    return `ltms ${cmd}: cannot read '${file}': ${escapeControls(e?.message ?? String(e))}`;
 }
 function readVersion() {
     return String(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);

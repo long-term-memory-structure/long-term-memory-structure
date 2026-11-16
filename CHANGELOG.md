@@ -2,6 +2,10 @@
 
 ## Unreleased (0.3.1)
 
+- `ltms records <folder>`: the loop the message gives holds the folder's name as written; a name with `$&`, `` $` `` or `$$` in it was
+  changed by the pattern rules of the replace that built the message.
+- Every command: when a file cannot be opened for a reason other than the four named ones (a symbolic link loop, a name too
+  long), Node's own words are printed with the path's control characters escaped, so a newline in a path cannot split the line.
 - `ltms shapes --vocabulary`: the closing line says to read the words of the vocabulary given, naming its file as it was given, beside the report's allowed list, as the README and `--help` say; it named the allowed list alone.
 - `ltms shapes --vocabulary`: a `kinds.sub` entry for a kind that `values` does not list at `kinds.path` is taken, as before, and applies once `--allow` lists the kind there (the route `--unlisted` suggests); a run in which neither lists it now gets a warning on stderr naming the entry, since such records print as `(unlisted)` before their sub-kind is read.
 - README, `ltms shapes`: the order of a map's keys is stated as ltms writes it and `--check` holds it: the keys that are array indices (a whole number from 0 to 4294967294 written without leading zeros, such as a value `200` given with `--allow`) first, in numeric order, then the others by their text; it said "in ltms's order", and the code's comment "by their text". The format is unchanged (`ltms-shapes/0`).
