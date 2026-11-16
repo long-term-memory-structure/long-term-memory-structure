@@ -3255,7 +3255,10 @@ function escapeControls(s) {
 /** records' output, written to stdout synchronously: a reader that stopped (EPIPE) or a full disk (ENOSPC) throws at the
  *  write, so the reading stops there. process.stdout tells either only after the whole file was read, and keeps every
  *  part written after the failure until then (measured, S375: 100,000 writes to a closed pipe, none refused). Node has
- *  made a pipe non-blocking, so a pipe that is full (EAGAIN) is waited on, 5 ms at a time. */
+ *  made a pipe non-blocking, so a pipe that is full (EAGAIN) is waited on: 0.1 ms at first, the wait doubling while it
+ *  stays full, up to 5 ms, and 0.1 ms again once a write goes through (S375's known issue W5; measured, S376, a file of
+ *  120 MB: into | cat > file, 4.87 s where a fixed 5 ms took 8.01 s and a file 4.81 s; into | wc -l, 4.64 s where 5 ms
+ *  took 5.52 s; records' own CPU no more than with 5 ms, 4,765 ms against 4,895). */
 class RecordsOutputCut extends Error {
     failure;
     lines;
@@ -3267,8 +3270,10 @@ class RecordsOutputCut extends Error {
     }
 }
 const WAIT = new Int32Array(new SharedArrayBuffer(4));
+/** The first wait on a full pipe, and the longest, in milliseconds. */
+const WAIT_FIRST = 0.1, WAIT_MOST = 5;
 function recordsOutput() {
-    let lines = 0;
+    let lines = 0, wait = WAIT_FIRST;
     const newlines = (b) => { let n = 0; for (let i = b.indexOf(10); i >= 0; i = b.indexOf(10, i + 1))
         n++; return n; };
     return (text) => {
@@ -3276,11 +3281,13 @@ function recordsOutput() {
         for (let off = 0; off < b.length;) {
             try {
                 off += writeSync(1, b, off, b.length - off);
+                wait = WAIT_FIRST;
             }
             catch (e) {
                 const x = e;
                 if (x.code === 'EAGAIN') {
-                    Atomics.wait(WAIT, 0, 0, 5);
+                    Atomics.wait(WAIT, 0, 0, wait);
+                    wait = Math.min(wait * 2, WAIT_MOST);
                     continue;
                 }
                 throw new RecordsOutputCut(x, lines + newlines(b.subarray(0, off)));

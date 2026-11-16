@@ -657,6 +657,45 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+test('records (S376, W5): a pipe that is full is waited on 0.1 ms at first, the wait doubling up to 5 ms while it stays full and back to 0.1 ms once a write goes through (a fixed 5 ms made records into a pipe whose reader keeps up about twice as slow as into a file)', { skip: process.platform === 'win32' && 'a pipe is not made non-blocking there' }, async () => {
+  const d = tmp();
+  const demo = readFileSync(join(here, 'fixtures', 'demo.jsonl'));
+  const f = join(d, 'wwwwwwww-big.jsonl'), fd0 = openSync(f, 'w');
+  for (let i = 0; i < 160; i++) writeSync(fd0, demo); // about 4 MB of records: more than a pipe holds
+  closeSync(fd0);
+  // a module loaded first logs each write to stdout that went through (W), each that met a full pipe (E), and each wait
+  // (its milliseconds), in order
+  const mod = importModule(d, 'waits.mjs', [
+    'const writeSync = fs.writeSync, wait = Atomics.wait; const log = [];',
+    "fs.writeSync = (fd, ...a) => { if (fd !== 1) return writeSync(fd, ...a); try { const n = writeSync(fd, ...a); log.push('W'); return n; } catch (e) { log.push(e.code === 'EAGAIN' ? 'E' : 'X'); throw e; } };",
+    'Atomics.wait = (...a) => { log.push(a[3]); return wait(...a); };',
+    "process.on('exit', () => process.stderr.write('WAITS ' + JSON.stringify(log) + '\\n'));",
+  ].join('\n'));
+  const child = spawn(process.execPath, ['--import', mod, CLI, 'records', f], { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.pause(); // the reader waits half a second: the pipe fills, and the writes meet it full
+  let newlines = 0, err = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (c) => { err += c; });
+  const closed = new Promise((res) => child.on('close', res));
+  await new Promise((res) => setTimeout(res, 500));
+  child.stdout.on('data', (c) => { for (const b of c) if (b === 10) newlines++; });
+  child.stdout.resume();
+  assert.equal(await closed, 0, err);
+  assert.equal(newlines, 1 + 160 * 37, 'every line reached the reader');
+  const log = JSON.parse(/^WAITS (.*)$/m.exec(err)?.[1] ?? '[]');
+  assert.ok(log.includes('E'), 'no write met a full pipe: this test cannot see the waits');
+  let want = 0.1, waits = 0;
+  for (let i = 0; i < log.length; i++) {
+    if (log[i] === 'W') { want = 0.1; continue; }
+    if (log[i] !== 'E') continue;
+    assert.equal(log[i + 1], want, `the wait after the write that met a full pipe, event ${i} of ${log.length}: ${JSON.stringify(log.slice(Math.max(0, i - 8), i + 2))}`);
+    waits++;
+    want = Math.min(want * 2, 5);
+  }
+  assert.ok(log.filter((x) => typeof x === 'number').length === waits && log.includes(5), `every wait follows a full pipe, and the half second reached the 5 ms cap: ${waits} waits`);
+  rmSync(d, { recursive: true });
+});
+
 test('records (S376, R11): read_at is UTC, a time that ends in Z within a minute of the run\'s clock, in a zone east of UTC and in one west of it; a path given absolute, from another directory, is the header\'s path as given', () => {
   const d = tmp(), f = join(d, 'eeeeeeee-abs.jsonl');
   writeFileSync(f, '{"type":"x"}\n');
