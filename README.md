@@ -626,6 +626,14 @@ mkdir -p records; for f in <folder>/*.jsonl; do [ -f "$f" ] || continue; o="reco
 
 Exit status: 0 when the count balances; 1 when the file cannot be read, the two reads differ, a line is too long for this Node to read as a string, or the count does not balance (a bug in ltms); 2 on a usage error, a path that is not a regular file included. A write to stdout that fails (a reader that stopped before the end, as `head` does, or a full disk) is a failure too, exit 1: stderr says the records were cut and how many of their lines were written, and the second read stops there. stderr ends with the balance line; a warning comes before it (the file holds more than it had when it was opened; its path names another file by the end), and an error stands alone.
 
+The balance line in full; what is in brackets is printed only sometimes:
+
+```
+ltms records: '<file>': <n> line[s] read[ (the last without a newline)], <n> record[s] written[ (<n> <kind>, ...)]; <n> repeating an earlier record's uuid; parents: <n> in the file, <n> root[s], <n> not in this file, <n> outside the tree; links: <n> in the file, <n> not in this file.[ THE COUNT DOES NOT BALANCE: a bug in ltms (report it at <url>; an issue there is public).]
+```
+
+An `s` follows `line`, `record` and `root` when the number before it is not 1. `(the last without a newline)` is printed when the file's last line has none. The kinds are printed when a record was written: each kind that has records, with its count, in this order: input, reply, thinking, tool call, tool result, system, context, summary, compaction, marker, other, blank, malformed. `THE COUNT DOES NOT BALANCE` is printed when lines read and records written differ (exit 1). `<file>` is the path as given, as on every line records prints on stderr, with its control characters escaped (`\n`, `\t` and `\r`, any other as `\xHH`: C0, DEL and C1), so a path never splits a line.
+
 **Limits.**
 - Claude Code's transcripts only, so far: the kinds are its record types, and a file of another program gets records of kind `other` where its types are not Claude Code's. The format is version 0, a draft; the header names it, so a reader can tell when it changes.
 - The parent link is the file's own, and nothing is repaired: a parent that is not in the file stays in `supplier.parent`, a repeated record is named by `dup_of`, and a compaction's boundary is a new root. A view that repairs, such as the live path that skeleton, stats, search and index read, is not in them: it is built over them, from the links the file supplies (`parent`, `leaf`, `logical_parent`, `calls`), each as the file has it.

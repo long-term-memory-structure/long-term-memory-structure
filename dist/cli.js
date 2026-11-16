@@ -3246,6 +3246,12 @@ function shapesCheck(file, V) {
     return 0;
 }
 // ---- ltms records --------------------------------------------------------------------------------------------------
+/** A path (or an argument) as records prints it on stderr: its control characters (C0, DEL and C1) escaped, \n, \t and \r
+ *  by their names and the others as \xHH, so a path that holds a newline cannot split a line (S375's known issue O15).
+ *  Every other character, a backslash included, prints as it is. */
+function escapeControls(s) {
+    return s.replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => (c === '\n' ? `${BS}n` : c === '\t' ? `${BS}t` : c === '\r' ? `${BS}r` : `${BS}x${c.charCodeAt(0).toString(16).padStart(2, '0')}`));
+}
 /** records' output, written to stdout synchronously: a reader that stopped (EPIPE) or a full disk (ENOSPC) throws at the
  *  write, so the reading stops there. process.stdout tells either only after the whole file was read, and keeps every
  *  part written after the failure until then (measured, S375: 100,000 writes to a closed pipe, none refused). Node has
@@ -3385,7 +3391,16 @@ opened: if its path names another file by the end, stderr says so.
 stderr ends with the balance line: the lines read, the records written by
 kind, the repeats, the parent links (in the file, roots, not in this file,
 outside the tree), and the other links (in the file, not in this file). A
-warning comes before it; an error stands alone.
+warning comes before it; an error stands alone. In full, what is in brackets
+printed only sometimes:
+  ltms records: '<file>': <n> line[s] read[ (the last without a newline)], <n> record[s] written[ (<n> <kind>, ...)]; <n> repeating an earlier record's uuid; parents: <n> in the file, <n> root[s], <n> not in this file, <n> outside the tree; links: <n> in the file, <n> not in this file.[ THE COUNT DOES NOT BALANCE: a bug in ltms (report it at <url>; an issue there is public).]
+An s follows line, record and root when the number before it is not 1; the
+kinds are printed when a record was written, each kind that has records with
+its count, in the order the kind row above gives them; THE COUNT DOES NOT
+BALANCE when lines read and records written differ (exit 1). On every line
+records prints on stderr, <file> is the path as given, its control
+characters escaped (${BS}n, ${BS}t and ${BS}r, any other as ${BS}xHH: C0, DEL and C1), so
+a path never splits a line.
 
 Exit status: 0 when the count balances; 1 when the file cannot be read, the
 two reads differ, a line is too long for this Node to read as a string, the
@@ -3424,7 +3439,7 @@ function recordsRun(args) {
             return 2;
         }
         if (!ended && a.startsWith('-')) {
-            err(`ltms records: unknown option '${a}'. The options are --help and --version; put -- before a path that starts with '-'.`);
+            err(`ltms records: unknown option '${escapeControls(a)}'. The options are --help and --version; put -- before a path that starts with '-'.`);
             return 2;
         }
         paths.push(a);
@@ -3435,6 +3450,8 @@ function recordsRun(args) {
         return 2;
     }
     const file = paths[0];
+    // the path as every line below prints it: its control characters escaped, so it cannot split a line (S375's known issue O15)
+    const named = escapeControls(file);
     let isDir = false, notRegular = false;
     // a FIFO is refused here, before it is opened: opening it would join (and end) a writer already waiting on it
     try {
@@ -3443,13 +3460,13 @@ function recordsRun(args) {
         notRegular = !isDir && !pre.isFile();
     }
     catch { /* reading it below says why */ }
-    const notRegularMessage = `ltms records: '${file}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Save it to one first: a FIFO with a writer, cat ${q(file)} > transcript.jsonl; a process substitution, the command's own output (<command> > transcript.jsonl); then give that file.`;
+    const notRegularMessage = `ltms records: '${named}' is not a regular file: records reads a transcript twice (once for its links and versions, once for its records), so it needs a file. Save it to one first: a FIFO with a writer, cat ${q(named)} > transcript.jsonl; a process substitution, the command's own output (<command> > transcript.jsonl); then give that file.`;
     if (notRegular) {
         err(notRegularMessage);
         return 2;
     }
     if (isDir) {
-        err(`ltms records: '${file}' is a directory; records reads one transcript. For a folder: ${FOLDER.replace('<folder>', q(file.replace(/\/+$/, '')))}`);
+        err(`ltms records: '${named}' is a directory; records reads one transcript. For a folder: ${FOLDER.replace('<folder>', q(named.replace(/\/+$/, '')))}`);
         return 2;
     }
     // Read twice, a chunk at a time (src/records.ts says why). O_NONBLOCK: a FIFO opens at once, without waiting for a
@@ -3459,7 +3476,7 @@ function recordsRun(args) {
         fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
     }
     catch (e) {
-        err(cannotRead('records', file, e));
+        err(cannotRead('records', named, e));
         return 1;
     }
     let r;
@@ -3479,7 +3496,7 @@ function recordsRun(args) {
         }
         catch { /* a read past the size that fails tells nothing more */ }
         if (more)
-            warnings.push(`ltms records: warning: '${file}' holds more than the ${st.size} bytes it had when it was opened (it grew while it was read, or it is a file whose size is not its length, as under /proc): the records are of its first ${st.size} bytes.`);
+            warnings.push(`ltms records: warning: '${named}' holds more than the ${st.size} bytes it had when it was opened (it grew while it was read, or it is a file whose size is not its length, as under /proc): the records are of its first ${st.size} bytes.`);
         let replaced = false;
         try {
             const now = statSync(file);
@@ -3489,20 +3506,20 @@ function recordsRun(args) {
             replaced = true;
         }
         if (replaced)
-            warnings.push(`ltms records: warning: '${file}' now names another file than the one read (it was replaced or removed while it was read): the records are of the file as it was when it was opened.`);
+            warnings.push(`ltms records: warning: '${named}' now names another file than the one read (it was replaced or removed while it was read): the records are of the file as it was when it was opened.`);
     }
     catch (e) {
         if (e instanceof RecordsOutputCut) {
             outCutSaid = true;
-            err(`ltms records: '${file}': the records were cut: ${writeFailure(e.failure, 'them', e.lines, 'their lines')}; the second read stopped there, so they are not a view of it.`);
+            err(`ltms records: '${named}': the records were cut: ${writeFailure(e.failure, 'them', e.lines, 'their lines')}; the second read stopped there, so they are not a view of it.`);
             return 1;
         }
         if (e instanceof RecordsLineTooLong) {
-            err(`ltms records: '${file}': ${e.message}, so it cannot be converted; what was written before it is incomplete.`);
+            err(`ltms records: '${named}': ${e.message}, so it cannot be converted; what was written before it is incomplete.`);
             return 1;
         }
         if (typeof e?.code === 'string') {
-            err(`${cannotRead('records', file, e)} What was written before it is incomplete.`);
+            err(`${cannotRead('records', named, e)} What was written before it is incomplete.`);
             return 1;
         }
         throw e;
@@ -3511,7 +3528,7 @@ function recordsRun(args) {
         closeSync(fd);
     }
     if (r.changed) {
-        err(`ltms records: '${file}': ${r.changed}, so the records written are not a view of it. Run it again.`);
+        err(`ltms records: '${named}': ${r.changed}, so the records written are not a view of it. Run it again.`);
         return 1;
     }
     for (const w of warnings)
@@ -3519,7 +3536,7 @@ function recordsRun(args) {
     const B = r.balance;
     const kinds = RECORD_KINDS.filter((k) => B.byKind[k]).map((k) => `${B.byKind[k]} ${k}`).join(', ');
     const ok = B.linesRead === B.recordsWritten;
-    err(`ltms records: '${file}': ${plural(B.linesRead, 'line', 'lines')} read${r.header.source.last_line_unterminated ? ' (the last without a newline)' : ''}, ${plural(B.recordsWritten, 'record', 'records')} written${kinds ? ` (${kinds})` : ''}; ${B.dupOf} repeating an earlier record's uuid; parents: ${B.parents.resolved} in the file, ${B.parents.root} ${B.parents.root === 1 ? 'root' : 'roots'}, ${B.parents.unresolved} not in this file, ${B.parents.none} outside the tree; links: ${B.links.found} in the file, ${B.links.missing} not in this file.${ok ? '' : ` THE COUNT DOES NOT BALANCE: ${A_BUG}.`}`);
+    err(`ltms records: '${named}': ${plural(B.linesRead, 'line', 'lines')} read${r.header.source.last_line_unterminated ? ' (the last without a newline)' : ''}, ${plural(B.recordsWritten, 'record', 'records')} written${kinds ? ` (${kinds})` : ''}; ${B.dupOf} repeating an earlier record's uuid; parents: ${B.parents.resolved} in the file, ${B.parents.root} ${B.parents.root === 1 ? 'root' : 'roots'}, ${B.parents.unresolved} not in this file, ${B.parents.none} outside the tree; links: ${B.links.found} in the file, ${B.links.missing} not in this file.${ok ? '' : ` THE COUNT DOES NOT BALANCE: ${A_BUG}.`}`);
     return ok ? 0 : 1;
 }
 function main(argv) {

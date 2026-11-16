@@ -621,6 +621,76 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+/** The balance line's form, as the README's section on records and records --help give it (the line that starts
+ *  "ltms records: '<file>': "), as a regular expression: [ ] around what is printed only sometimes, <n> a count, <file>
+ *  the path, <url> an address, and "<n> <kind>, ..." the kinds with their counts. null when the text gives none. */
+function balanceForm(text, kinds) {
+  const form = text.split('\n').map((l) => l.trim()).find((l) => l.startsWith("ltms records: '<file>': "));
+  if (form === undefined) return null;
+  const kind = `(?:${kinds.join('|')})`;
+  const tokens = { '[': '(?:', ']': ')?', '<n> <kind>, ...': `\\d+ ${kind}(?:, \\d+ ${kind})*`, '<n>': '\\d+', '<file>': '.+?', '<url>': '\\S+' };
+  let re = '';
+  for (let i = 0; i < form.length;) {
+    const t = Object.keys(tokens).find((k) => form.startsWith(k, i));
+    if (t) { re += tokens[t]; i += t.length; } else { re += form[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); i++; }
+  }
+  return { form, re: new RegExp(`^${re}$`) };
+}
+
+test('records (S376, O15): the README and --help give the balance line in full, every form it takes; a path is printed with its control characters escaped, so it never splits a line of stderr', async (t) => {
+  const R = await import(pathToFileURL(join(DIST, 'records.js')).href);
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+  const start = readme.indexOf('### `ltms records');
+  const section = readme.slice(start, readme.indexOf('\n### ', start + 1));
+  const fromReadme = balanceForm(section, R.RECORD_KINDS), fromHelp = balanceForm(run('--help').stdout, R.RECORD_KINDS);
+  assert.ok(fromReadme, 'the README\'s section on records gives no form of the balance line (a line that starts "ltms records: \'<file>\': ")');
+  assert.ok(fromHelp, 'records --help gives no form of the balance line');
+  assert.equal(fromHelp.form, fromReadme.form, 'the help gives the README\'s form');
+  // every form: many lines and records, one, none; a last line without a newline; one root, several; a count that does
+  // not balance (R10's splitter that loses a line)
+  const d = tmp();
+  const put = (name, text) => { const f = join(d, name); writeFileSync(f, text); return f; };
+  const rec = (u, p) => JSON.stringify({ type: 'user', uuid: u, parentUuid: p, message: { content: 'x' }, promptSource: 'typed' });
+  const files = [
+    join(here, 'fixtures', 'demo.jsonl'), synthetic(d), put('empty.jsonl', ''), put('one.jsonl', '{"type":"x"}'), put('blank.jsonl', '\n'),
+    put('roots.jsonl', [rec('r1', null), rec('r2', null), rec('c1', 'r1')].join('\n') + '\n'),
+  ];
+  const balance = [];
+  for (const f of files) { const r = run(f); assert.equal(r.status, 0, r.stderr); balance.push(r.stderr.trimEnd().split('\n').pop()); }
+  const skip = importModule(d, 'skip.mjs', [
+    'const indexOf = Buffer.prototype.indexOf; let starts = 0;',
+    'Buffer.prototype.indexOf = function (v, from, ...rest) { if (v === 10 && from === 0 && ++starts === 2) { const i = indexOf.call(this, v, 0); return i < 0 ? i : indexOf.call(this, v, i + 1); } return indexOf.call(this, v, from, ...rest); };',
+  ].join('\n'));
+  const u = spawnSync(process.execPath, ['--import', skip, CLI, 'records', files[1]], { encoding: 'utf8', maxBuffer: 64 << 20 });
+  assert.equal(u.status, 1, u.stderr);
+  balance.push(u.stderr.trimEnd().split('\n').pop());
+  for (const l of balance) {
+    assert.match(l, fromReadme.re, `a balance line the README's form does not give: ${l}`);
+    assert.match(l, fromHelp.re, `a balance line the help's form does not give: ${l}`);
+  }
+  for (const seen of [/: 37 lines read, /, /: 1 line read \(the last without a newline\), 1 record written \(1 other\); /, /: 0 lines read, 0 records written; /, /: 1 line read, 1 record written \(1 blank\); /, / 1 root, /, / 2 roots, /, / THE COUNT DOES NOT BALANCE: /]) {
+    assert.ok(balance.some((l) => seen.test(l)), `no balance line here has the form ${seen}: the test misses a form`);
+  }
+  // a path that holds control characters: escaped (\n, \t, \r by name, any other as \xHH), on every line records prints
+  if (process.platform === 'win32') { t.diagnostic('no control characters in a name on win32'); rmSync(d, { recursive: true }); return; }
+  const odd = 'new\nline\ttab\rcr\x01\x7f\u0085', escaped = 'new\\nline\\ttab\\rcr\\x01\\x7f\\x85';
+  const named = join(d, `${odd}.jsonl`);
+  writeFileSync(named, readFileSync(join(here, 'fixtures', 'demo.jsonl')));
+  const dirNamed = join(d, `${odd}-dir.jsonl`); mkdirSync(dirNamed);
+  const fifoNamed = join(d, `${odd}-fifo.jsonl`);
+  const cases = [[named, 0, / 37 lines read, /], [join(d, `${odd}-missing.jsonl`), 1, /cannot read .*: no such file or directory/], [dirNamed, 2, /is a directory; records reads one transcript\. For a folder: /]];
+  if (spawnSync('mkfifo', [fifoNamed]).status === 0) cases.push([fifoNamed, 2, /is not a regular file/]);
+  for (const [f, status, re] of cases) {
+    const r = run(f);
+    assert.equal(r.status, status, r.stderr);
+    assert.equal(r.stderr.split('\n').filter(Boolean).length, 1, `one line of stderr for '${JSON.stringify(f)}', not split by its path: ${JSON.stringify(r.stderr)}`);
+    assert.match(r.stderr, re);
+    assert.ok(r.stderr.includes(`'${d}/${escaped}`), `the path with its control characters escaped: ${JSON.stringify(r.stderr)}`);
+    assert.doesNotMatch(r.stderr, /[\x00-\x09\x0b-\x1f\x7f-\x9f]/, 'a control character on stderr');
+  }
+  rmSync(d, { recursive: true });
+});
+
 test('records (S376, CS): a write to stdout that fails after one line was written says so in the singular, "after 1 of their lines was written", in the words shapes shares', () => {
   const d = tmp(), f = synthetic(d);
   // the second write to stdout fails as a reader that stopped makes it fail: the first, the header, was written whole
