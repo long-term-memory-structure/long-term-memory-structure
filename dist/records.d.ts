@@ -17,23 +17,26 @@ export interface RecordSrc {
     /** The sha256 of exactly those bytes, in hex. */
     sha256: string;
 }
-/** What the source says of a record, as it wrote it. */
+/** What the source says of a record: each value only when the record has its key, as written when it passes the label
+ *  rule, else (withheld), as is a value that is not a string. */
 export interface RecordSupplier {
-    /** Its type, when it is a string (by the label rule). */
+    /** Its type. */
     type?: string;
-    /** A system record's subtype, or an attachment's type, when it is a string. */
+    /** A system record's subtype, or an attachment's type (its attachment's type key). */
     subtype?: string;
-    /** Its uuid (records with the envelope). */
+    /** Its uuid, on any record that has one, with a parentUuid or without (a sidecar's too). */
     id?: string;
-    /** Its parentUuid, or null (records with the envelope). */
+    /** Its parentUuid, or null for a root, on any record that has one, with a uuid or without. */
     parent?: string | null;
     /** The version of the program that wrote it. */
     version?: string;
-    /** Its leafUuid (a marker's: the record the session's head points to). */
+    /** Its leafUuid (a marker's: the record the session's head points to), whether or not a record in the file carries
+     *  it. */
     leaf?: string;
-    /** Its logicalParentUuid (a compaction's boundary: the record before it). */
+    /** Its logicalParentUuid (a compaction's boundary: the record before it), whether or not a record in the file carries
+     *  it. */
     logical_parent?: string;
-    /** Its tool results' tool_use_ids, in block order. */
+    /** The tool_use_id of each of its tool_result blocks, in block order (a user record's). */
     calls?: string[];
     /** Its sessionId. */
     session?: string;

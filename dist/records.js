@@ -16,7 +16,7 @@
 //                  is context (what the harness added to the model's context).
 //   system         compact_boundary is compaction; any other subtype is system.
 //   last-prompt    marker (the session's head pointer).
-//   any other type other (its type kept, as every record's is, in supplier.type).
+//   any other type other (its type in supplier.type, by the label rule, as every record's that has one).
 //   A line of white space only is blank; one that is not a JSON object is malformed.
 //
 // The parent link: a record with a parentUuid key (with a uuid or without one) has parent_by "supplied": parent is the
@@ -48,7 +48,7 @@ export const RECORDS_FORMAT = 'ltms-records/0';
 export const RECORD_KINDS = ['input', 'reply', 'thinking', 'tool call', 'tool result', 'system', 'context', 'summary', 'compaction', 'marker', 'other', 'blank', 'malformed'];
 const NL = 0x0a;
 /** The label rule, as cli.ts, search.ts and shapes.ts hold it (a test holds this copy equal to cli.ts's): a string the
- *  file wrote prints only when it is at most 64 ASCII letters, digits and . _ : + -, else as (withheld). The links are
+ *  file wrote prints only when it is 1 to 64 ASCII letters, digits and . _ : + -, else as (withheld). The links are
  *  made from the values as written; only what is printed passes the rule. */
 const LABEL = /^[\w.:+-]{1,64}$/;
 const WITHHELD = '(withheld)';
