@@ -2828,9 +2828,11 @@ A record, one per line of the file:
                 and the header's versions. A parentUuid that is not a string
                 names a parent not in this file
   time          as_written (its timestamp), utc (the instant in UTC, when the
-                stamp is an ISO 8601 date and time with its zone that names a
-                real one, even when as_written is withheld), kind
-                ("stamped"); no time when the record has no timestamp
+                stamp is an ISO 8601 date and time in the extended format
+                (2026-01-05T09:00:00, a fraction allowed) with its zone (Z or
+                z, or an offset of hours and minutes) that names a real one,
+                even when as_written is withheld), kind ("stamped"); no time
+                when the record has no timestamp
   src           where its bytes are: kind ("line"), line, offset (bytes from
                 the file's start), bytes (its length, without the newline),
                 sha256 (of exactly those bytes)

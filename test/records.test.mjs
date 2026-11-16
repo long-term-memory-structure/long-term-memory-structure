@@ -651,6 +651,21 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+test('records (S376, UTC): utc only for a stamp in the extended format with seconds and a zone of Z or hours and minutes, as the README\'s and --help\'s time rows say: reduced precision, an offset of hours alone and the basic format get none', () => {
+  const flat = (s) => s.replace(/\s+/g, ' ').replace(/`/g, '');
+  const words = 'an ISO 8601 date and time in the extended format (2026-01-05T09:00:00, a fraction allowed) with its zone (Z or z, or an offset of hours and minutes)';
+  assert.ok(flat(readFileSync(join(root, 'README.md'), 'utf8')).includes(words), "the README's time row");
+  assert.ok(flat(run('--help').stdout).includes(words), "records --help's time row says which stamps get a utc");
+  const d = tmp(), f = join(d, 'uuuuuuuu-stamps.jsonl');
+  const stamps = [['2026-01-01T10:00Z', undefined], ['2026-01-01T10:00:00+02', undefined], ['20260101T100000Z', undefined], ['2026-01-01T10:00:00Z', '2026-01-01T10:00:00.000Z'], ['2026-01-01T10:00:00.5+02:00', '2026-01-01T08:00:00.500Z'], ['2026-01-01T10:00:00+0200', '2026-01-01T08:00:00.000Z']];
+  writeFileSync(f, stamps.map(([t], i) => JSON.stringify({ type: 'user', uuid: `t${i}`, parentUuid: null, timestamp: t, message: { content: 'x' }, promptSource: 'typed' })).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [, ...recs] = lines(r.stdout);
+  stamps.forEach(([t, utc], i) => assert.equal(recs[i].time.utc, utc, t));
+  rmSync(d, { recursive: true });
+});
+
 test('records (S376, R2 O4): the check the README and --help give, run as they give it on a transcript still being written (its last line half written, then finished, then followed by more): the bytes the header names balance the records', { skip: process.platform === 'win32' && 'head -c and wc -l' }, () => {
   const flat = (s) => s.replace(/\s+/g, ' ');
   const readme = flat(readFileSync(join(root, 'README.md'), 'utf8')), help = flat(run('--help').stdout);
