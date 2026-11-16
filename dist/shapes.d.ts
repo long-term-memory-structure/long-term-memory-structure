@@ -188,6 +188,12 @@ export interface ShapesReadOptions {
  *  whose first line is a report's or an --unlisted list's is ltms shapes' own output: nothing of it is read, and it is
  *  listed in skipped. */
 export declare function readShapes(V: ShapesVocabulary, files: readonly string[], opts: ShapesReadOptions): ShapesRun;
+/** Numeric order; equal numbers by their text. The version rule gives each version one spelling, so two never tie; the
+ *  text decides if a rule ever lets two spellings of one number through (1.2.3, 01.2.3), so that no order of the files
+ *  or of the records, which decides where each was met first, reaches a report (S374's closure read, S4). Exported for
+ *  the tests alone: no report reaches the tie-break, since every caller hands it versions by the rule (S375's known
+ *  issue S4t); it is not a part of the module's use. */
+export declare const vcmp: (a: string, b: string) => number;
 /** A line of a report, as built and as written: one JSON object whose `k` names its kind. */
 export type ShapesLine = Record<string, unknown>;
 /** A report, built, and the counts of its path lines (for the command's closing line on stderr). */

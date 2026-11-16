@@ -2429,3 +2429,26 @@ test("shapes (0.3.1, k10): a path line with a first version and no last, a last 
     }
   } finally { rm(dir); }
 });
+
+// S4t (S375's closure check of S4): vcmp's tie-break, which orders versions equal as numbers by their text, was reached
+// by no test. Since U3 the version rule gives each version one spelling, so no report holds two versions equal as
+// numbers, and every caller of vcmp (versionOrder: the builder's sort, --check's order of lines and of a kind line's
+// versions) hands it only versions by the rule; S375's mutant K8, the tie-break made `return 0`, lived. No other route
+// reaching it, dist/shapes.js exports vcmp for this test: equal numbers spelled apart come in the order of their text,
+// the same whichever is given first, and numbers decide before text.
+test("shapes (0.3.1, S4t): vcmp, the versions' order, a unit test: versions equal as numbers but spelled apart come in the order of their text, the same whichever is given first; numbers decide before text", () => {
+  assert.equal(typeof SH.vcmp, 'function', 'dist/shapes.js exports vcmp');
+  const text = (a, b) => (a < b ? -1 : a > b ? 1 : 0), sign = (x) => Math.sign(x);
+  // equal as numbers, each pair in the order of its text
+  for (const [a, b] of [['01.2.3', '1.2.3'], ['1.02.3', '1.2.3'], ['01.2.3', '1.02.3'], ['1.2.03', '1.2.3'], ['0.0.0', '0000.0000.0']]) {
+    assert.equal(text(a, b), -1, `${a} comes before ${b} as text`);
+    assert.deepEqual([sign(SH.vcmp(a, b)), sign(SH.vcmp(b, a))], [-1, 1], `${a} and ${b}: equal as numbers, ordered by their text`);
+  }
+  assert.equal(SH.vcmp('1.2.3', '1.2.3'), 0, 'the same version');
+  // every order of three spellings of one number gives one order
+  const spellings = ['1.2.3', '01.2.3', '1.02.3'];
+  const orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]].map((o) => o.map((i) => spellings[i]));
+  for (const o of orders) assert.deepEqual([...o].sort(SH.vcmp), ['01.2.3', '1.02.3', '1.2.3'], `sorted from ${o.join(', ')}`);
+  // numbers decide before text
+  for (const [a, b] of [['9.0.0', '10.0.0'], ['2.1.300', '2.1.1000'], ['1.9.1', '1.10.0'], ['01.9.9', '1.10.0']]) assert.deepEqual([sign(SH.vcmp(a, b)), sign(SH.vcmp(b, a))], [-1, 1], `${a} before ${b}, by number`);
+});

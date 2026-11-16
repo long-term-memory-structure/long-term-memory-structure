@@ -748,8 +748,10 @@ export function readShapes(V, files, opts) {
 const vkey = (v) => v.split('.').map(Number);
 /** Numeric order; equal numbers by their text. The version rule gives each version one spelling, so two never tie; the
  *  text decides if a rule ever lets two spellings of one number through (1.2.3, 01.2.3), so that no order of the files
- *  or of the records, which decides where each was met first, reaches a report (S374's closure read, S4). */
-const vcmp = (a, b) => { const x = vkey(a), y = vkey(b); for (let i = 0; i < 3; i++)
+ *  or of the records, which decides where each was met first, reaches a report (S374's closure read, S4). Exported for
+ *  the tests alone: no report reaches the tie-break, since every caller hands it versions by the rule (S375's known
+ *  issue S4t); it is not a part of the module's use. */
+export const vcmp = (a, b) => { const x = vkey(a), y = vkey(b); for (let i = 0; i < 3; i++)
     if (x[i] !== y[i])
         return x[i] - y[i]; return cmp(a, b); };
 /** THE BUILDER'S ORDERS, each one function, which buildReport sorts by and the check (checkRows) holds a report to.
