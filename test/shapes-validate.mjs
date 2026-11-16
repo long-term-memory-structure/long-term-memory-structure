@@ -21,6 +21,9 @@
 //   - validateText: the bytes too, which JSON.parse does not see: no byte-order mark, no blank line, and each line
 //     exactly JSON.stringify of what it parses to (a key given twice, a space, an escape, a carriage return or another
 //     spelling of a number fails). The command line uses it, so it no longer drops blank lines.
+// Changed for 0.3.1, after S375's known issues:
+//   - kindOk: a kind is one of the format's four words for a kind, a kind the vocabulary or the allowed list puts at the
+//     kind path, or kind:sub, and no other word of the format, at a line's kind field and as the line's own check (k4).
 //   node test/shapes-validate.mjs <report.jsonl> <vocabulary.json>...     exit 0 when every token is allowed
 import { pathToFileURL } from 'node:url';
 import { readFileSync, realpathSync } from 'node:fs';
@@ -105,10 +108,11 @@ export function validate(lines, vocabFiles) {
   const header = lines[0];
   if (!header || header.k !== 'shapes' || !Array.isArray(header.allowed)) return [{ line: 1, at: 'header' }];
   const L = language(vocabFiles, header.allowed);
-  const kindOk = (k) => FIXED.has(k) || (L.VALUES.get(L.KIND.path)?.has(k) && !L.KIND.sub.has(k)) || (() => { const i = k.indexOf(':'); if (i < 0) return false; const t = k.slice(0, i), s = k.slice(i + 1); const sp = L.KIND.sub.get(t); return !!sp && !!L.VALUES.get(L.KIND.path)?.has(t) && (['(unlisted)', '(none)', '(not a string)'].includes(s) || !!L.VALUES.get(sp)?.has(s)); })();
-  // a kind a line may name: the four words, a kind the vocabulary lists that has no sub-kind's path, or kind:sub (kindOk
-  // also takes any fixed word, for the walk)
-  const kindToken = (k) => typeof k === 'string' && (['(unlisted)', '(none)', '(not a string)', '(all)'].includes(k) || (k.includes(':') ? kindOk(k) && !FIXED.has(k) : !!L.VALUES.get(L.KIND.path)?.has(k) && !L.KIND.sub.has(k)));
+  // a kind, at a line's kind field (the walk) and as the line's own check: the format's four words for a kind, wherever a
+  // kind stands; a kind the vocabulary or the allowed list puts at the kind path, that has no sub-kind's path; or
+  // kind:sub, sub being (unlisted), (none), (not a string) or a value at that kind's sub-kind path. No other word of the
+  // format (S375's known issue k4)
+  const kindOk = (k) => typeof k === 'string' && (['(unlisted)', '(none)', '(not a string)', '(all)'].includes(k) || (!!L.VALUES.get(L.KIND.path)?.has(k) && !L.KIND.sub.has(k)) || (() => { const i = k.indexOf(':'); if (i < 0) return false; const t = k.slice(0, i), s = k.slice(i + 1); const sp = L.KIND.sub.get(t); return !!sp && !!L.VALUES.get(L.KIND.path)?.has(t) && (['(unlisted)', '(none)', '(not a string)'].includes(s) || !!L.VALUES.get(sp)?.has(s)); })());
   const pathOk = (p) => L.P.has(p) || p === '.*' || (p.endsWith('.*') && L.P.has(p.slice(0, -2))) || (p.endsWith('[]') && L.P.has(p.slice(0, -2)));
   const anyValue = (s) => [...L.VALUES.values()].some((set) => set.has(s));
   const floor = Number.isSafeInteger(header.floor) && header.floor >= 2 ? header.floor : null;
@@ -125,8 +129,9 @@ export function validate(lines, vocabFiles) {
       }
       if (typeof v === 'boolean' || v === null) { bad(key); return; }
       if (typeof v === 'string') {
-        const ok = FIXED.has(v) || isBucket(v) || isVersion(v) || (key === 'name' && L.names.has(v)) || (key === 'sha256' && /^[0-9a-f]{12}$/.test(v))
-          || (key === 'path' && pathOk(v)) || (key === 'kind' && kindOk(v)) || (ctx === 'allowed' && header.allowed.includes(v)) || key === 'format' && v === 'ltms-shapes/0';
+        // at a line's kind field, a kind and nothing else; anywhere else, any token of the language that may stand there
+        const ok = key === 'kind' && ctx === 'kind' ? kindOk(v) : FIXED.has(v) || isBucket(v) || isVersion(v) || (key === 'name' && L.names.has(v)) || (key === 'sha256' && /^[0-9a-f]{12}$/.test(v))
+          || (key === 'path' && pathOk(v)) || (ctx === 'allowed' && header.allowed.includes(v)) || key === 'format' && v === 'ltms-shapes/0';
         if (!ok) bad(key);
         return;
       }
@@ -154,7 +159,7 @@ export function validate(lines, vocabFiles) {
         }
       }
       if (o.k === 'version' && !isVersionToken(o.v)) bad('v');
-      if (['kind', 'path', 'rare'].includes(o.k) && !kindToken(o.kind)) bad('kind');
+      if (['kind', 'path', 'rare'].includes(o.k) && !kindOk(o.kind)) bad('kind');
       if (o.k === 'kind') {
         const ks = isObj(o.versions) ? Object.keys(o.versions) : null;
         if (!ks || !ks.every(isVersionToken) || !Object.values(o.versions).every(isBucket) || !sameList(ks, asListed([...ks].sort(vOrder)))) bad('versions');

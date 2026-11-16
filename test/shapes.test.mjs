@@ -2268,3 +2268,39 @@ test('shapes (0.3.1, k3): every kind the reading gives is one the language admit
     assert.deepEqual([[...g0], [...a0].sort()], [['(all)'], FOUR_KIND_WORDS], 'no kind path, over the records of every way');
   } finally { rm(dir); }
 });
+
+// k4 (S375's known issues, for 0.3.1): the receiver's validator's kindOk, its check of the token at a kind, began with
+// FIXED.has(k): any word of the format (int, version, (rare), shapes) passed it as a kind, and only the line's own check
+// (kindToken, since 12986c8) refused one, where a word outside the language failed both. kindOk now takes only the
+// vocabulary's kinds, the allowed list's and the format's four words for a kind, and the line's check is the same
+// function, so that a word of the format at a kind fails as any word outside the language does; and on every kind the
+// validator gives the verdict of --check's language.
+test("shapes (0.3.1, k4): the receiver's validator takes as a kind only the vocabulary's kinds, the allowed list's and the format's four words for a kind: any other word of the format at a kind is refused as a word outside the language is, at a kind, path or rare line; on every kind its verdict is --check's", () => {
+  const bytes = readFileSync(DOCS), v = JSON.parse(bytes.toString('utf8'));
+  const head = (allowed) => ({ k: 'shapes', format: 'ltms-shapes/0', vocabulary: [{ name: v.name, sha256: createHash('sha256').update(bytes).digest('hex').slice(0, 12), paths: v.paths.length, values: Object.values(v.values).flat().length }], floor: 3, allowed, files: { read: '1', failed: '0' }, lines: { records: '1', blank: '0', notJson: '0', notObject: '0', tooLong: '0' } });
+  const lineOf = { kind: (kind) => ({ k: 'kind', kind, records: '1', files: '1', versions: {} }), path: (kind) => ({ k: 'path', kind, path: '.type', n: '4-7', files: '4-7' }), rare: (kind) => ({ k: 'rare', kind, paths: '1', n: '1' }) };
+  const problems = (k, kind, allowed = []) => validate([head(allowed), lineOf[k](kind), { k: 'end', lines: 3 }], [DOCS]);
+  // every word of the format but the four for a kind
+  const WORDS = ['shapes', 'version', 'kind', 'path', 'rare', 'end', 'ltms-shapes/0', '(rare)', '(withheld)', '64+', 'array', 'boolean', 'null', 'number', 'object', 'string',
+    'empty', 'uuid', 'iso8601-utc', 'iso8601-offset', 'iso8601-local', 'date', 'digits', 'hex', 'label', 'text', 'int', 'float', 'epoch-s', 'epoch-ms', 'true', 'false'];
+  const wrong = [];
+  for (const k of Object.keys(lineOf)) {
+    const outside = JSON.stringify(problems(k, 'zq-not-a-kind'));
+    assert.notEqual(outside, '[]', `a ${k} line whose kind is outside the language is refused`);
+    for (const w of WORDS) { const got = JSON.stringify(problems(k, w)); if (got !== outside) wrong.push(`a ${k} line of the kind ${w}: ${got}, where a word outside the language gives ${outside}`); }
+  }
+  assert.deepEqual(wrong, [], 'each word of the format at a kind, refused as a word outside the language is');
+  // one verdict with --check's language (checkLine) on each kind: the vocabulary's, the allowed list's, the four words,
+  // the other words of the format, and kind:sub joined in each way
+  const allowed = ['.subtype=zq_sub', '.type=zq_kind'];
+  const V = SH.loadVocabulary(DOCS), Lg = SH.shapesLanguage(V, SH.applyAllow(V, allowed));
+  const subs = [...FOUR_KIND_WORDS, ...WORDS, ...Object.values(v.values).flat(), 'zq_sub', 'zq_kind', '', 'x:y'];
+  const candidates = [...Lg.kindTokens, ...WORDS, 'system', 'attachment', 'zq_sub', '', ':', 'zq-not-a-kind', ...['system', 'attachment', 'user', 'zq_kind', '(none)', ''].flatMap((t) => subs.map((s) => `${t}:${s}`))];
+  const differ = [];
+  for (const kind of new Set(candidates)) {
+    const ltms = SH.checkLine(lineOf.kind(kind), Lg) === null, receiver = problems('kind', kind, allowed).length === 0;
+    if (ltms !== receiver) differ.push(`${kind}: --check's language ${ltms ? 'admits' : 'refuses'} it, the validator ${receiver ? 'admits' : 'refuses'} it`);
+  }
+  assert.ok(candidates.length > 500, `${candidates.length} kinds`);
+  assert.deepEqual(differ, [], 'the same verdict on each kind');
+});
