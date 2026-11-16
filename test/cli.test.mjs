@@ -1730,36 +1730,49 @@ const ASTRAL_NAMES = [
 ];
 /** The prefix of an address, <prefix>:L<n> or <prefix>:T<nnn>. */
 const prefixIn = (a) => a.slice(0, a.lastIndexOf(':'));
-test("O9 (0.3.1): the address prefix is a name's first 8 code points (agent- and the 8 after it), never a character cut in two: skeleton, stats, search, index and records give each name that prefix, and records' output parses in jq", () => {
+/** The prefixes each command gives `f`, from every address it prints, and records' output. */
+function prefixesOf(f) {
+  const got = {};
+  const sk = parsed(run('skeleton', f).out);
+  got.skeleton = [...new Set(sk.flatMap((l) => [l.a, l.ta, ...(l.r ? [l.r] : [])]).map(prefixIn))];
+  got.stats = parsed(run('stats', f).out).map((l) => l.session);
+  const se = parsed(run('search', 'npm', f).out);
+  got.search = [...new Set([...se.filter((l) => l.k === 'file').map((l) => l.p), ...se.filter((l) => l.k === 'hit').flatMap((l) => [l.ta, ...l.at.map((x) => x.a)]).map(prefixIn)])];
+  const ix = parsed(run('index', f).out).filter((l) => l.k === 'session');
+  got.index = [...new Set([...ix.map((l) => l.p), ...ix.flatMap((l) => [l.firstPrompt, l.lastPrompt, l.lastReply].filter((a) => a !== null)).map(prefixIn)])];
+  const rec = run('records', f);
+  assert.equal(rec.code, 0, `${f}: ${rec.err}`);
+  const rs = parsed(rec.out);
+  got.records = [...new Set([rs[0].source.id, ...rs.slice(1).map((r) => prefixIn(r.id))])];
+  return { got, records: rec.out };
+}
+test("O9 (0.3.1): the address prefix is a name's first 8 code points (agent- and the 8 after it), never a character cut in two: skeleton, stats, search, index and records give each name that prefix", () => {
   const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
   try {
-    const jq = spawnSync('jq', ['--version'], { encoding: 'utf8' });
     for (const [name, prefix] of ASTRAL_NAMES) {
       const f = join(dir, name);
       writeFileSync(f, readFileSync(DEMO));
-      // each command's prefixes, from every address it prints
-      const got = {};
-      const sk = parsed(run('skeleton', f).out);
-      got.skeleton = [...new Set(sk.flatMap((l) => [l.a, l.ta, ...(l.r ? [l.r] : [])]).map(prefixIn))];
-      got.stats = parsed(run('stats', f).out).map((l) => l.session);
-      const se = parsed(run('search', 'npm', f).out);
-      got.search = [...new Set([...se.filter((l) => l.k === 'file').map((l) => l.p), ...se.filter((l) => l.k === 'hit').flatMap((l) => [l.ta, ...l.at.map((x) => x.a)]).map(prefixIn)])];
-      const ix = parsed(run('index', f).out).filter((l) => l.k === 'session');
-      got.index = [...new Set([...ix.map((l) => l.p), ...ix.flatMap((l) => [l.firstPrompt, l.lastPrompt, l.lastReply].filter((a) => a !== null)).map(prefixIn)])];
-      const rec = run('records', f);
-      assert.equal(rec.code, 0, `${name}: ${rec.err}`);
-      const rs = parsed(rec.out);
-      got.records = [...new Set([rs[0].source.id, ...rs.slice(1).map((r) => prefixIn(r.id))])];
+      const { got, records } = prefixesOf(f);
       assert.deepEqual(got, { skeleton: [prefix], stats: [prefix], search: [prefix], index: [prefix], records: [prefix] }, name);
-      assert.doesNotMatch(rec.out, /\\ud[89a-f][0-9a-f]{2}/i, `${name}: no surrogate written as an escape`);
-      // records' output parses in jq, its ids as JSON.parse reads them
-      if (!jq.error && jq.status === 0) {
-        const q = spawnSync('jq', ['-c', '.id'], { input: rec.out, encoding: 'utf8' });
-        assert.equal(q.status, 0, `${name}: jq: ${q.stderr}`);
-        assert.deepEqual(nonEmpty(q.stdout).map((l) => JSON.parse(l)), rs.map((r) => r.id ?? null), name);
-      }
+      assert.doesNotMatch(records, /\\ud[89a-f][0-9a-f]{2}/i, `${name}: no surrogate written as an escape`);
     }
-    if (jq.error || jq.status !== 0) assert.fail(`jq is not installed here (${jq.error?.code ?? jq.status}): records' output was not given to it`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+const JQ = spawnSync('jq', ['--version'], { encoding: 'utf8' });
+const noJq = JQ.error || JQ.status !== 0 ? `jq cannot be run here (${JQ.error?.code ?? `exit ${JQ.status}`})` : false;
+test("O9 (0.3.1): records' output for each of those names parses in jq, its ids as JSON.parse reads them (0.3.0's cut one in two, and jq refused it at its header, exit 5)", { skip: noJq }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ltms-test-'));
+  try {
+    for (const [name] of ASTRAL_NAMES) {
+      const f = join(dir, name);
+      writeFileSync(f, readFileSync(DEMO));
+      const r = run('records', f);
+      assert.equal(r.code, 0, `${name}: ${r.err}`);
+      const q = spawnSync('jq', ['-c', '.id'], { input: r.out, encoding: 'utf8' });
+      assert.equal(q.status, 0, `${name}: jq: ${q.stderr}`);
+      assert.deepEqual(nonEmpty(q.stdout).map((l) => JSON.parse(l)), parsed(r.out).map((x) => x.id ?? null), name);
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
