@@ -2304,3 +2304,32 @@ test("shapes (0.3.1, k4): the receiver's validator takes as a kind only the voca
   assert.ok(candidates.length > 500, `${candidates.length} kinds`);
   assert.deepEqual(differ, [], 'the same verdict on each kind');
 });
+
+// k8 (S375's known issues, for 0.3.1): no test failed when --check's floor rule lost its safe-integer clause
+// (Number.isSafeInteger made Number.isInteger: S375's mutant SH-floor-int lived, 65 passed, 0 failed). The suite's floors
+// past the range were written as JSON never writes a number ('1e300' for 1e+300; '9007199254740993', which a double holds
+// as 9007199254740992), so the rule that a line is written as ltms writes it refused them first. Here each is written as
+// JSON writes it, in a report with no path line (made at floor 31337), where a mutant without the clause finds nothing
+// else to refuse: 9007199254740993 (written 9007199254740992) and 1e21 (written 1e+21), each refused by --check at the
+// floor and by the receiver's validator; the largest floor, 9007199254740991, passes both.
+test("shapes (0.3.1, k8): --check and the receiver's validator refuse a floor past 9007199254740991 written as JSON writes it, 9007199254740993 (9007199254740992) and 1e21 (1e+21), in a report where nothing else fails; 9007199254740991 passes both", () => {
+  const dir = tmp();
+  try {
+    const R = shapes(['--floor', '31337', ...CC]).out.slice(0, -1).split('\n');
+    assert.ok(R.length > 3 && !R.some((r) => r.startsWith('{"k":"path"')), 'the report at floor 31337 has no path line');
+    const f = join(dir, 'r.txt');
+    const run = (floor) => {
+      writeFileSync(f, [JSON.stringify({ ...JSON.parse(R[0]), floor }), ...R.slice(1)].join('\n') + '\n');
+      return [shapes(['--check', f]), spawnSync(process.execPath, [join(here, 'shapes-validate.mjs'), f, DOCS], { encoding: 'utf8' }), readFileSync(f, 'utf8')];
+    };
+    for (const [floor, written] of [[9007199254740993, '9007199254740992'], [1e21, '1e+21']]) {
+      const [c, v, text] = run(floor);
+      assert.ok(text.startsWith('{"k":"shapes",') && text.includes(`,"floor":${written},`), `the floor written as JSON writes it, ${written}`);
+      assert.deepEqual([c.code, c.out], [1, ''], `floor ${written}: ${c.err}`);
+      assert.match(c.err, /^ltms shapes --check: line 1: its floor is not a whole number of files from 2 to 9007199254740991\.\n.*: 1 problem; do not send it as it is\.\n$/, `floor ${written}: ${c.err}`);
+      assert.deepEqual([v.status, /first at line 1 \(floor\)/.test(v.stderr)], [1, true], `floor ${written}: the validator: ${v.stderr}`);
+    }
+    const [c, v] = run(9007199254740991);
+    assert.deepEqual([c.code, v.status], [0, 0], `floor 9007199254740991: ${c.err} ${v.stderr}`);
+  } finally { rm(dir); }
+});
