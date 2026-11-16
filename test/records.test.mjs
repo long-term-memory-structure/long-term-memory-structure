@@ -651,6 +651,26 @@ test('records (S375, O1 O7): a write to stdout that fails (a reader gone before 
   rmSync(d, { recursive: true });
 });
 
+test('records (S376, R8): a group taken from the message id, where there is no requestId, passes the label rule: a message id that fails it prints (withheld)', () => {
+  const d = tmp(), f = join(d, 'mmmmmmmm-msgid.jsonl');
+  const odd = (k) => `zq odd ${k} / with a slash`;
+  const a = (uuid, extra) => ({ type: 'assistant', uuid, parentUuid: null, message: { content: [{ type: 'text', text: 't' }], ...extra.message }, ...extra.top });
+  const L = [
+    a('g1', { message: { id: odd('message id') }, top: {} }),                            // no requestId: the message id groups, and fails the rule
+    a('g2', { message: { id: 'u'.repeat(65) }, top: {} }),                               // 65 characters
+    a('g3', { message: { id: '' }, top: {} }),                                           // empty
+    a('g4', { message: { id: 'msg_ok' }, top: {} }),                                     // passes
+    a('g5', { message: { id: odd('beside a requestId') }, top: { requestId: 7 } }),      // a requestId that is not a string
+  ];
+  writeFileSync(f, L.map((x) => JSON.stringify(x)).join('\n') + '\n');
+  const r = run(f);
+  assert.equal(r.status, 0, r.stderr);
+  const [, ...recs] = lines(r.stdout);
+  assert.deepEqual(recs.map((x) => x.group), ['(withheld)', '(withheld)', '(withheld)', 'msg_ok', '(withheld)']);
+  assert.doesNotMatch(r.stdout + r.stderr, /zq odd|u{65}/, 'a message id that fails the label rule, printed as written');
+  rmSync(d, { recursive: true });
+});
+
 test('records (S376, UTC): utc only for a stamp in the extended format with seconds and a zone of Z or hours and minutes, as the README\'s and --help\'s time rows say: reduced precision, an offset of hours alone and the basic format get none', () => {
   const flat = (s) => s.replace(/\s+/g, ' ').replace(/`/g, '');
   const words = 'an ISO 8601 date and time in the extended format (2026-01-05T09:00:00, a fraction allowed) with its zone (Z or z, or an offset of hours and minutes)';
