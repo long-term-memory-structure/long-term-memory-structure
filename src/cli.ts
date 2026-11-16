@@ -1143,10 +1143,10 @@ interface Walker { cmd: 'search' | 'index'; done: string; whole: string; lost: s
  *  read). For index (`classify`), also what it does not read: the .jsonl files in a session's own directory, the
  *  set-aside copies of a session, the pin directories, and, for each session directory, its agent transcripts. Every
  *  count is of distinct paths: a directory given twice, or under another one given, is walked for each, as 0.1.2
- *  walked it, and what it holds is counted once however many paths given reach it (S375's known issue k14): an entry
- *  named .jsonl that is not a regular file, a directory met again and a name that is not UTF-8, each by the directory
- *  it was met in (its device and inode) and its name, as shapes counts them, so that two names of one inode (hard
- *  links) are two. A path given that cannot be read is counted as given. */
+ *  walked it, and what it holds is counted once however many paths given reach it (S375's known issue k14): a symbolic
+ *  link, an entry named .jsonl that is not a regular file, a directory met again and a name that is not UTF-8, each by
+ *  the directory it was met in (its device and inode) and its name, as shapes counts them, so that two names of one
+ *  inode (hard links) are two. A path given that cannot be read is counted as given. */
 interface SearchWalk {
   files: { path: string; named: boolean; under?: string }[]; failed: number; symlinks: number; special: number; again: number;
   /** .jsonl files under a session's own directory: counted, not read (index). */
@@ -1179,12 +1179,14 @@ function walkPaths(wk: Walker, paths: string[], classify = false): SearchWalk {
   const all: { path: string; named: boolean; under?: string }[] = [];
   let failed = 0;
   // what is counted once however many paths given reach it (S375's known issue k14), each by the directory it was met
-  // in (its device and inode) and its name: the entries named .jsonl that are not regular files, under a path given that
-  // holds a file (`special`) and named in a no-.jsonl warning (`warnedPipes`: not counted again); the directories met
-  // again; and the names that are not UTF-8 (by their bytes), reported once
+  // in (its device and inode) and its name (a name that is not UTF-8 by its bytes): the symbolic links met (`links`);
+  // the entries named .jsonl that are not regular files, under a path given that holds a file (`special`) and named in
+  // a no-.jsonl warning (`warnedPipes`: not counted again); the directories met again; and the names that are not
+  // UTF-8, reported once
   const special = new Set<string>(), warnedPipes = new Set<string>(), again = new Set<string>(), notUtf8 = new Set<string>();
-  // each counted entry is keyed by what it IS (lstat's device and inode), not by its name: two spellings of one file
-  // (an argument that is a link) count once, and two names that differ only in bytes that are not UTF-8 count twice
+  // index's session parts and set-aside copies are keyed by what each IS (lstat's device and inode), not by its name:
+  // two spellings of one file (an argument that is a link) count once, and two names that differ only in bytes that are
+  // not UTF-8 count twice; a file read is matched to a part or a copy by the same key
   const idOf = (path: string | Buffer, follow = false): string => {
     try { const st = (follow ? statSync : lstatSync)(path, { bigint: true }); return `${st.dev}:${st.ino}`; }
     catch { return `path:${typeof path === 'string' ? resolve(path) : path.toString('hex')}`; }
@@ -1243,7 +1245,7 @@ function walkPaths(wk: Walker, paths: string[], classify = false): SearchWalk {
           // is read); never opened by its decoded name, which can name its twin (S375's known issue k13)
           const bytes = Buffer.concat([Buffer.from(d + '/'), e.name]), isDir = e.isDirectory();
           if (e.isSymbolicLink()) {
-            met++; links.add(idOf(bytes));
+            met++; links.add(`${here}/${e.name.toString('hex')}`);
             if (classify && session !== null) agentFiles.set(session, null);
             continue;
           }
@@ -1266,7 +1268,7 @@ function walkPaths(wk: Walker, paths: string[], classify = false): SearchWalk {
         }
         const full = join(d, name);
         if (e.isSymbolicLink()) {
-          met++; links.add(idOf(full));
+          met++; links.add(`${here}/${name}`);
           // a link is not followed: in a session's own directory, or as a session's directory, its agents are not known
           if (classify && session !== null) agentFiles.set(session, null);
           else if (classify && isSessionDir(name, entries)) agentFiles.set(resolve(full), null);

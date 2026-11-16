@@ -15,7 +15,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { closeSync, chmodSync, ftruncateSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, chmodSync, ftruncateSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -2395,6 +2395,23 @@ test("search (0.3.1, k14): every count of the walk is of distinct paths: an entr
       assert.deepEqual(notUtf8Said(r.err, cmd), [`${hard}/${BSL}xfe.jsonl`, `${hard}/${BSL}xff.jsonl`], `${cmd}: two names of one file, each reported once: ${r.err}`);
       if (cmd !== 'shapes') assert.deepEqual([r.lines[0].files.found, r.lines[0].files.read, r.lines[0].files.failed], [3, 1, 2], cmd);
       else assert.deepEqual(r.lines[0].files, { read: '1', failed: '2-3' });
+    }
+    // two names of one symbolic link (a hard link to the link itself): two links met, by search and index as by shapes
+    const hardLinks = join(dir, 'hard-links');
+    mkdirSync(hardLinks);
+    writeFileSync(join(hardLinks, 'real.jsonl'), sessionWith([['zqk14word', 'ok']]));
+    symlinkSync('real.jsonl', join(hardLinks, 'l1.jsonl'));
+    linkSync(join(hardLinks, 'l1.jsonl'), join(hardLinks, 'l2.jsonl'));
+    const [l1, l2] = ['l1.jsonl', 'l2.jsonl'].map((n) => lstatSync(join(hardLinks, n)));
+    assert.ok(l2.isSymbolicLink() && l2.ino === l1.ino, 'l2 is a second name of the link l1');
+    for (const cmd of ['search', 'index', 'shapes']) {
+      const r = ltms(cmd === 'search' ? ['search', 'zqk14word', hardLinks, hardLinks] : [cmd, hardLinks, hardLinks]);
+      assert.equal(r.code, 0, `${cmd}: ${r.err}`);
+      if (cmd === 'shapes') assert.match(r.err, /^ltms shapes: 2 symbolic links met under the directories given were not followed\.$/m, r.err);
+      else {
+        assert.equal(r.lines[0].files.symlinks, 2, cmd);
+        assert.deepEqual(warnings(r, cmd), [`ltms ${cmd}: warning: 2 symbolic links were met under the directories given and not followed (files.symlinks).`], cmd);
+      }
     }
     // a FIFO a no-.jsonl warning names (its folder holds nothing else) is not counted again in the warning line, when
     // another argument reaches it too, before or after

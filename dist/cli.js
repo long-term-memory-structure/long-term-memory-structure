@@ -1303,12 +1303,14 @@ function walkPaths(wk, paths, classify = false) {
     const all = [];
     let failed = 0;
     // what is counted once however many paths given reach it (S375's known issue k14), each by the directory it was met
-    // in (its device and inode) and its name: the entries named .jsonl that are not regular files, under a path given that
-    // holds a file (`special`) and named in a no-.jsonl warning (`warnedPipes`: not counted again); the directories met
-    // again; and the names that are not UTF-8 (by their bytes), reported once
+    // in (its device and inode) and its name (a name that is not UTF-8 by its bytes): the symbolic links met (`links`);
+    // the entries named .jsonl that are not regular files, under a path given that holds a file (`special`) and named in
+    // a no-.jsonl warning (`warnedPipes`: not counted again); the directories met again; and the names that are not
+    // UTF-8, reported once
     const special = new Set(), warnedPipes = new Set(), again = new Set(), notUtf8 = new Set();
-    // each counted entry is keyed by what it IS (lstat's device and inode), not by its name: two spellings of one file
-    // (an argument that is a link) count once, and two names that differ only in bytes that are not UTF-8 count twice
+    // index's session parts and set-aside copies are keyed by what each IS (lstat's device and inode), not by its name:
+    // two spellings of one file (an argument that is a link) count once, and two names that differ only in bytes that are
+    // not UTF-8 count twice; a file read is matched to a part or a copy by the same key
     const idOf = (path, follow = false) => {
         try {
             const st = (follow ? statSync : lstatSync)(path, { bigint: true });
@@ -1400,7 +1402,7 @@ function walkPaths(wk, paths, classify = false) {
                     const bytes = Buffer.concat([Buffer.from(d + '/'), e.name]), isDir = e.isDirectory();
                     if (e.isSymbolicLink()) {
                         met++;
-                        links.add(idOf(bytes));
+                        links.add(`${here}/${e.name.toString('hex')}`);
                         if (classify && session !== null)
                             agentFiles.set(session, null);
                         continue;
@@ -1435,7 +1437,7 @@ function walkPaths(wk, paths, classify = false) {
                 const full = join(d, name);
                 if (e.isSymbolicLink()) {
                     met++;
-                    links.add(idOf(full));
+                    links.add(`${here}/${name}`);
                     // a link is not followed: in a session's own directory, or as a session's directory, its agents are not known
                     if (classify && session !== null)
                         agentFiles.set(session, null);
